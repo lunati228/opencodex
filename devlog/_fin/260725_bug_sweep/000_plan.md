@@ -47,7 +47,7 @@ GUI·enhancement를 제외한 미해결 버그 이슈를 `codex/260725-bug-sweep
 직접 수정한다. 각 이슈는 독립 work-phase = 독립 PABCD 사이클이며, work-phase마다
 로컬 커밋을 쌓아 올린다.
 
-- 워크트리: `/Users/jun/.codex/worktrees/404d/opencodex`
+- 워크트리: `<private-user-home>/.codex/worktrees/404d/opencodex`
 - 브랜치: `codex/260725-bug-sweep` (`origin/dev` = `f77e3963` 기준)
 - goalplan: `.codexclaw/goalplans/opencodex-codex-260725-bug-sweep-gui-enhancement/`
 

@@ -9,7 +9,7 @@ chat-completions wire에는 assistant가 정확히 하나만 나가며 그 메�
 `reasoning_content`와 answer `content`가 함께 존재한다.
 
 공식 기준은
-`/Users/jun/Developer/codex/180_grok-build/crates/codegen/xai-grok-sampling-types/src/conversation.rs:1814-1860`의
+`<private-user-home>/Developer/codex/180_grok-build/crates/codegen/xai-grok-sampling-types/src/conversation.rs:1814-1860`의
 pending-reasoning fold와 `:8413-8446` 회귀 테스트다. OpenCodex의 현재 분리 지점은
 `src/responses/parser.ts:324-350`, 독립 직렬화 지점은
 `src/adapters/openai-chat.ts:104-134`, opaque encrypted blob의 decode 한계는
@@ -518,7 +518,7 @@ Anthropic activation test name:
 
 ## Verification commands
 
-Run from `/Users/jun/Developer/new/700_projects/opencodex`:
+Run from `<private-user-home>/Developer/new/700_projects/opencodex`:
 
 ```bash
 bun test tests/xai-transport.test.ts tests/anthropic-thinking-signature.test.ts

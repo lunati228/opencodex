@@ -4,9 +4,9 @@
 
 Close OpenCode Go model metadata drift across the three places that now matter:
 
-1. GJC upstream clone on `dev` at `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc`.
-2. jawcode at `/Users/jun/Developer/new/700_projects/jawcode`.
-3. opencodex generated jawcode metadata at `/Users/jun/Developer/new/700_projects/opencodex`.
+1. GJC upstream clone on `dev` at `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc`.
+2. jawcode at `<private-user-home>/Developer/new/700_projects/jawcode`.
+3. opencodex generated jawcode metadata at `<private-user-home>/Developer/new/700_projects/opencodex`.
 
 The user-facing bug is that Codex receives wrong context/output limits for routed OpenCode Go
 models. The root cause is that OpenCode Go's `/v1/models` endpoint only exposes
@@ -85,9 +85,9 @@ Create this `131` devlog folder and record the root cause, source values, and ex
 
 Modify:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/provider-models/openai-compat.ts`
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/test/issue-887-repro.test.ts`
-- generated: `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/models.json`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/provider-models/openai-compat.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/test/issue-887-repro.test.ts`
+- generated: `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/models.json`
 
 Plan:
 
@@ -101,9 +101,9 @@ Plan:
 
 Apply the same generator-safe patch to:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts`
-- `/Users/jun/Developer/new/700_projects/jawcode/packages/ai/test/issue-887-repro.test.ts`
-- generated: `/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.json`
+- `<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/test/issue-887-repro.test.ts`
+- generated: `<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.json`
 
 Run the same targeted and package gates.
 
@@ -111,8 +111,8 @@ Run the same targeted and package gates.
 
 Modify:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
 - this devlog folder's verification record
 
 Plan:

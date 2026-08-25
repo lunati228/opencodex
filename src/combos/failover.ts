@@ -1,6 +1,11 @@
 import { classifyError, isCyberPolicyCode } from "../lib/errors";
 import type { OcxComboTarget } from "../types";
 import { targetKey } from "./types";
+import {
+  captureConfigGeneration,
+  sweepExpiredOnWrite,
+  type GenerationContext,
+} from "../lib/state-store-sweeper";
 
 interface TargetCooldown {
   cooldownUntil: number;
@@ -11,6 +16,8 @@ const MAX_COOLDOWN_MS = 10 * 60_000;
 
 /** Map<`${comboId}\0${provider/model}`, TargetCooldown> */
 const targetCooldowns = new Map<string, TargetCooldown>();
+let lastReconciledGeneration = 0;
+let liveComboTargets = new Set<string>();
 
 function cooldownMapKey(
   comboId: string,
@@ -55,20 +62,43 @@ export function isComboTargetInCooldown(
 export function coolComboTarget(
   comboId: string,
   target: Pick<OcxComboTarget, "provider" | "model">,
-  options?: { retryAfter?: string | null; now?: number; cooldownMs?: number },
+  options?: { retryAfter?: string | null; now?: number; cooldownMs?: number; writerGeneration?: number },
 ): void {
   const now = options?.now ?? Date.now();
+  const writerGeneration = options?.writerGeneration ?? captureConfigGeneration();
+  const ownerKey = `${comboId}::${targetKey(target)}`;
+  if (writerGeneration < lastReconciledGeneration && !liveComboTargets.has(ownerKey)) return;
   const cooldownMs = options?.cooldownMs
     ?? parseRetryAfterMs(options?.retryAfter, now)
     ?? DEFAULT_COOLDOWN_MS;
   targetCooldowns.set(cooldownMapKey(comboId, target), {
     cooldownUntil: now + Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS),
   });
+  sweepExpiredOnWrite(now);
+}
+
+export function reconcileComboTargetCooldowns(context: GenerationContext): number {
+  if (context.generation <= lastReconciledGeneration) return 0;
+  liveComboTargets = new Set(context.comboTargets);
+  lastReconciledGeneration = context.generation;
+  return 0;
+}
+
+export function sweepExpiredComboTargetCooldowns(now = Date.now()): number {
+  let removed = 0;
+  for (const [key, cooldown] of targetCooldowns) {
+    if (cooldown.cooldownUntil > now) continue;
+    targetCooldowns.delete(key);
+    removed += 1;
+  }
+  return removed;
 }
 
 export function clearComboTargetCooldowns(comboId?: string): void {
   if (comboId === undefined) {
     targetCooldowns.clear();
+    liveComboTargets.clear();
+    lastReconciledGeneration = 0;
     return;
   }
   const prefix = `${comboId}\0`;
@@ -91,6 +121,26 @@ export function comboFailureDecision(
   if (isCyberPolicyCode(options?.code)) return "stop";
   const error = classifyError(status, "upstream_error", message);
   if (isCyberPolicyCode(error.code)) return "stop";
+  // A local input-admission refusal (#1524) says "this candidate cannot fit the request",
+  // not "the request is impossible": the next candidate may have a larger context window.
+  //
+  // This MUST be tested before the generic stop list below. Our own refusal message says
+  // "context window" -- that is what it refuses on -- and the classifier remaps that phrase,
+  // so checking the stop list first swallowed the signal and ended the chain. An UPSTREAM
+  // `context_length_exceeded` carries no admission code and still falls through to stop.
+  //
+  // Matched on the STRUCTURED code only, which classifyError now preserves for our own
+  // refusal. A raw substring test would additionally let any upstream override a terminal
+  // verdict by echoing the token in prose we do not control.
+  //
+  // Precise about what this is NOT: an upstream can still SET this code deliberately, since
+  // both extractors read the upstream error object. That is bounded rather than dangerous --
+  // an upstream already controls other hop signals (429, 5xx), and traversal is finite: policy
+  // tries each candidate once via `tried`, and combo excludes each attempted target. So this is
+  // structured-code-only, not provably local.
+  if (options?.code === "input_admission_refused" || error.code === "input_admission_refused") {
+    return "hop";
+  }
   if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
     return "stop";
   }

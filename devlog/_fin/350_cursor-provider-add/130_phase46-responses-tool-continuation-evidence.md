@@ -13,7 +13,7 @@ Cursor-routed Codex sessions could surface first-turn Responses tools, but the b
 
 - `/tmp/opencode-cursor/docs/architecture/runtime-tool-loop.md`: confirms the provider-boundary pattern where tool calls are surfaced to the client and tool results return on the next turn.
 - `/private/tmp/Cursor-To-OpenAI/src/routes/v1.js` and `/private/tmp/Cursor-To-OpenAI/src/utils/utils.js`: older `StreamUnifiedChatWithTools` text-only bridge; useful for framing/header comparison but not for AgentService/Run tool continuation.
-- `/Users/jun/Developer/codex/003_tool-runtime/03_co_tool.md`: Codex tool runtime treats tool calls as `ResponseItem` -> `ToolCall` -> registry execution -> `ResponseInputItem` result loop, so preserving prior tool metadata is required.
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_co_tool.md`: Codex tool runtime treats tool calls as `ResponseItem` -> `ToolCall` -> registry execution -> `ResponseInputItem` result loop, so preserving prior tool metadata is required.
 
 ## Implementation
 

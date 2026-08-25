@@ -60,10 +60,10 @@ Scope:
 Files:
 
 ```path
-/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/service.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/cli-help.test.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/service.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-help.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
 ```
 
 Acceptance:
@@ -86,10 +86,10 @@ Scope:
 Files:
 
 ```path
-/Users/jun/Developer/new/700_projects/opencodex/src/config.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/cli-status.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/config.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/config.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/cli-status.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/config.test.ts
 ```
 
 Acceptance:
@@ -111,10 +111,10 @@ Scope:
 Files:
 
 ```path
-/Users/jun/Developer/new/700_projects/opencodex/src/config.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/cli-status.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/config.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/cli-status.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
 ```
 
 Acceptance:

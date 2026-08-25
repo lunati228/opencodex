@@ -20,7 +20,7 @@ Documentation scope is also corrected: every README locale must update both its 
 
 ## Evidence clarification
 
-Codex decodes `ImageResponse.data[]` at `/Users/jun/Developer/codex/121_openai-codex/codex-rs/codex-api/src/endpoint/images.rs:65-70`; the local tool then requires and decodes the first entry's `b64_json` at `/Users/jun/Developer/codex/121_openai-codex/codex-rs/ext/image-generation/src/tool.rs:157-164`. The plan does not claim that the public OpenAI edit schema proves private ChatGPT edit behavior.
+Codex decodes `ImageResponse.data[]` at `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/codex-api/src/endpoint/images.rs:65-70`; the local tool then requires and decodes the first entry's `b64_json` at `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/ext/image-generation/src/tool.rs:157-164`. The plan does not claim that the public OpenAI edit schema proves private ChatGPT edit behavior.
 
 ## Re-audit request
 

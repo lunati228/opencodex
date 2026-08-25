@@ -11,7 +11,7 @@ plan, not code. Runs after `10_` (+ optionally `11_`) and `12_` are implemented.
 
 - `10_` WS endpoint implemented; `12_` flag enable implemented.
 - `config.websockets = true`; served catalog regenerated (verify `supports_websockets: true` in
-  `/Users/jun/.codex/opencodex-catalog.json`).
+  `<private-user-home>/.codex/opencodex-catalog.json`).
 - `ocx` running; Codex CLI installed.
 
 ## Codex configuration

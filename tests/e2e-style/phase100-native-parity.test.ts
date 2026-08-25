@@ -83,7 +83,8 @@ describe("Phase 100 Codex-native parity smoke", () => {
       web_search_tool_type: "text_and_image",
       supports_search_tool: true,
       context_window: 1_000_000,
-      auto_compact_token_limit: 900_000,
+      // 0.855 = AUTO_COMPACT_WINDOW_FRACTION; see BACKLOG P59 for the measurement.
+      auto_compact_token_limit: 855_000,
     });
     expect(routed).not.toHaveProperty("model_messages");
     expect(routed).not.toHaveProperty("use_responses_lite");

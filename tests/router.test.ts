@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mapReasoningEffort } from "../src/reasoning-effort";
 import { NoEnabledOpenAiProviderError, routeModel } from "../src/router";
-import type { OcxConfig } from "../src/types";
+import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 describe("routeModel registry effort defaults", () => {
   test("allows only opted-in OAuth presets to use explicit API-key billing", () => {
@@ -39,6 +39,33 @@ describe("routeModel registry effort defaults", () => {
     expect(routeModel(cursorKeyAttempt, "cursor/auto").provider.authMode).toBe("oauth");
   });
 
+  test("falls back to OAuth routing for allowKeyAuthOverride providers when the active key is unresolved", () => {
+    const envName = "OCX_TEST_XAI_ROUTER_ENV";
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "key",
+          apiKey: `\${${envName}}`,
+        },
+      },
+    };
+    const previous = process.env[envName];
+    delete process.env[envName];
+    try {
+      const routed = routeModel(config, "xai/grok-4.5").provider;
+      expect(routed.authMode).toBe("oauth");
+      expect(routed.apiKey).toBeUndefined();
+      expect(config.providers.xai!.authMode).toBe("key");
+    } finally {
+      if (previous === undefined) delete process.env[envName];
+      else process.env[envName] = previous;
+    }
+  });
+
   test("routes bare OpenAI/Codex model ids to OpenAI before adopted Cursor model lists", () => {
     const config: OcxConfig = {
       port: 10100,
@@ -65,6 +92,81 @@ describe("routeModel registry effort defaults", () => {
       providerName: "cursor",
       modelId: "gpt-5.5",
     });
+  });
+
+  test("routes account-qualified native models to one exact Codex account", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          codexAccountMode: "direct",
+        },
+      },
+      codexAccountNamespaces: { desktop: "@main", side: "side-account-id" },
+    };
+
+    expect(routeModel(config, "desktop/gpt-5.6-sol")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.6-sol",
+      codexAccountMode: "pool",
+      codexAccountId: "__main__",
+      codexAccountNamespace: "desktop",
+    });
+    expect(routeModel(config, "side/gpt-5.5")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.5",
+      codexAccountMode: "pool",
+      codexAccountId: "side-account-id",
+      codexAccountNamespace: "side",
+      provider: { authMode: "forward" },
+    });
+    expect(routeModel(config, "gpt-5.5")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.5",
+      codexAccountMode: "direct",
+    });
+    expect(() => routeModel(config, "side/claude-opus-4-6"))
+      .toThrow("only supports native OpenAI model ids");
+
+    config.codexAccountPickerEnabled = false;
+    expect(routeModel(config, "side/gpt-5.5")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.5",
+      codexAccountMode: "pool",
+      codexAccountId: "side-account-id",
+      codexAccountNamespace: "side",
+      provider: { authMode: "forward" },
+    });
+  });
+
+  test("requires an enabled canonical OpenAI forward provider before exact credential injection", () => {
+    const providers: OcxProviderConfig[] = [
+      { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "key" },
+      { adapter: "openai-chat", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+      { adapter: "openai-responses", baseUrl: "https://proxy.example.test/v1", authMode: "forward" },
+      { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward", disabled: true },
+    ];
+
+    for (const openai of providers) {
+      const config: OcxConfig = {
+        port: 10100,
+        defaultProvider: "openai",
+        providers: { openai },
+        codexAccountNamespaces: { side: "side-account-id" },
+      };
+      expect(() => routeModel(config, "side/gpt-5.5")).toThrow(NoEnabledOpenAiProviderError);
+    }
+
+    const withoutOpenAi: OcxConfig = {
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {},
+      codexAccountNamespaces: { side: "side-account-id" },
+    };
+    expect(() => routeModel(withoutOpenAi, "side/gpt-5.5")).toThrow(NoEnabledOpenAiProviderError);
   });
 
   test("routes a self-namespaced native id whole instead of stripping to the remainder", () => {
@@ -112,12 +214,42 @@ describe("routeModel registry effort defaults", () => {
       },
     };
     expect(routeModel(base, "gpt-5.5")).toMatchObject({ providerName: "openai", codexAccountMode: "pool" });
+    expect(routeModel(base, "codex-auto-review")).toMatchObject({
+      providerName: "openai",
+      modelId: "codex-auto-review",
+      codexAccountMode: "pool",
+    });
+    expect(routeModel(base, "codex-third-party-model")).toMatchObject({
+      providerName: "openai-apikey",
+      modelId: "codex-third-party-model",
+    });
+    const withDeepSeekDefault: OcxConfig = {
+      ...base,
+      defaultProvider: "deepseek",
+      providers: {
+        ...base.providers,
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com/v1",
+          defaultModel: "deepseek-chat",
+        },
+      },
+    };
+    expect(routeModel(withDeepSeekDefault, "codex-auto-review")).toMatchObject({
+      providerName: "openai",
+      modelId: "codex-auto-review",
+    });
+    expect(routeModel(withDeepSeekDefault, "codex-third-party-model")).toMatchObject({
+      providerName: "deepseek",
+      modelId: "codex-third-party-model",
+    });
     expect(routeModel({ ...base, providers: { ...base.providers, openai: { ...forward, codexAccountMode: "direct" } } }, "gpt-5.5"))
       .toMatchObject({ providerName: "openai", codexAccountMode: "direct" });
     expect(() => routeModel({ ...base, providers: { ...base.providers, openai: { ...forward, disabled: true } } }, "gpt-5.5"))
-      .toThrow(NoEnabledOpenAiProviderError);
+      .toThrow(/requires the canonical openai provider/);
     const unavailable = { ...base, providers: { "openai-proxy": base.providers["openai-proxy"] } };
-    expect(() => routeModel(unavailable, "gpt-5.5")).toThrow(NoEnabledOpenAiProviderError);
+    expect(() => routeModel(unavailable, "gpt-5.5")).toThrow(/ocx provider add openai/);
+    expect(() => routeModel(unavailable, "codex-auto-review")).toThrow(NoEnabledOpenAiProviderError);
   });
 
   test("rejects legacy chatgpt namespaces even when configured", () => {
@@ -430,5 +562,54 @@ describe("routeModel backfills google wire mode from the registry", () => {
       },
     };
     expect(routeModel(config, "gemini-3-pro").provider.googleMode).toBe("vertex");
+  });
+
+  test("a bare claude-* model is not silently rerouted to an unrelated Anthropic provider (#1697)", () => {
+    // The draft fix picked the first enabled provider whose adapter is anthropic, by object
+    // insertion order, checking neither `models`, `selectedModels`, `disabledModels` nor discovery.
+    // That crosses a provider/privacy/billing boundary the operator never asked for, so it is gone.
+    // Routing a classifier turn to a specific provider is an operator decision, expressed through
+    // `claudeCode.classifierModel` / `classifierFallbacks`.
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "deepseek",
+      providers: {
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com",
+        },
+        RelayA: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.relay.example/v1",
+        },
+      },
+    };
+
+    const routed = routeModel(config, "claude-opus-5");
+    expect(routed.providerName).toBe("deepseek");
+    expect(routed.routeKind).toBe("default-provider");
+  });
+
+  test("a disabled provider is not selected by the known-model pattern (#1697)", () => {
+    // This half of the draft is kept: matching a pattern provider that is disabled and routing to
+    // it anyway was a real defect.
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "fallbackProvider",
+      providers: {
+        anthropic: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+          disabled: true,
+        },
+        fallbackProvider: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+        },
+      },
+    };
+
+    const routed = routeModel(config, "claude-opus-5");
+    expect(routed.providerName).toBe("fallbackProvider");
   });
 });

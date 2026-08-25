@@ -13,7 +13,7 @@ This file records the current `ocx` command-line help surface before any CLI beh
 Project root:
 
 ```bash
-/Users/jun/Developer/new/700_projects/opencodex
+<private-user-home>/Developer/new/700_projects/opencodex
 ```
 
 Safe probe shape:
@@ -26,12 +26,12 @@ node bin/ocx.mjs <args>
 Code surfaces inspected:
 
 ```bash
-/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/service.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-shim.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/cli-help.test.ts
-/Users/jun/Developer/new/700_projects/opencodex/README.md
-/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/cli.md
+<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/service.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-shim.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-help.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/README.md
+<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/cli.md
 ```
 
 Important safety note: lifecycle commands can mutate local state. The matrix does not rely on executing `start`, `stop`, `sync`, `uninstall`, `service install/start/stop/uninstall`, or `codex-shim install/uninstall` without a help flag.

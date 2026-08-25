@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { FORWARD_HEADERS, createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
+import { FORWARD_HEADERS, createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
 import { headersForCodexAuthContext } from "../src/codex/auth-context";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
+
+const createResponsesPassthroughAdapter = (...args: Parameters<typeof createResponsesPassthroughAdapterProduction>) =>
+  withTestTranslatorBudget(createResponsesPassthroughAdapterProduction(...args));
 
 const accountA = {
   accountId: "pool-a",
@@ -113,7 +117,7 @@ describe("Codex metadata integrity", () => {
       _codexAccountRequired: boolean;
     } = {
       adapter: "openai-responses",
-      baseUrl: "https://chatgpt.test/backend-api/codex",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
       authMode: "forward",
       _codexAccountRequired: true,
       _codexAccountOverride: {
@@ -138,7 +142,7 @@ describe("Codex metadata integrity", () => {
   test("adapter forward mode preserves genuine client metadata", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-responses",
-      baseUrl: "https://chatgpt.test/backend-api/codex",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
       authMode: "forward",
     };
     const adapter = createResponsesPassthroughAdapter(provider);

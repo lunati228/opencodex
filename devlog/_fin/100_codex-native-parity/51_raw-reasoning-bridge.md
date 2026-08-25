@@ -103,18 +103,18 @@ The model supports both `summary` and raw `content`:
 opencodex currently maps every provider `thinking_delta` into the summary path:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:167
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:169
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:176
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:83
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:86
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:90
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:167
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:169
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:176
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:83
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:86
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:90
 ```
 
 Current adapter event type:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:151
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:151
 ```
 
 ```ts
@@ -124,13 +124,13 @@ Current adapter event type:
 Incoming historical reasoning is already parsed from either summary or raw content:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/schema.ts:21
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/schema.ts:22
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/schema.ts:42
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/schema.ts:45
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/schema.ts:46
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:242
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:243
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/schema.ts:21
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/schema.ts:22
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/schema.ts:42
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/schema.ts:45
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/schema.ts:46
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:242
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:243
 ```
 
 So the missing piece is outbound bridge mode, not inbound schema awareness.

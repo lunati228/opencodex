@@ -18,9 +18,10 @@ import ProviderUsage from "./ProviderUsage";
 import ProviderAuthPanel from "./ProviderAuthPanel";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
 import ProviderSettings from "./ProviderSettings";
+import LocalRuntimeControls from "./LocalRuntimeControls";
 import { UnsavedLeaveDialog } from "./ProviderDialogs";
 import type { ProviderQuotaReportView } from "../../provider-workspace/report";
-import type { AccountLoadState, ProviderModelUsageRow, ProviderUsageTotals, OAuthAccountRow, ApiKeyRow, LoginHint, ProviderAuthHandlers, ProviderUpdatePatch } from "./types";
+import type { AccountLoadState, ProviderModelUsageRow, ProviderUsageTotals, OAuthAccountRow, ApiKeyRow, LoginHint, ProviderAuthHandlers, ProviderUpdatePatch, ProviderUpdateResult } from "./types";
 
 type Tab = "overview" | "models" | "usage" | "accounts" | "settings";
 
@@ -29,6 +30,10 @@ export default function ProviderDetails({
   usageTotals,
   modelUsage,
   quotaReport,
+  quotaRefreshing,
+  quotaRefreshError,
+  quotaRefreshedAt,
+  onRefreshQuota,
   availableModels,
   hasLiveModels,
   selectedModels,
@@ -41,6 +46,8 @@ export default function ProviderDetails({
   oauth,
   accounts,
   accountLoadState,
+  accountsFocusToken = 0,
+  accountsFocusProvider = null,
   switchingAccountId,
   keys,
   busyProvider,
@@ -52,11 +59,16 @@ export default function ProviderDetails({
   isDefault,
   onRemoveProvider,
   onSetDisabled,
+  onSetDefault,
 }: {
   item: WorkspaceItem;
   usageTotals?: ProviderUsageTotals;
   modelUsage?: ProviderModelUsageRow[];
   quotaReport?: ProviderQuotaReportView;
+  quotaRefreshing?: boolean;
+  quotaRefreshError?: boolean;
+  quotaRefreshedAt?: number;
+  onRefreshQuota?: () => void;
   availableModels: string[];
   /** Server-reported live-catalog provenance; see filterModels(). */
   hasLiveModels: boolean;
@@ -70,6 +82,10 @@ export default function ProviderDetails({
   oauth?: { loggedIn: boolean; email?: string; error?: string; needsReauth?: boolean };
   accounts?: OAuthAccountRow[];
   accountLoadState?: AccountLoadState;
+  /** When this token increases for accountsFocusProvider, switch to the Accounts tab. */
+  accountsFocusToken?: number;
+  /** Provider that owns the current accountsFocusToken; other providers ignore it. */
+  accountsFocusProvider?: string | null;
   switchingAccountId?: string | null;
   keys?: ApiKeyRow[];
   busyProvider?: string | null;
@@ -78,10 +94,11 @@ export default function ProviderDetails({
   onCodexActiveNeedsReauthChange?: (needs: boolean) => void;
   /** Shared Codex account state owned by Providers (WP3). */
   codexController?: CodexAccountPoolController;
-  onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<{ ok: boolean; error?: string }>;
+  onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<ProviderUpdateResult>;
   isDefault?: boolean;
   onRemoveProvider?: (name: string) => void;
   onSetDisabled?: (name: string, disabled: boolean) => void;
+  onSetDefault?: (name: string) => void;
 }) {
   const t = useT();
   const [tab, setTab] = useState<Tab>("overview");
@@ -89,6 +106,9 @@ export default function ProviderDetails({
   const [pendingLeave, setPendingLeave] = useState<Tab | "deselect" | null>(null);
   const [leaveSaving, setLeaveSaving] = useState(false);
   const settingsSaveRef = useRef<(() => Promise<boolean>) | null>(null);
+  // Seed 0 so a mount-time token from revealProviderAccounts stays pending until
+  // authSurface exists; seeding with the prop would treat it as already seen.
+  const [seenAccountsFocusToken, setSeenAccountsFocusToken] = useState(0);
   const registerSettingsSave = useCallback((save: (() => Promise<boolean>) | null) => {
     settingsSaveRef.current = save;
   }, []);
@@ -96,6 +116,16 @@ export default function ProviderDetails({
   const free = useMemo(() => isFreeProvider(item), [item]);
   const local = useMemo(() => isLocalProvider(item), [item]);
   const authSurface = useMemo(() => providerAuthSurface(item), [item]);
+  // Global counter from Providers — only honor it for the reveal target.
+  const scopedAccountsFocusToken = accountsFocusProvider === item.name ? accountsFocusToken : 0;
+  const connectionIdentity = JSON.stringify([
+    codexController?.activeId ?? "",
+    accounts?.find(account => account.active)?.id ?? "",
+    keys?.find(entry => entry.active)?.id ?? "",
+    oauth?.loggedIn === undefined ? "" : String(oauth.loggedIn),
+    oauth?.needsReauth === undefined ? "" : String(oauth.needsReauth),
+    oauthEmail ?? "",
+  ]);
   const tabs = useMemo<{ id: Tab; label: string }[]>(() => [
     { id: "overview", label: t("pws.tab.overview") },
     { id: "models", label: t("pws.tab.models") },
@@ -111,6 +141,22 @@ export default function ProviderDetails({
     }
     setTab(next);
   }, [tab, settingsDirty]);
+
+  // Adjust related state when accountsFocusToken changes during render (not in an
+  // effect) so the Accounts tab is selected without a one-frame stale paint.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  // Hold a non-zero token until authSurface exists so mount-time focus from
+  // revealProviderAccounts is not marked seen before Accounts can open.
+  if (scopedAccountsFocusToken !== seenAccountsFocusToken && !(scopedAccountsFocusToken && !authSurface)) {
+    setSeenAccountsFocusToken(scopedAccountsFocusToken);
+    if (scopedAccountsFocusToken && authSurface) {
+      if (settingsDirty && tab === "settings") {
+        setPendingLeave("accounts");
+      } else {
+        setTab("accounts");
+      }
+    }
+  }
 
   const requestDeselect = useCallback(() => {
     if (settingsDirty && tab === "settings") {
@@ -149,12 +195,17 @@ export default function ProviderDetails({
         <ProviderIcon name={item.name} adapter={item.adapter} baseUrl={item.baseUrl} cls="pws-detail-icon" />
         <div className="pws-detail-title-wrap">
           <h2 className="pws-detail-title">
-            {formatProviderDisplayName(item.name)}
+            {formatProviderDisplayName(item.name, t)}
             {local && <span className="pwi-rail-badge pwi-rail-badge--local">{t("modal.badge.local")}</span>}
             {!local && free && <span className="pwi-rail-badge pwi-rail-badge--free">{t("modal.badge.free")}</span>}
           </h2>
         </div>
         <div className="pws-detail-actions">
+          {!isDefault && !isDisabled && onSetDefault && (
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSetDefault(item.name)}>
+              {t("prov.setDefault")}
+            </button>
+          )}
           {onRemoveProvider && (
             <button
               type="button"
@@ -206,26 +257,13 @@ export default function ProviderDetails({
       >
         {tab === "overview" && (
           <ProviderOverview
-            accountPanel={authSurface ? (
-              <ProviderAuthPanel
-                item={item}
-                apiBase={apiBase}
-                oauth={oauth}
-                accounts={accounts}
-                keys={keys}
-                accountLoadState={accountLoadState}
-                switchingAccountId={switchingAccountId}
-                busy={busyProvider === item.name}
-                loginHint={loginHint}
-                authHandlers={authHandlers}
-                onCodexActiveNeedsReauthChange={onCodexActiveNeedsReauthChange}
-                codexController={codexController}
-              />
-            ) : undefined}
             item={item}
+            apiBase={apiBase}
+            connectionIdentity={connectionIdentity}
             usageTotals={usageTotals}
             quotaReport={quotaReport}
             oauthEmail={oauthEmail}
+            oauth={oauth}
             onEditSettings={() => switchTab("settings")}
             onViewUsage={() => switchTab("usage")}
             onUpdateProvider={onUpdateProvider}
@@ -267,7 +305,16 @@ export default function ProviderDetails({
           />
         )}
         {tab === "usage" && (
-          <ProviderUsage item={item} usageTotals={usageTotals} quotaReport={quotaReport} modelUsage={modelUsage} />
+          <ProviderUsage
+            item={item}
+            usageTotals={usageTotals}
+            quotaReport={quotaReport}
+            modelUsage={modelUsage}
+            quotaRefreshing={quotaRefreshing}
+            quotaRefreshError={quotaRefreshError}
+            quotaRefreshedAt={quotaRefreshedAt}
+            onRefreshQuota={onRefreshQuota}
+          />
         )}
         {tab === "accounts" && (
           <ProviderAuthPanel
@@ -281,20 +328,30 @@ export default function ProviderDetails({
             busy={busyProvider === item.name}
             loginHint={loginHint}
             authHandlers={authHandlers}
+            onUpdateProvider={onUpdateProvider}
             onCodexActiveNeedsReauthChange={onCodexActiveNeedsReauthChange}
             codexController={codexController}
           />
         )}
         {tab === "settings" && (
-          <ProviderSettings
-            key={item.name}
-            item={item}
-            apiBase={apiBase}
-            availableModels={availableModels}
-            onUpdateProvider={onUpdateProvider}
-            onDirtyChange={setSettingsDirty}
-            onRegisterSave={registerSettingsSave}
-          />
+          item.localRuntimeProfileId ? (
+            <LocalRuntimeControls apiBase={apiBase} />
+          ) : item.externalProviderRef ? (
+            <div className="pws-section">
+              <h3 className="pws-section-title">{t("pws.managedProvider")}</h3>
+              <p className="muted">{t("pws.managedProviderHint")}</p>
+            </div>
+          ) : (
+            <ProviderSettings
+              key={item.name}
+              item={item}
+              apiBase={apiBase}
+              availableModels={availableModels}
+              onUpdateProvider={onUpdateProvider}
+              onDirtyChange={setSettingsDirty}
+              onRegisterSave={registerSettingsSave}
+            />
+          )
         )}
       </div>
       {pendingLeave && (

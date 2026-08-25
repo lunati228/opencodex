@@ -8,7 +8,7 @@ This document records the current CLI state, comparison notes from `cli-jaw` and
 
 ## Repository Context
 
-- Project root: `/Users/jun/Developer/new/700_projects/opencodex`
+- Project root: `<private-user-home>/Developer/new/700_projects/opencodex`
 - Current CLI owner: `src/cli.ts`
 - Current CLI tests: `tests/cli-help.test.ts`
 - Public CLI docs: `README.md`, `README.ko.md`, `README.zh-CN.md`, `docs-site/src/content/docs/reference/cli.md`
@@ -42,7 +42,7 @@ Findings:
 Detailed matrix:
 
 ```path
-/Users/jun/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/11_help_surface_matrix.md
+<private-user-home>/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/11_help_surface_matrix.md
 ```
 
 ## Reference CLI Patterns

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   collectPaths,
   detectFsType,
@@ -10,14 +10,25 @@ import {
   collectRunningProxyEnv,
   collectWslDualInstall,
   fetchServiceMemory,
+  formatResponseTempLines,
   formatServiceMemoryLines,
   parseProcessEnvBlock,
   probeWham,
   proxyDownRestartHint,
   resolveCodexHomeDir,
+  runDoctor,
   type ServiceMemoryData,
 } from "../src/cli/doctor";
 import { collectOrcaCodexHomeDiagnostic } from "../src/codex/home";
+import { NativeProfileError } from "../src/codex/native-profile-types";
+import {
+  LOCAL_MANAGEMENT_CAPABILITY_HEADER,
+  LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER,
+  LOCAL_MANAGEMENT_EXPECTED_PID_HEADER,
+  LOCAL_MANAGEMENT_NONCE_HEADER,
+  LOCAL_MANAGEMENT_READ_PATHS,
+  verifyLocalManagementReadCapability,
+} from "../src/lib/local-management-capability";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-doctor-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -27,6 +38,7 @@ let prevCodexHome: string | undefined;
 let prevHttpsProxy: string | undefined;
 let prevLowerHttpsProxy: string | undefined;
 let prevProxyRef: string | undefined;
+let prevAdminToken: string | undefined;
 
 describe("doctor", () => {
   beforeEach(() => {
@@ -35,6 +47,7 @@ describe("doctor", () => {
     prevHttpsProxy = process.env.HTTPS_PROXY;
     prevLowerHttpsProxy = process.env.https_proxy;
     prevProxyRef = process.env.OCX_TEST_PROXY_REF;
+    prevAdminToken = process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_CODEX_HOME, { recursive: true });
     mkdirSync(TEST_OPENCODEX_HOME, { recursive: true });
@@ -56,6 +69,8 @@ describe("doctor", () => {
     else process.env.https_proxy = prevLowerHttpsProxy;
     if (prevProxyRef === undefined) delete process.env.OCX_TEST_PROXY_REF;
     else process.env.OCX_TEST_PROXY_REF = prevProxyRef;
+    if (prevAdminToken === undefined) delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+    else process.env.OPENCODEX_ADMIN_AUTH_TOKEN = prevAdminToken;
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   });
 
@@ -320,6 +335,50 @@ describe("doctor", () => {
     }) as typeof fetch);
     expect(connect.classification).toBe("connect_error");
   });
+
+  test("probeWham suppresses credential and network reads when the cross-process claim is unavailable", async () => {
+    let fetchCalls = 0;
+    const result = await probeWham((async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch, {
+      withNativeMainClaim: async () => {
+        throw new NativeProfileError(
+          "NATIVE_MAIN_CLAIM_BUSY",
+          "Native-main credentials are in use.",
+          503,
+          true,
+        );
+      },
+    });
+
+    expect(fetchCalls).toBe(0);
+    expect(result).toMatchObject({
+      ok: false,
+      status: null,
+      classification: "native_main_claim_busy",
+      authenticated: false,
+    });
+  });
+
+  test("probeWham suppresses credential and network reads during retained recovery", async () => {
+    let fetchCalls = 0;
+    const result = await probeWham((async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch, {
+      withNativeMainClaim: operation => operation(),
+      probeNativeMainRecoveryState: () => "manual",
+    });
+
+    expect(fetchCalls).toBe(0);
+    expect(result).toMatchObject({
+      ok: false,
+      status: null,
+      classification: "native_main_recovery_manual",
+      authenticated: false,
+    });
+  });
 });
 
 describe("service memory section (#314 WP4)", () => {
@@ -329,6 +388,8 @@ describe("service memory section (#314 WP4)", () => {
     platform: "win32",
     rss: 5 * 1024 ** 3,
     heapUsed: 200 * 1024 ** 2,
+    external: 300 * 1024 ** 2,
+    arrayBuffers: 200 * 1024 ** 2,
     jscHeap: { heapSize: 180 * 1024 ** 2 },
     streamMode: "auto",
     eagerRelay: { useEagerRelay: false, reason: "auto-known-bad" },
@@ -336,23 +397,88 @@ describe("service memory section (#314 WP4)", () => {
   };
 
   test("fetchServiceMemory: ok / unauthorized / unreachable / malformed", async () => {
-    const ok = await fetchServiceMemory("127.0.0.1", 10100, null,
-      (async () => Response.json(baseData)) as typeof fetch);
+    process.env.OPENCODEX_ADMIN_AUTH_TOKEN = "admin-token-must-not-leave-doctor";
+    const target = { hostname: "127.0.0.1", port: 10100, pid: 4242, source: "runtime" } as const;
+    const attestationSecret = "A".repeat(43);
+    const nonce = "B".repeat(43);
+    const now = 1_800_000_000_000;
+    const deps = {
+      readRuntime: () => ({ pid: 4242, port: 10100, attestationSecret }),
+      createNonce: () => nonce,
+      now: () => now,
+    };
+    const ok = await fetchServiceMemory(target, {
+      ...deps,
+      fetchImpl: (async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        expect(headers.get("authorization")).toBeNull();
+        expect(headers.get("x-opencodex-api-key")).toBeNull();
+        expect(headers.get(LOCAL_MANAGEMENT_EXPECTED_PID_HEADER)).toBe("4242");
+        expect(verifyLocalManagementReadCapability(
+          attestationSecret,
+          headers.get(LOCAL_MANAGEMENT_NONCE_HEADER),
+          "GET",
+          LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
+          4242,
+          10100,
+          Number(headers.get(LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER)),
+          headers.get(LOCAL_MANAGEMENT_CAPABILITY_HEADER),
+          now,
+        )).toBe(true);
+        return Response.json(baseData);
+      }) as typeof fetch,
+    });
     expect(ok.status).toBe("ok");
     if (ok.status === "ok") expect(ok.data.pid).toBe(4242);
 
-    const unauthorized = await fetchServiceMemory("127.0.0.1", 10100, "wrong",
-      (async () => new Response("{}", { status: 401 })) as typeof fetch);
+    const unauthorized = await fetchServiceMemory(target, {
+      ...deps,
+      fetchImpl: (async () => new Response("{}", { status: 401 })) as typeof fetch,
+    });
     expect(unauthorized.status).toBe("unauthorized");
 
-    const unreachable = await fetchServiceMemory("127.0.0.1", 10100, null,
-      (async () => { throw new TypeError("fetch failed"); }) as typeof fetch);
+    const unreachable = await fetchServiceMemory(target, {
+      ...deps,
+      fetchImpl: (async () => { throw new TypeError("fetch failed"); }) as typeof fetch,
+    });
     expect(unreachable.status).toBe("unreachable");
 
-    const malformed = await fetchServiceMemory("127.0.0.1", 10100, null,
-      (async () => Response.json({ hello: "world" })) as typeof fetch);
+    const malformed = await fetchServiceMemory(target, {
+      ...deps,
+      fetchImpl: (async () => Response.json({ ...baseData, pid: 9999 })) as typeof fetch,
+    });
     expect(malformed.status).toBe("unreachable");
     if (malformed.status === "unreachable") expect(malformed.error).toBe("malformed response");
+  });
+
+  test("does not contact configured-port or stale runtime targets", async () => {
+    let fetchCalls = 0;
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      return Response.json(baseData);
+    }) as typeof fetch;
+    const configured = await fetchServiceMemory(
+      { hostname: "127.0.0.1", port: 10100, pid: null, source: "config" },
+      { fetchImpl },
+    );
+    const staleRuntime = await fetchServiceMemory(
+      { hostname: "127.0.0.1", port: 10100, pid: 4242, source: "runtime" },
+      {
+        fetchImpl,
+        readRuntime: () => ({ pid: 4242, port: 10101, attestationSecret: "A".repeat(43) }),
+      },
+    );
+    const legacyRuntime = await fetchServiceMemory(
+      { hostname: "127.0.0.1", port: 10100, pid: 4242, source: "runtime" },
+      {
+        fetchImpl,
+        readRuntime: () => ({ pid: 4242, port: 10100 }),
+      },
+    );
+    expect(configured.status).toBe("unauthorized");
+    expect(staleRuntime.status).toBe("unauthorized");
+    expect(legacyRuntime.status).toBe("unauthorized");
+    expect(fetchCalls).toBe(0);
   });
 
   test("identity labels: doctor process is never presented as the service", () => {
@@ -366,15 +492,16 @@ describe("service memory section (#314 WP4)", () => {
     expect(lines.some(l => l.includes("native-side growth"))).toBe(true);
   });
 
-  test("interpretation: high RSS dominated by JS heap → bug-report line", () => {
+  test("interpretation: high RSS with large JS counters asks for corroboration", () => {
     const lines = formatServiceMemoryLines({
       status: "ok",
       data: { ...baseData, heapUsed: 4 * 1024 ** 3, jscHeap: { heapSize: 4 * 1024 ** 3 } },
     });
-    expect(lines.some(l => l.includes("likely an opencodex bug"))).toBe(true);
+    expect(lines.some(l => l.includes("possible JS-side retention"))).toBe(true);
+    expect(lines.some(l => l.includes("likely an opencodex bug"))).toBe(false);
   });
 
-  test("interpretation: rss below threshold → normal line", () => {
+  test("interpretation: all observed counters below threshold → normal line", () => {
     const lines = formatServiceMemoryLines({
       status: "ok",
       data: { ...baseData, rss: 300 * 1024 ** 2 },
@@ -383,17 +510,65 @@ describe("service memory section (#314 WP4)", () => {
     expect(lines.some(l => l.includes("native-side growth"))).toBe(false);
   });
 
+  test("interpretation: high external memory is not hidden by low RSS (#509)", () => {
+    const lines = formatServiceMemoryLines({
+      status: "ok",
+      data: {
+        ...baseData,
+        rss: 300 * 1024 ** 2,
+        external: 5 * 1024 ** 3,
+        arrayBuffers: 2 * 1024 ** 3,
+      },
+    });
+    expect(lines.some(l => l.includes("observed=5120MB (external)"))).toBe(true);
+    expect(lines.some(l => l.includes("high observed memory via external"))).toBe(true);
+    expect(lines.some(l => l.includes("looks normal"))).toBe(false);
+  });
+
   test("guidance gating: win32 + auto-known-bad prints version-claiming guidance", () => {
-    const lines = formatServiceMemoryLines({ status: "ok", data: baseData });
+    // A bundled runtime is the case where "set OPENCODEX_BUN_PATH" is still the right advice.
+    const lines = formatServiceMemoryLines({ status: "ok", data: { ...baseData, bunRuntimeSource: "bundled" } });
     expect(lines.some(l => l.includes("OPENCODEX_BUN_PATH"))).toBe(true);
     // Version-claiming, never binary-claiming.
     expect(lines.join("\n")).not.toContain("bundled binary");
   });
 
-  test("guidance gating: darwin or fixed runtime prints no override guidance", () => {
+  test("guidance gating: an active override is never told to set OPENCODEX_BUN_PATH again (#848)", () => {
+    const lines = formatServiceMemoryLines({
+      status: "ok",
+      data: { ...baseData, bunRuntimeSource: "override" },
+    });
+    const text = lines.join("\n");
+    expect(text).toContain("OPENCODEX_BUN_PATH is already active");
+    expect(text).not.toContain("set OPENCODEX_BUN_PATH to a runtime you trust");
+    // The affected-version warning itself must survive; only the remedy changes.
+    expect(text).toContain("affected by the upstream Bun memory issue");
+  });
+
+  test("guidance gating: a legacy payload without provenance says unknown instead of guessing", () => {
+    const { bunRuntimeSource: _omitted, ...legacy } = { ...baseData, bunRuntimeSource: undefined };
+    const text = formatServiceMemoryLines({ status: "ok", data: legacy as ServiceMemoryData }).join("\n");
+    expect(text).toContain("records no runtime origin");
+    expect(text).not.toContain("set OPENCODEX_BUN_PATH to a runtime you trust");
+  });
+
+  test("guidance gating: a process-provenance runtime is not described as bundled", () => {
+    const text = formatServiceMemoryLines({
+      status: "ok",
+      data: { ...baseData, bunRuntimeSource: "process" },
+    }).join("\n");
+    expect(text).toContain("the runtime that launched it");
+    expect(text).toContain("set OPENCODEX_BUN_PATH to a runtime you trust");
+  });
+
+  test("guidance gating: darwin auto-off or fixed Windows runtime prints no override guidance", () => {
     const darwin = formatServiceMemoryLines({
       status: "ok",
-      data: { ...baseData, platform: "darwin", eagerRelay: null },
+      data: {
+        ...baseData,
+        platform: "darwin",
+        eagerRelay: { useEagerRelay: false, reason: "auto-known-bad" },
+      },
     });
     expect(darwin.some(l => l.includes("OPENCODEX_BUN_PATH"))).toBe(false);
 
@@ -406,7 +581,7 @@ describe("service memory section (#314 WP4)", () => {
 
   test("unauthorized and unreachable render honest lines without fake data", () => {
     const unauthorized = formatServiceMemoryLines({ status: "unauthorized" });
-    expect(unauthorized.some(l => l.includes("rejected the request"))).toBe(true);
+    expect(unauthorized.some(l => l.includes("local diagnostic capability unavailable"))).toBe(true);
     expect(unauthorized.some(l => l.includes("service pid"))).toBe(false);
 
     const unreachable = formatServiceMemoryLines({ status: "unreachable", error: "ECONNREFUSED" });
@@ -432,5 +607,157 @@ describe("service memory section (#314 WP4)", () => {
     expect(hint).toContain("ocx service start");
     expect(hint).toContain("127.0.0.1:12000");
     expect(hint).not.toContain("ocx service install");
+  });
+
+  // 260804 #970 follow-up: serviceViable=false conflates "no service" with "registered
+  // but stale/stopped". Only the first wants install; re-registering an existing service
+  // costs a UAC prompt on Windows and can switch a WinSW backend to Task Scheduler.
+  test("an installed but unhealthy service is pointed at repair, not install", () => {
+    const broken = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: true });
+    expect(broken).toContain("ocx service repair");
+    expect(broken).not.toContain("ocx service install");
+
+    const absent = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: false });
+    expect(absent).toContain("ocx service install");
+
+    // A two-manager conflict must be uninstalled first; repairService() refuses it.
+    const conflict = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: true, serviceConflict: true });
+    expect(conflict).toContain("ocx service install");
+  });
+});
+
+describe("doctor abandoned response-state temps", () => {
+  const result = (over: Partial<Parameters<typeof formatResponseTempLines>[0]> = {}) => ({
+    matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0, truncated: false, ...over,
+  });
+
+  test("reports reclaimable files without removing them, and names the opt-in flag", () => {
+    // Report is the default: doctor is a diagnostic, so it must not delete as a side effect
+    // of being asked a question.
+    const lines = formatResponseTempLines(result({ matched: 9, eligible: 3, eligibleBytes: 72 * 1024 * 1024 }), false);
+    expect(lines[0]).toContain("3 abandoned response-state temp file(s)");
+    expect(lines[0]).toContain("72MB");
+    expect(lines.join("\n")).toContain("ocx doctor --reclaim-response-temps");
+  });
+
+  test("reports eligible, never matched", () => {
+    // matched counts name-matching entries BEFORE the age/liveness/file-type gates, so
+    // reporting it would call live-pid and young temps abandoned.
+    const lines = formatResponseTempLines(result({ matched: 12, eligible: 0 }), false);
+    expect(lines).toEqual(["  ok  No abandoned response-state temp files."]);
+    expect(lines.join("\n")).not.toContain("12");
+  });
+
+  test("reclaim mode reports what was freed", () => {
+    const lines = formatResponseTempLines(result({ matched: 4, removed: 2, bytesRemoved: 48 * 1024 * 1024 }), true);
+    expect(lines[0]).toContain("Reclaimed 2");
+    expect(lines[0]).toContain("48MB");
+    expect(lines.join("\n")).not.toContain("--reclaim-response-temps");
+  });
+
+  test("locked files are surfaced honestly", () => {
+    const lines = formatResponseTempLines(result({ matched: 3, removed: 1, failed: 2, bytesRemoved: 24 * 1024 * 1024 }), true);
+    expect(lines.join("\n")).toContain("2 file(s) could not be removed");
+    expect(lines.join("\n")).toContain("in use or locked");
+  });
+
+  test("a clean machine says so in both modes", () => {
+    expect(formatResponseTempLines(result(), false)).toEqual(["  ok  No abandoned response-state temp files."]);
+    expect(formatResponseTempLines(result(), true)).toEqual(["  ok  No abandoned response-state temp files."]);
+  });
+
+  test("a partial reclaim tells the operator to run again instead of silently stopping", () => {
+    // The shape here is one the scanner can actually produce. It cannot produce
+    // eligible > removed + failed outside a dry run: an entry is counted eligible and then
+    // unlinked or failed on the same iteration, so those are always equal, and the earlier
+    // version of this warning keyed on a comparison between them and therefore never fired.
+    const lines = formatResponseTempLines(
+      result({ eligible: 512, removed: 512, bytesRemoved: 512 * 24 * 1024 * 1024, truncated: true }),
+      true,
+    );
+    expect(lines.join("\n")).toContain("Cleanup budget reached");
+    expect(lines.join("\n")).toContain("Run the command again");
+  });
+
+  test("a reclaim that finished does NOT claim files remain", () => {
+    // Ablation guard for the test above: same counts, truncated false. If the warning ever
+    // stops depending on `truncated`, this fails.
+    const lines = formatResponseTempLines(
+      result({ eligible: 512, removed: 512, bytesRemoved: 512 * 24 * 1024 * 1024 }),
+      true,
+    ).join("\n");
+    expect(lines).not.toContain("Cleanup budget reached");
+    expect(lines).not.toContain("Run the command again");
+  });
+
+  test("a truncated report says the total is a floor, not the backlog", () => {
+    const lines = formatResponseTempLines(
+      result({ matched: 4096, eligible: 4096, eligibleBytes: 96 * 1024 * 1024, truncated: true }),
+      false,
+    ).join("\n");
+    expect(lines).toContain("4096 abandoned response-state temp file(s)");
+    expect(lines).toContain("the real total is higher");
+  });
+
+  test("locked files are never described as retried automatically", () => {
+    // This command exists for the operator whose proxy will not start; in that state nothing
+    // retries anything, so promising automatic retry would be a lie to its target reader.
+    const lines = formatResponseTempLines(result({ removed: 1, failed: 2 }), true).join("\n");
+    expect(lines).not.toContain("retried automatically");
+    expect(lines).toContain("re-run this command");
+  });
+});
+
+describe("doctor reclaim wiring (end to end)", () => {
+  // The formatter tests above cannot observe deletion. This covers the call site itself:
+  // inverting the report/reclaim ternary in runDoctor must fail a test.
+  let tempHome: string;
+  let previousHome: string | undefined;
+  let logged: string[];
+  const realLog = console.log;
+
+  beforeEach(() => {
+    previousHome = process.env.OPENCODEX_HOME;
+    tempHome = join(tmpdir(), `ocx-doctor-temps-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    mkdirSync(tempHome, { recursive: true });
+    process.env.OPENCODEX_HOME = tempHome;
+    logged = [];
+    console.log = (...parts: unknown[]) => { logged.push(parts.join(" ")); };
+  });
+  afterEach(() => {
+    console.log = realLog;
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  const seedStaleTemp = (): string => {
+    const deadPid = process.pid === 4242 ? 4243 : 4242;
+    const path = join(tempHome, `responses-state.json.ocx.${deadPid}.1.tmp`);
+    writeFileSync(path, "abandoned snapshot");
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1_000);
+    utimesSync(path, old, old);
+    return path;
+  };
+
+  test("the default run reports the file and leaves it on disk", async () => {
+    const path = seedStaleTemp();
+    await runDoctor([]);
+    expect(existsSync(path)).toBe(true);
+    expect(logged.join("\n")).toContain("reclaimable");
+  });
+
+  test("the opt-in flag removes it", async () => {
+    const path = seedStaleTemp();
+    await runDoctor(["--reclaim-response-temps"]);
+    expect(existsSync(path)).toBe(false);
+    expect(logged.join("\n")).toContain("Reclaimed 1");
+  });
+
+  test("a mistyped flag warns instead of silently reporting", async () => {
+    const path = seedStaleTemp();
+    await runDoctor(["--reclaim-response-temp"]);
+    expect(existsSync(path)).toBe(true);
+    expect(logged.join("\n")).toContain("Unrecognized flag");
   });
 });

@@ -32,7 +32,7 @@ The 110 RCA (`10_root-cause-analysis.md`) cited an **ephemeral** Codex snapshot 
 **stable local checkout** the user actually runs:
 
 ```text
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs
 ```
 
 The two differ. A concrete consequence, verified during the plan audit: the stable parser

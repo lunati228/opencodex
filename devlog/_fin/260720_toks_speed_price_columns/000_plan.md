@@ -102,7 +102,7 @@
 # 260720 v2 — 구현 로드맵 (사용자 결정 확정 후)
 
 조사(000-002) 완료 후 사용자와 확정한 정책. 이 섹션이 구현 사이클의 SSOT다.
-작업 장소: 워크트리 `/Users/jun/Developer/new/700_projects/opencodex-toksdev`
+작업 장소: 워크트리 `<private-user-home>/Developer/new/700_projects/opencodex-toksdev`
 (브랜치 `codex/toksdev`, dev 기반). goalplan slug:
 `toksdev-tok-s-luna-usage-workspace-ttft-docs-fir`.
 

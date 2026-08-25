@@ -4,6 +4,8 @@ import { getCodexAccountCredential } from "./account-store";
 import { loadConfig } from "../config";
 import { resolveCodexHomeDir } from "./home";
 import { extractAccountId } from "../oauth/chatgpt";
+import { isSelectableCodexPoolAccount } from "./account-id";
+import { codexPlanKey } from "./plan";
 
 export interface CodexTokens {
   access_token: string;
@@ -77,8 +79,9 @@ function normalizedEmail(email: string | undefined | null): string | null {
   return trimmed || null;
 }
 
-function isWorkspacePlan(plan: string | undefined | null): boolean {
-  return !!plan && /team|business|enterprise|workspace|edu/i.test(plan);
+function isWorkspacePlan(plan: unknown): boolean {
+  const key = codexPlanKey(plan);
+  return !!key && /team|business|enterprise|workspace|edu/.test(key);
 }
 
 // Main login and managed pool accounts are separate duplicate buckets.
@@ -87,14 +90,14 @@ function isWorkspacePlan(plan: string | undefined | null): boolean {
 export function checkAccountIdCollision(
   chatgptAccountId: string,
   email?: string | null,
-  plan?: string | null,
+  plan?: unknown,
   excludeAccountId?: string | null,
 ): { collision: true; reason: string } | { collision: false } {
   const candidateEmail = normalizedEmail(email);
   const candidateWorkspace = isWorkspacePlan(plan);
   for (const account of loadConfig().codexAccounts ?? []) {
     if (excludeAccountId && account.id === excludeAccountId) continue;
-    if (account.isMain) continue;
+    if (!isSelectableCodexPoolAccount(account)) continue;
     if (isWorkspacePlan(account.plan) !== candidateWorkspace) continue;
     const cred = getCodexAccountCredential(account.id);
     const poolEmail = normalizedEmail(account.email);

@@ -11,7 +11,7 @@ The final state must preserve existing live `/models` discovery by default, keep
 
 ## Current State
 
-- Repository: `/Users/jun/Developer/new/700_projects/opencodex`
+- Repository: `<private-user-home>/Developer/new/700_projects/opencodex`
 - Branch: `dev`
 - Latest release baseline: `v2.1.7` / `241e327 release: v2.1.7`
 - Open PRs:
@@ -59,9 +59,9 @@ Add/absorb regression tests:
 
 Update configuration reference pages:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/configuration.md`
-- `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/ko/reference/configuration.md`
-- `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/zh-cn/reference/configuration.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/configuration.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/ko/reference/configuration.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/zh-cn/reference/configuration.md`
 
 Document:
 

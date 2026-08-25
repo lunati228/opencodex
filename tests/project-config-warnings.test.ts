@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import {
   analyzeProjectCodexConfig,
   collectProjectCodexConfigWarnings,
-  getCachedProjectConfigDiagnostics,
+  discoverProjectCodexConfigPaths,
+  explainProjectConfigBypass,
   isGlobalOpencodexRoutingActive,
   invalidateProjectConfigDiagnosticsCache,
+  parseTomlDocument,
   parseTrustedProjectPathsFromCodexConfig,
   relPath,
   resolveEffectiveProjectModelProvider,
@@ -118,7 +120,17 @@ base_url = "http://127.0.0.1:10100/v1"
   });
 });
 
-describe("parseTrustedProjectPathsFromCodexConfig", () => {
+describe("parseTomlDocument", () => {
+    test("malformed basic strings cannot wedge parsing and escaped strings still parse", () => {
+      const malformed = parseTomlDocument('model_provider = "' + "\\".repeat(64));
+      expect(typeof malformed.root.model_provider).toBe("string");
+
+      const valid = parseTomlDocument('model_provider = "provider\\\\name"');
+      expect(valid.root.model_provider).toBe("provider\\name");
+    }, 2_000);
+  });
+
+  describe("parseTrustedProjectPathsFromCodexConfig", () => {
   test("collects only trusted project paths", () => {
     const text = `
 [projects.'C:\\repo-a']
@@ -211,9 +223,47 @@ model_provider = "openai"
 });
 
 describe("collectProjectCodexConfigWarnings", () => {
+  test("does not discover the global config when walking through its parent directory", () => {
+    const userHome = join(testDir, "user-home");
+    const codexConfigPath = join(userHome, ".codex", "config.toml");
+    const projectDir = join(userHome, "work", "project");
+    const projectConfigPath = join(projectDir, ".codex", "config.toml");
+    const nestedCwd = join(projectDir, "nested");
+    mkdirSync(join(userHome, ".codex"), { recursive: true });
+    mkdirSync(join(projectDir, ".codex"), { recursive: true });
+    mkdirSync(nestedCwd, { recursive: true });
+    writeFileSync(codexConfigPath, `model_provider = "opencodex-retry"`);
+    writeFileSync(projectConfigPath, `model_provider = "anthropic"`);
+
+    // Bound the walk to the fixture. On Windows the OS temp directory lives under
+    // C:\Users\<user>, so an unbounded 12-parent walk climbs out of the fixture and
+    // finds the developer's REAL ~/.codex/config.toml -- which the identity check
+    // cannot exclude, because it is a genuinely different file from the fixture's
+    // codexConfigPath. The assertion is about not rediscovering the global config
+    // through a parent walk, not about how far the walk may travel.
+    expect(discoverProjectCodexConfigPaths({ cwd: nestedCwd, codexConfigPath, maxWalkParents: 3 }))
+      .toEqual([projectConfigPath]);
+  });
+
+  test("does not discover a project candidate that aliases the global config through a symlink", () => {
+    if (process.platform === "win32") return;
+    const userHome = join(testDir, "symlink-home");
+    const candidatePath = join(userHome, ".codex", "config.toml");
+    const globalAlias = join(testDir, "global-config-link.toml");
+    const projectDir = join(userHome, "work", "project");
+    mkdirSync(join(userHome, ".codex"), { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(candidatePath, `model_provider = "opencodex-retry"`);
+    symlinkSync(candidatePath, globalAlias);
+
+    expect(discoverProjectCodexConfigPaths({ cwd: projectDir, codexConfigPath: globalAlias }))
+      .not.toContain(candidatePath);
+  });
+
   test("skips untrusted projects even when they define bypass config", () => {
     const escaped = testDir.replace(/\\/g, "\\\\");
     const projectDir = join(testDir, "proj");
+    const codexConfigPath = join(process.env.CODEX_HOME!, "config.toml");
     writeGlobalRoutingConfig(`
 [projects.'${escaped}\\proj']
 trust_level = "untrusted"
@@ -224,28 +274,54 @@ model_provider = "anthropic"
 [model_providers.anthropic]
 name = "anthropic"
 `);
-    expect(collectProjectCodexConfigWarnings()).toEqual([]);
+    expect(collectProjectCodexConfigWarnings({ cwd: testDir, codexConfigPath })).toEqual([]);
   });
 
-  test("caches diagnostics for repeated API reads", () => {
+  test("uncached collection reflects project config changes", () => {
     const projectDir = join(testDir, "proj");
     const codexConfigPath = join(process.env.CODEX_HOME!, "config.toml");
+    const projectConfigPath = join(projectDir, ".codex", "config.toml");
     writeGlobalRoutingConfig(`
 [projects.'${projectDir}']
 trust_level = "trusted"
 `);
     mkdirSync(join(projectDir, ".codex"), { recursive: true });
-    writeFileSync(join(projectDir, ".codex", "config.toml"), `
+    writeFileSync(projectConfigPath, `
 model_provider = "anthropic"
 [model_providers.anthropic]
 name = "anthropic"
 `);
-    // Use collectProjectCodexConfigWarnings with explicit cwd to avoid real-CWD leakage
-    const first = collectProjectCodexConfigWarnings({ cwd: testDir, codexConfigPath });
+    // Parent discovery may legitimately find a real user config above the OS temp
+    // directory, so scope this assertion to the fixture project.
+    const first = collectProjectCodexConfigWarnings({ cwd: testDir, codexConfigPath })
+      .filter(warning => warning.path === projectConfigPath);
     expect(first.length).toBe(1);
-    writeFileSync(join(projectDir, ".codex", "config.toml"), `model_provider = "openai"`);
-    // Stale call still returns old result (no invalidation)
-    const second = collectProjectCodexConfigWarnings({ cwd: testDir, codexConfigPath });
+    writeFileSync(projectConfigPath, `model_provider = "openai"`);
+    // Direct collection bypasses the diagnostics cache and sees the new file.
+    const second = collectProjectCodexConfigWarnings({ cwd: testDir, codexConfigPath })
+      .filter(warning => warning.path === projectConfigPath);
     expect(second.length).toBe(0);
+  });
+});
+
+describe("explainProjectConfigBypass", () => {
+  const warningFor = (detail: string) => [{
+    path: "/repo/.codex/config.toml",
+    code: "model_provider_root" as const,
+    detail,
+    message: "fixture",
+  }];
+
+  test("humanizes OpenCode provider families only at an identifier boundary", () => {
+    expect(explainProjectConfigBypass(warningFor("opencode"))).toContain("uses OpenCode ");
+    expect(explainProjectConfigBypass(warningFor("opencode-go"))).toContain("uses OpenCode ");
+    expect(explainProjectConfigBypass(warningFor("opencode_go"))).toContain("uses OpenCode Go ");
+  });
+
+  test("does not mislabel OpenCodex-prefixed provider ids as OpenCode", () => {
+    expect(explainProjectConfigBypass(warningFor("opencodex"))).toContain("uses OpenCodex ");
+    expect(explainProjectConfigBypass(warningFor("opencodex-retry")))
+      .toContain("uses opencodex-retry ");
+    expect(explainProjectConfigBypass(warningFor("opencodeish"))).toContain("uses opencodeish ");
   });
 });

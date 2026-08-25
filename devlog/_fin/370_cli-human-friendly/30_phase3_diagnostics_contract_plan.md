@@ -13,7 +13,7 @@ This phase should start only after Phase 2 has made help/version routing predict
 Authoritative matrix:
 
 ```path
-/Users/jun/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/11_help_surface_matrix.md
+<private-user-home>/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/11_help_surface_matrix.md
 ```
 
 Relevant findings:
@@ -42,7 +42,7 @@ Relevant findings:
 
 ## Planned Files
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts`
 
 Planned changes:
 
@@ -92,7 +92,7 @@ Do not include:
 - raw request/response bodies;
 - emails or account names unless a later auth-specific contract explicitly permits redacted labels.
 
-### ADD `/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts`
+### ADD `<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts`
 
 Planned tests:
 
@@ -107,7 +107,7 @@ Planned tests:
   - `email`
 - command does not start the proxy or write PID/config files in a temp home unless those files already exist.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/cli.md`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/cli.md`
 
 Planned documentation:
 
@@ -116,7 +116,7 @@ Planned documentation:
 - State additive-only schema policy.
 - State that JSON is intended for agents/scripts and excludes secrets.
 
-### OPTIONAL MODIFY `/Users/jun/Developer/new/700_projects/opencodex/structure/01_runtime.md`
+### OPTIONAL MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/structure/01_runtime.md`
 
 Only if implementation refactors status collection enough to alter runtime ownership docs. If added, document that `src/cli.ts` owns both human and JSON status formatting.
 

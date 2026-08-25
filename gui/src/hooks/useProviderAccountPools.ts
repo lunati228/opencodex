@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { AccountLoadState } from "../components/provider-workspace/types";
 import { accountNeedsReauth } from "../oauth-health-display";
+import type { AccountQuota } from "../codex-quota-utils";
 import { oauthAccountDisplayLabel } from "../provider-workspace/auth";
 
 export interface Config {
   port: number;
   defaultProvider: string;
-  providers: Record<string, { adapter: string; baseUrl: string; hasApiKey?: boolean; hasHeaders?: boolean; defaultModel?: string; models?: string[]; liveModels?: boolean; authMode?: string; keyOptional?: boolean; disabled?: boolean; note?: string; codexAccountMode?: "direct" | "pool" }>;
+  providers: Record<string, { adapter: string; baseUrl: string; hasApiKey?: boolean; hasHeaders?: boolean; defaultModel?: string; models?: string[]; liveModels?: boolean; upstreamHttpVersion?: "auto" | "http1.1" | "h1" | "http2" | "h2"; authMode?: string; keyOptional?: boolean; disabled?: boolean; note?: string; codexAccountMode?: "direct" | "pool" }>;
 }
 
 export interface OAuthStatus { loggedIn: boolean; email?: string; error?: string; done?: boolean; needsReauth?: boolean; activeAccountId?: string | null }
@@ -21,6 +22,10 @@ export interface OAuthAccount {
   healthLabel?: string;
   healthSummary?: string;
   healthAction?: string;
+  /** Per-account rate limits (providers that report usage per credential, e.g. anthropic). */
+  quota?: AccountQuota | null;
+  /** Set when the per-account probe could not reach upstream (expired login, 429, network). */
+  quotaUnavailable?: boolean;
 }
 export interface ApiKeyEntry { id: string; label?: string; masked: string; active: boolean }
 
@@ -62,6 +67,10 @@ export function useProviderAccountPools(deps: {
   const [addingKeyFor, setAddingKeyFor] = useState<string | null>(null);
   const [newKeyValue, setNewKeyValue] = useState("");
   const accountRequestGenerationRef = useRef<Record<string, number>>({});
+  // Provider lists this instance has already fetched for. The deferred loads below are deliberately
+  // uncancellable, and StrictMode double-invokes their effects, so dedupe by list identity here.
+  const accountSetsKeyRef = useRef<string | null>(null);
+  const keyPoolsKeyRef = useRef<string | null>(null);
   const switchingAccountRef = useRef<{ provider: string; accountId: string } | null>(null);
 
   const fetchAccountSets = useCallback(async (providers: string[]) => {
@@ -75,12 +84,34 @@ export function useProviderAccountPools(deps: {
       const generation = (accountRequestGenerationRef.current[provider] ?? 0) + 1;
       accountRequestGenerationRef.current[provider] = generation;
       try {
+        // Cheap local read first so account switch / reauth / remove controls appear
+        // even when Anthropic's usage endpoint is slow or timing out.
         const res = await fetch(`${apiBase}/api/oauth/accounts?provider=${encodeURIComponent(provider)}`);
         if (!res.ok) throw new Error(String(res.status));
         const data = await res.json() as { activeAccountId?: string | null; accounts?: OAuthAccount[] };
         if (!aliveRef.current || accountRequestGenerationRef.current[provider] !== generation) return true;
         setAccountSets(current => ({ ...current, [provider]: { activeAccountId: data.activeAccountId ?? null, accounts: data.accounts ?? [] } }));
         setAccountLoadStates(current => ({ ...current, [provider]: "ready" }));
+
+        // Enrich with per-account rate limits asynchronously (Anthropic reports usage
+        // per credential). Failures leave the already-ready account rows untouched.
+        void (async () => {
+          try {
+            const quotaRes = await fetch(`${apiBase}/api/oauth/accounts?provider=${encodeURIComponent(provider)}&quota=1`);
+            if (!quotaRes.ok) return;
+            const quotaData = await quotaRes.json() as { activeAccountId?: string | null; accounts?: OAuthAccount[] };
+            if (!aliveRef.current || accountRequestGenerationRef.current[provider] !== generation) return;
+            setAccountSets(current => ({
+              ...current,
+              [provider]: {
+                activeAccountId: quotaData.activeAccountId ?? data.activeAccountId ?? null,
+                accounts: quotaData.accounts ?? data.accounts ?? [],
+              },
+            }));
+          } catch {
+            /* keep local account rows without quota enrichment */
+          }
+        })();
         return true;
       } catch {
         if (!aliveRef.current || accountRequestGenerationRef.current[provider] !== generation) return true;
@@ -212,8 +243,16 @@ export function useProviderAccountPools(deps: {
   );
   useEffect(() => {
     if (oauthCardProviders.length === 0) return;
-    const timeout = window.setTimeout(() => { void fetchAccountSets(oauthCardProviders); }, 0);
-    return () => window.clearTimeout(timeout);
+    // Deferred by a microtask, not a timer: a timer had to be cancelled in cleanup, so a mount
+    // followed by an immediate unmount (tab switch, provider list churn) issued no request and
+    // never retried. A microtask keeps the state update out of the effect body while still
+    // guaranteeing the request goes out.
+    // Keyed on the provider list because this effect re-runs whenever that memo changes, and
+    // StrictMode double-invokes it on mount; an uncancellable microtask would otherwise duplicate.
+    const key = oauthCardProviders.join(",");
+    if (accountSetsKeyRef.current === key) return;
+    accountSetsKeyRef.current = key;
+    void Promise.resolve().then(() => { void fetchAccountSets(oauthCardProviders); });
   }, [fetchAccountSets, oauthCardProviders]);
 
   const keyCardProviders = useMemo(
@@ -222,8 +261,10 @@ export function useProviderAccountPools(deps: {
   );
   useEffect(() => {
     if (keyCardProviders.length === 0) return;
-    const timeout = window.setTimeout(() => { void fetchKeyPools(keyCardProviders); }, 0);
-    return () => window.clearTimeout(timeout);
+    const key = keyCardProviders.join(",");
+    if (keyPoolsKeyRef.current === key) return;
+    keyPoolsKeyRef.current = key;
+    void Promise.resolve().then(() => { void fetchKeyPools(keyCardProviders); });
   }, [fetchKeyPools, keyCardProviders]);
 
   const activeAccountNeedsReauth = useMemo(

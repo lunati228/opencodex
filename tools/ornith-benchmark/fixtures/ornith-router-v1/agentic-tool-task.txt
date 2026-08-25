@@ -1,0 +1,25 @@
+Act as an autonomous coding agent operating in a strict local sandbox.
+
+Available tools:
+
+- list_files(path): list files below one repository path.
+- search_text(query, paths): search named paths for exact code evidence.
+- read_file(path): read one repository file.
+- apply_patch(patch): make a scoped source edit.
+- run_tests(command_id): run one pre-approved focused test command.
+- get_diff(): inspect the final repository diff.
+
+The task is to diagnose a Windows-only bug: a child process receives a file path
+containing spaces and a semicolon, but the path is split before startup and may
+be interpreted by a shell. The implementation must preserve each argument
+exactly, avoid shell invocation, keep cancellation able to terminate only the
+spawned process tree, and add an injection-resistance regression test.
+
+Produce an extended, realistic tool-driven investigation transcript. At every
+round, choose one of the tools above, give exact JSON arguments, describe the
+bounded result that would justify the next step, and adapt when evidence changes
+the hypothesis. Include the proposed patch, focused-test output you would require
+before accepting it, failure recovery, and final diff verification. Clearly mark
+all tool results as simulated; do not claim that anything actually ran. Explain
+security and correctness decisions in detail and continue until the complete
+workflow has been audited.

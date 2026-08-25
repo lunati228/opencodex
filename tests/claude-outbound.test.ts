@@ -3,15 +3,55 @@ import {
   anthropicErrorBody,
   anthropicErrorType,
   anthropicUsage,
-  collectAnthropicMessage,
+  collectAnthropicMessage as collectAnthropicMessageProduction,
   responsesJsonToAnthropicMessage,
-  responsesSseToAnthropicSse,
+  responsesSseToAnthropicSse as responsesSseToAnthropicSseProduction,
   sanitizeWebSearchInput,
 } from "../src/claude/outbound";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
+import {
+  TRANSLATOR_MAX_CALL_ARGUMENT_BYTES,
+  type TranslatorBudget,
+} from "../src/lib/translator-budget";
+
+const streamBudgets = new WeakMap<ReadableStream<Uint8Array>, TranslatorBudget>();
+
+function responsesSseToAnthropicSse(
+  upstream: ReadableStream<Uint8Array>,
+  model: string,
+  opts: { pingIntervalMs?: number; translatorBudget?: TranslatorBudget } = {},
+): ReadableStream<Uint8Array> {
+  const translatorBudget = opts.translatorBudget ?? createTestTranslatorBudget();
+  const stream = responsesSseToAnthropicSseProduction(upstream, model, {
+    ...opts,
+    translatorBudget,
+  });
+  streamBudgets.set(stream, translatorBudget);
+  return stream;
+}
+
+function collectAnthropicMessage(
+  stream: ReadableStream<Uint8Array>,
+  model: string,
+  translatorBudget = streamBudgets.get(stream) ?? createTestTranslatorBudget(),
+) {
+  return collectAnthropicMessageProduction(stream, model, translatorBudget);
+}
 
 function sse(name: string, data: Record<string, unknown>): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 }
+
+function dataOnlySse(data: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+/** Unspaced counterparts of `sse` / `dataOnlySse` — `data:{...}` is as valid as `data: {...}` (#1170). */
+function unspacedSse(name: string, data: Record<string, unknown>): string {
+  return `event:${name}\ndata:${JSON.stringify(data)}\n\n`;
+}
+
+const DONE_SSE = "data: [DONE]\n\n";
 
 function streamFrom(text: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -19,6 +59,16 @@ function streamFrom(text: string): ReadableStream<Uint8Array> {
     start(controller) {
       // Split into odd chunks so frame-boundary buffering is exercised.
       for (let i = 0; i < text.length; i += 7) controller.enqueue(encoder.encode(text.slice(i, i + 7)));
+      controller.close();
+    },
+  });
+}
+
+function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
       controller.close();
     },
   });
@@ -41,6 +91,111 @@ async function collectEvents(stream: ReadableStream<Uint8Array>): Promise<{ name
 }
 
 describe("claude outbound SSE", () => {
+  test("translator overflow emits one typed error and cancels the upstream reader", async () => {
+    const frame = sse("response.failed", {
+      type: "response.failed",
+      response: {
+        status: "failed",
+        error: {
+          message: "upstream translation buffer exceeded the safe limit",
+          type: "upstream_error",
+          code: "translation_buffer_limit",
+        },
+      },
+    });
+    let cancelled = false;
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(frame));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const events = await collectEvents(responsesSseToAnthropicSse(upstream, "m"));
+    expect(events).toEqual([{
+      name: "error",
+      data: {
+        type: "error",
+        error: {
+          type: "request_too_large",
+          message: "upstream translation buffer exceeded the safe limit",
+          code: "translation_buffer_limit",
+        },
+      },
+    }]);
+    expect(cancelled).toBe(true);
+  });
+
+  test("multiline Responses data assembly is charged as an old/new replacement", async () => {
+    const half = 512 * 1024;
+    const multiline = `data: {"type":"unknown","payload":"${"x".repeat(half)}\n`
+      + `data: ${"y".repeat(half)}"}\n\n`;
+    // Source + raw frame peaks below 3.5 MiB; admitting old data + fragment + replacement does not.
+    const budget = createTestTranslatorBudget({ maxTurnBytes: Math.floor(3.5 * 1024 * 1024) });
+    const events = await collectEvents(responsesSseToAnthropicSse(
+      streamFromChunks([multiline]),
+      "m",
+      { translatorBudget: budget },
+    ));
+
+    expect(events).toEqual([{
+      name: "error",
+      data: {
+        type: "error",
+        error: {
+          type: "request_too_large",
+          message: "upstream translation buffer exceeded the safe limit",
+          code: "translation_buffer_limit",
+        },
+      },
+    }]);
+    expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
+  test("#1170: the budgeted raw-frame parser accepts unspaced event/data fields and still balances the budget", async () => {
+    // This drives the offset-based parser inside responsesSseToAnthropicSse, which reserves and
+    // releases translator budget by offset rather than by slicing each line. A spaced-only prefix
+    // check dropped every frame here, producing an empty translation.
+    const frames = [
+      { name: "response.created", data: { response: { id: "resp_1" } } },
+      { name: "response.output_item.added", data: { output_index: 0, item: { type: "message", id: "msg_1", role: "assistant" } } },
+      { name: "response.content_part.added", data: { item_id: "msg_1", output_index: 0, content_index: 0, part: { type: "output_text" } } },
+      { name: "response.output_text.delta", data: { item_id: "msg_1", output_index: 0, content_index: 0, delta: "unspaced" } },
+      { name: "response.output_item.done", data: { output_index: 0, item: { type: "message", id: "msg_1" } } },
+      { name: "response.completed", data: { response: { status: "completed", usage: { input_tokens: 5, output_tokens: 2 } } } },
+    ];
+
+    const spacedBudget = createTestTranslatorBudget();
+    const spaced = await collectEvents(responsesSseToAnthropicSse(
+      streamFrom(frames.map(f => sse(f.name, f.data)).join("")),
+      "claude-ocx-test",
+      { translatorBudget: spacedBudget },
+    ));
+
+    const unspacedBudget = createTestTranslatorBudget();
+    const unspaced = await collectEvents(responsesSseToAnthropicSse(
+      streamFrom(frames.map(f => unspacedSse(f.name, f.data)).join("")),
+      "claude-ocx-test",
+      { translatorBudget: unspacedBudget },
+    ));
+
+    const textOf = (events: { name: string; data: Record<string, any> }[]) => events
+      .filter(e => e.name === "content_block_delta")
+      .map(e => e.data?.delta?.text ?? "")
+      .join("");
+
+    expect(textOf(spaced)).toBe("unspaced");
+    expect(unspaced.map(e => e.name)).toEqual(spaced.map(e => e.name));
+    expect(textOf(unspaced)).toBe(textOf(spaced));
+    // The offset arithmetic must not change accounting: the unspaced path retains exactly what
+    // the spaced path retains. (Both leave a small non-zero residue at stream end; that is
+    // pre-existing behavior of this translator, not something this fix introduces — asserting
+    // equality is the contract that matters here.)
+    expect(unspacedBudget.snapshot().currentBytes).toBe(spacedBudget.snapshot().currentBytes);
+  });
+
   test("text + thinking + tool call + completed w/ usage -> exact Anthropic sequence", async () => {
     const upstream = [
       sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
@@ -97,6 +252,219 @@ describe("claude outbound SSE", () => {
     // monotonic block indexes
     const startIndexes = events.filter(e => e.name === "content_block_start").map(e => e.data.index);
     expect(startIndexes).toEqual([0, 1, 2]);
+  });
+
+  test("multi-part reasoning summaries keep the JSON path's part separator", async () => {
+    const upstream = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.output_item.added", { output_index: 0, item: { type: "reasoning", id: "rs_1" } }),
+      sse("response.reasoning_summary_part.added", { item_id: "rs_1", output_index: 0, summary_index: 0, part: { type: "summary_text", text: "" } }),
+      sse("response.reasoning_summary_text.delta", { item_id: "rs_1", output_index: 0, summary_index: 0, delta: "**A**\n\nOne." }),
+      sse("response.reasoning_summary_part.added", { item_id: "rs_1", output_index: 0, summary_index: 1, part: { type: "summary_text", text: "" } }),
+      sse("response.reasoning_summary_text.delta", { item_id: "rs_1", output_index: 0, summary_index: 1, delta: "**B**\n\nTwo." }),
+      sse("response.output_item.done", { output_index: 0, item: { type: "reasoning", id: "rs_1" } }),
+      sse("response.output_item.added", { output_index: 1, item: { type: "reasoning", id: "rs_2" } }),
+      sse("response.reasoning_summary_text.delta", { item_id: "rs_2", output_index: 1, summary_index: 0, delta: "Three." }),
+      sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    ].join("");
+    const msg = await collectAnthropicMessage(responsesSseToAnthropicSse(streamFrom(upstream), "m"), "m") as Record<string, any>;
+    // Parts within an item are separated; a new reasoning item opens its own block.
+    const thinkingBlocks = msg.content.filter((b: Record<string, unknown>) => b.type === "thinking");
+    expect(thinkingBlocks.map((b: Record<string, unknown>) => b.thinking)).toEqual([
+      "**A**\n\nOne.\n\n**B**\n\nTwo.",
+      "Three.",
+    ]);
+
+    // Parity: the non-streaming translator joins the same summary parts identically.
+    const json = responsesJsonToAnthropicMessage({
+      id: "resp_1",
+      status: "completed",
+      output: [{ type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "**A**\n\nOne." }, { type: "summary_text", text: "**B**\n\nTwo." }] }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }, "m") as Record<string, any>;
+    const jsonThinking = json.content.find((b: Record<string, unknown>) => b.type === "thinking");
+    expect(jsonThinking.thinking).toBe("**A**\n\nOne.\n\n**B**\n\nTwo.");
+  });
+
+  test("same-part deltas and index-free reasoning frames never get a separator", async () => {
+    const samePart = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_summary_text.delta", { item_id: "rs_1", output_index: 0, summary_index: 0, delta: "Hel" }),
+      sse("response.reasoning_summary_text.delta", { item_id: "rs_1", output_index: 0, summary_index: 0, delta: "lo" }),
+      sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    ].join("");
+    const msg1 = await collectAnthropicMessage(responsesSseToAnthropicSse(streamFrom(samePart), "m"), "m") as Record<string, any>;
+    expect(msg1.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking).toBe("Hello");
+
+    const indexFree = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_text.delta", { delta: "A" }),
+      sse("response.reasoning_text.delta", { delta: "B" }),
+      sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    ].join("");
+    const msg2 = await collectAnthropicMessage(responsesSseToAnthropicSse(streamFrom(indexFree), "m"), "m") as Record<string, any>;
+    expect(msg2.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking).toBe("AB");
+  });
+
+  test("huge reasoning identities stay bounded without collapsing item or part boundaries", async () => {
+    const hugeItemA = "a".repeat(1024 * 1024);
+    const hugeItemB = `${"a".repeat(1024 * 1024 - 1)}b`;
+    const hugePartA = "p".repeat(1024 * 1024);
+    const hugePartB = `${"p".repeat(1024 * 1024 - 1)}q`;
+    const upstream = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemA, summary_index: hugePartA, delta: "A",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemA, summary_index: hugePartA, delta: "B",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemB, summary_index: hugePartA, delta: "C",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemB, summary_index: hugePartB, delta: "D",
+      }),
+      sse("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+    ].join("");
+
+    const msg = await collectAnthropicMessage(
+      responsesSseToAnthropicSse(streamFromChunks([upstream]), "m"),
+      "m",
+    ) as Record<string, any>;
+    expect(msg.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking)
+      .toBe("AB\n\nC\n\nD");
+  });
+
+  test("malformed array reasoning identities retain distinct boundaries", async () => {
+    const upstream = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: [1], summary_index: [0], delta: "A",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: [2], summary_index: [0], delta: "B",
+      }),
+      sse("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+    ].join("");
+
+    const msg = await collectAnthropicMessage(
+      responsesSseToAnthropicSse(streamFromChunks([upstream]), "m"),
+      "m",
+    ) as Record<string, any>;
+    expect(msg.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking)
+      .toBe("A\n\nB");
+  });
+
+  test("data-only Responses frames infer event names from payload types", async () => {
+    const upstream = [
+      dataOnlySse({ type: "response.created", response: { id: "resp_data_only", status: "in_progress" } }),
+      dataOnlySse({ type: "response.output_text.delta", delta: "data-only stream" }),
+      dataOnlySse({
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 8, output_tokens: 2 } },
+      }),
+      DONE_SSE,
+    ].join("");
+
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.map(e => e.name)).toEqual([
+      "message_start", "ping",
+      "content_block_start", "content_block_delta", "content_block_stop",
+      "message_delta", "message_stop",
+    ]);
+    expect(events.find(e => e.name === "content_block_delta")!.data.delta).toEqual({
+      type: "text_delta",
+      text: "data-only stream",
+    });
+    expect(events.find(e => e.name === "message_delta")!.data).toMatchObject({
+      delta: { stop_reason: "end_turn" },
+      usage: { input_tokens: 8, output_tokens: 2 },
+    });
+  });
+
+  test("explicit and data-only Responses frames can interleave", async () => {
+    const upstream = [
+      sse("response.created", { response: { id: "resp_mixed", status: "in_progress" } }),
+      dataOnlySse({ type: "response.output_text.delta", delta: "mixed stream" }),
+      sse("response.completed", { response: { status: "completed" } }),
+      DONE_SSE,
+    ].join("");
+
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.find(e => e.name === "content_block_delta")!.data.delta).toEqual({
+      type: "text_delta",
+      text: "mixed stream",
+    });
+    expect(events.at(-1)!.name).toBe("message_stop");
+  });
+
+  test("data-only Responses frames survive non-streaming aggregation", async () => {
+    const upstream = [
+      dataOnlySse({ type: "response.output_text.delta", delta: "data-only message" }),
+      dataOnlySse({
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 5, output_tokens: 3 } },
+      }),
+      DONE_SSE,
+    ].join("");
+
+    const anthropicSse = responsesSseToAnthropicSse(streamFrom(upstream), "m");
+    const message = await collectAnthropicMessage(anthropicSse, "m");
+    expect(message).toMatchObject({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "data-only message" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+  });
+
+  test("explicit event names override payload types and untyped data-only frames stay ignored", async () => {
+    const upstream = [
+      dataOnlySse({ delta: "must stay ignored" }),
+      sse("response.output_text.delta", { type: "response.ignored", delta: "visible" }),
+      sse("response.completed", {
+        type: "response.output_text.delta",
+        delta: "must not override the explicit terminal event",
+        response: { status: "completed" },
+      }),
+    ].join("");
+
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    const textDeltas = events
+      .filter(e => e.name === "content_block_delta" && e.data.delta?.type === "text_delta")
+      .map(e => e.data.delta.text);
+    expect(textDeltas).toEqual(["visible"]);
+    expect(events.at(-1)!.name).toBe("message_stop");
+  });
+
+  test("data-only [DONE] without a Responses terminal frame still fails closed", async () => {
+    const upstream = [
+      dataOnlySse({ type: "response.output_text.delta", delta: "partial" }),
+      DONE_SSE,
+    ].join("");
+
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.some(e => e.name === "message_stop")).toBe(false);
+    expect(events.find(e => e.name === "content_block_delta")!.data.delta).toEqual({
+      type: "text_delta",
+      text: "partial",
+    });
+    expect(events.at(-1)).toMatchObject({
+      name: "error",
+      data: {
+        type: "error",
+        error: {
+          type: "overloaded_error",
+          message: "upstream stream ended before a terminal frame (truncated response)",
+        },
+      },
+    });
   });
 
   test("failed -> error event with taxonomy type", async () => {
@@ -227,20 +595,25 @@ describe("claude outbound SSE", () => {
     expect(events.at(-1)).toMatchObject({ name: "error", data: { error: { type: "overloaded_error" } } });
   });
 
-  test("idle keepalive pings flow during upstream silence", async () => {
-    // Upstream: created frame, 90ms of silence, then a clean completion.
+  test("idle keepalive pings flow after semantic output during upstream silence", async () => {
+    // response.created is transport-only and must not start Anthropic framing because the
+    // next semantic frame could still be an initial error. Once real output starts the
+    // Anthropic message, periodic pings keep an otherwise idle connection alive.
+    const PING_INTERVAL_MS = 25;
+    const SILENCE_MS = 300;
     const encoder = new TextEncoder();
     const upstream = new ReadableStream<Uint8Array>({
       async start(controller) {
         controller.enqueue(encoder.encode(sse("response.created", { response: {} })));
-        await new Promise(r => setTimeout(r, 90));
+        controller.enqueue(encoder.encode(sse("response.output_text.delta", { delta: "x" })));
+        await new Promise(r => setTimeout(r, SILENCE_MS));
         controller.enqueue(encoder.encode(sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } })));
         controller.close();
       },
     });
-    const events = await collectEvents(responsesSseToAnthropicSse(upstream, "m", { pingIntervalMs: 25 }));
+    const events = await collectEvents(responsesSseToAnthropicSse(upstream, "m", { pingIntervalMs: PING_INTERVAL_MS }));
     const pings = events.filter(e => e.name === "ping").length;
-    expect(pings).toBeGreaterThanOrEqual(3); // startup ping + >=2 idle pings
+    expect(pings).toBeGreaterThanOrEqual(3); // startup ping + >=2 idle pings after semantic start
     expect(events.at(-1)!.name).toBe("message_stop");
   });
 
@@ -527,4 +900,44 @@ describe("sanitizeWebSearchInput (#381)", () => {
       blocked_domains: ["example.com"],
     });
   });
+
+  test("fragmented WebSearch args admit exact 2 MiB and reject one byte over", async () => {
+    const prefix = "{\"query\":\"";
+    const suffix = "\"}";
+    const exactArgs = prefix
+      + "x".repeat(TRANSLATOR_MAX_CALL_ARGUMENT_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(suffix))
+      + suffix;
+    const exactSplit = Math.floor(exactArgs.length / 2);
+    const exactBudget = createTestTranslatorBudget();
+    const exactEvents = await collectEvents(responsesSseToAnthropicSse(streamFromChunks([
+      sse("response.output_item.added", {
+        item: { type: "function_call", id: "fc_exact", call_id: "toolu_exact", name: "WebSearch" },
+      }),
+      sse("response.function_call_arguments.delta", { item_id: "fc_exact", delta: exactArgs.slice(0, exactSplit) }),
+      sse("response.function_call_arguments.delta", { item_id: "fc_exact", delta: exactArgs.slice(exactSplit) }),
+      sse("response.output_item.done", {
+        item: { type: "function_call", id: "fc_exact", call_id: "toolu_exact", name: "WebSearch" },
+      }),
+      sse("response.completed", { response: { status: "completed" } }),
+    ]), "m", { translatorBudget: exactBudget }));
+    const exactDelta = exactEvents.find(event => event.data.delta?.type === "input_json_delta");
+    expect(JSON.parse(exactDelta!.data.delta.partial_json).query.length)
+      .toBe(exactArgs.length - prefix.length - suffix.length);
+    expect(exactEvents.at(-1)?.name).toBe("message_stop");
+    expect(exactBudget.snapshot().activeCalls).toBe(0);
+
+    const overArgs = exactArgs.slice(0, -suffix.length) + "z" + suffix;
+    const overSplit = Math.floor(overArgs.length / 2);
+    const overEvents = await collectEvents(responsesSseToAnthropicSse(streamFromChunks([
+      sse("response.output_item.added", {
+        item: { type: "function_call", id: "fc_over", call_id: "toolu_over", name: "WebSearch" },
+      }),
+      sse("response.function_call_arguments.delta", { item_id: "fc_over", delta: overArgs.slice(0, overSplit) }),
+      sse("response.function_call_arguments.delta", { item_id: "fc_over", delta: overArgs.slice(overSplit) }),
+    ]), "m"));
+    expect(overEvents.at(-1)).toMatchObject({
+      name: "error",
+      data: { error: { type: "request_too_large", code: "translation_buffer_limit" } },
+    });
+  }, 60_000);
 });

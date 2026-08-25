@@ -7,7 +7,7 @@ Date: 2026-07-15 · Class: C3 (cross-module, user-facing Windows behavior, tests
 
 A Windows user reported (DC gallery post, 2026-07-15) that blocked-skill document elision
 silently fails on Windows: `maybeElideSkillText` extracts the skill directory basename with
-`dir.split("/")`, which cannot split `C:\Users\...\claude-api`, so a ~790K-char (~840KB)
+`dir.split("/")`, which cannot split `<private-user-home>\claude-api`, so a ~790K-char (~840KB)
 skill bundle rode through to routed models (usage.jsonl showed ~297K-token inputs to
 gpt-5.6-sol). Fix that defect, then audit and remediate the whole repo for the same family
 of cross-platform hazards.
@@ -109,7 +109,7 @@ Activation scenarios (C-ACTIVATION-GROUNDING-01), one owning test per conditiona
 
 | Scenario | Owning test |
 |----------|-------------|
-| 010 Windows base-dir elided | tests/claude-inbound.test.ts new: text-block carrier with `C:\Users\...\claude-api` |
+| 010 Windows base-dir elided | tests/claude-inbound.test.ts new: text-block carrier with `<private-user-home>\claude-api` |
 | 010 POSIX unchanged / non-blocked / drive-relative | existing carrier tests + 2 new cases |
 | 020 D2 `ocx claude` win32 `.cmd` resolution | tests/claude-cli.test.ts: injected spawn+platform, asserts cmd.exe argv |
 | 020 D2 arg preservation (spaces/quotes/metachars) | tests/claude-cli.test.ts: escaping case |

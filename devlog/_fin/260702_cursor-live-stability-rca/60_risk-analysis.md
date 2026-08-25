@@ -20,7 +20,7 @@ Open input: S1 (how jawcode answers each query) may flip R2/R6 defaults.
 
 S1/S2 results (landed):
 
-- jawcode (`/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/providers/cursor.ts:603-621`)
+- jawcode (`<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/providers/cursor.ts:603-621`)
   does NOT handle `interactionQuery` at all — no precedent to copy; our handler
   is first. Its dispatch covers only interactionUpdate/kv/exec/checkpoint.
 - Reply shapes are trivial (S2): `CreatePlanSuccess` is an EMPTY message (+

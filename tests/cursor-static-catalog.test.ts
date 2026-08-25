@@ -96,6 +96,8 @@ describe("Cursor static Codex catalog", () => {
     expect(entries.find(item => item.slug === "cursor/gpt-5.6-luna")?.context_window).toBe(1_000_000);
     expect(entries.find(item => item.slug === "cursor/glm-5.2")?.context_window).toBe(1_000_000);
     expect(entries.find(item => item.slug === "cursor/composer-2.5-fast")?.context_window).toBe(200_000);
+    // OpenCodex universally appends synthetic max/ultra so spawn_agent effort validation
+    // stays provider-independent; Cursor's request mapping clamps unsupported wire values.
     expect(entries.find(item => item.slug === "cursor/gpt-5.5")?.supported_reasoning_levels)
       .toMatchObject([{ effort: "low" }, { effort: "medium" }, { effort: "high" }, { effort: "max" }, { effort: "ultra" }]);
     expect(entries.find(item => item.slug === "cursor/gpt-5.6-sol")?.supported_reasoning_levels)
@@ -109,6 +111,7 @@ describe("Cursor static Codex catalog", () => {
         { effort: "max" },
         { effort: "ultra" },
       ]);
+    // glm-5.2 declares high + max — `max` here is REAL, not padding, so it stays.
     expect(entries.find(item => item.slug === "cursor/glm-5.2")?.supported_reasoning_levels)
       .toMatchObject([{ effort: "high" }, { effort: "max" }, { effort: "ultra" }]);
   });

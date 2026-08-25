@@ -1,19 +1,40 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { describe, expect, test, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  MANAGED_AGENTS_TABLE_MARKER,
+  MANAGED_SUBAGENT_DEFAULT_MARKER,
+} from "../src/codex/subagent-defaults";
+import { SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 
+setDefaultTimeout(SPAWN_BUDGET_MS);
+
 function runScript(codexHome: string, script: string): { stdout: string; stderr: string; status: number } {
-  const result = spawnSync(process.execPath, ["--eval", script], {
+  const isolatedScript = `
+    require("./src/lib/windows-secret-acl").setPlatformForTests("linux");
+    ${script}
+  `;
+  const result = spawnSync(process.execPath, ["--eval", isolatedScript], {
     cwd: repoRoot,
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: opencodexHome(codexHome) },
     encoding: "utf8",
+    timeout: SPAWN_BUDGET_MS - 5_000,
   });
   return { stdout: result.stdout?.trim() ?? "", stderr: result.stderr?.trim() ?? "", status: result.status ?? 1 };
+}
+
+function opencodexHome(codexHome: string): string {
+  return join(codexHome, ".opencodex-test");
+}
+
+function protectedJournalPath(codexHome: string): string {
+  return join(opencodexHome(codexHome), "codex-journal.json");
 }
 
 describe("codex-journal", () => {
@@ -21,6 +42,7 @@ describe("codex-journal", () => {
 
   beforeEach(() => {
     testDir = mkdtempSync(join(tmpdir(), "ocx-journal-"));
+    mkdirSync(opencodexHome(testDir));
     writeFileSync(join(testDir, "config.toml"), "# original config\nmodel_provider = \"openai\"\n", "utf8");
   });
 
@@ -34,7 +56,7 @@ describe("codex-journal", () => {
       writeJournal();
       const fs = require("fs");
       const path = require("path");
-      const journalPath = path.join(process.env.CODEX_HOME, "opencodex-journal.json");
+      const journalPath = path.join(process.env.OPENCODEX_HOME, "codex-journal.json");
       const exists = fs.existsSync(journalPath);
       const data = exists ? JSON.parse(fs.readFileSync(journalPath, "utf-8")) : null;
       console.log(JSON.stringify({ exists, version: data?.version, hasPid: typeof data?.pid === "number" }));
@@ -44,10 +66,74 @@ describe("codex-journal", () => {
     expect(out.exists).toBe(true);
     expect(out.version).toBe(1);
     expect(out.hasPid).toBe(true);
+    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(false);
+  });
+
+  test("legacy CODEX_HOME journal migrates into the protected OpenCodex directory", () => {
+    const legacyPath = join(testDir, "opencodex-journal.json");
+    const original = "# legacy rollback bytes\n";
+    writeFileSync(legacyPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from(original).toString("base64"),
+      originalProfile: null,
+      pid: process.pid,
+      timestamp: new Date().toISOString(),
+    }), "utf8");
+
+    const r = runScript(testDir, `
+      const { writeJournal } = require("./src/codex/journal");
+      writeJournal();
+      const fs = require("fs");
+      const path = require("path");
+      const current = path.join(process.env.OPENCODEX_HOME, "codex-journal.json");
+      const data = JSON.parse(fs.readFileSync(current, "utf8"));
+      console.log(JSON.stringify({
+        originalConfig: data.originalConfig,
+        legacyExists: fs.existsSync(path.join(process.env.CODEX_HOME, "opencodex-journal.json")),
+      }));
+    `);
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(Buffer.from(result.originalConfig, "base64").toString("utf8")).toBe(original);
+    expect(result.legacyExists).toBe(false);
+    expect(existsSync(protectedJournalPath(testDir))).toBe(true);
+  });
+
+  test("Windows journal writes fail before publication when the protected parent ACL is unverified", () => {
+    if (process.platform !== "win32") return;
+    const script = `
+      const acl = require("./src/lib/windows-secret-acl");
+      const principal = require("./src/lib/windows-user-principal");
+      acl.setPlatformForTests("win32");
+      principal.setWindowsPrincipalRunnerForTests(() => ({
+        success: true, exitCode: 0, timedOut: false, stdout: "S-1-5-21-1000",
+      }));
+      acl.setIcaclsRunnerForTests(() => ({
+        success: false, exitCode: null, timedOut: true, stdout: "",
+      }));
+      const { writeJournal } = require("./src/codex/journal");
+      let error = "";
+      try { writeJournal(); } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+      const fs = require("fs");
+      const path = require("path");
+      console.log(JSON.stringify({
+        error,
+        exists: fs.existsSync(path.join(process.env.OPENCODEX_HOME, "codex-journal.json")),
+      }));
+    `;
+    const result = spawnSync(process.execPath, ["--eval", script], {
+      cwd: repoRoot,
+      env: { ...process.env, CODEX_HOME: testDir, OPENCODEX_HOME: opencodexHome(testDir) },
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout.trim());
+    expect(output.error).toMatch(/ACL hardening/i);
+    expect(output.exists).toBe(false);
   });
 
   test("reconcileJournal restores config when journaled PID is dead", () => {
-    const journalPath = join(testDir, "opencodex-journal.json");
+    const journalPath = protectedJournalPath(testDir);
     const original = "# original config\nmodel_provider = \"openai\"\n";
     const modified = "# modified\nmodel_provider = \"opencodex\"\n";
     writeFileSync(join(testDir, "config.toml"), modified, "utf8");
@@ -70,8 +156,56 @@ describe("codex-journal", () => {
     expect(existsSync(journalPath)).toBe(false);
   });
 
+  test("a deliberate keep-routing shutdown is not treated as a crash", () => {
+    const journalPath = protectedJournalPath(testDir);
+    const original = "# original config\nmodel_provider = \"openai\"\n";
+    const injected = "# modified\nmodel_provider = \"opencodex\"\n";
+    writeFileSync(join(testDir, "config.toml"), injected, "utf8");
+    writeFileSync(journalPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from(original).toString("base64"),
+      originalProfile: null,
+      pid: 999999,
+      timestamp: new Date().toISOString(),
+      intentionalShutdown: true,
+    }), "utf8");
+
+    const r = runScript(testDir, `
+      const { reconcileJournal } = require("./src/codex/journal");
+      const result = reconcileJournal();
+      console.log(JSON.stringify({ restored: result }));
+    `);
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).restored).toBe(false);
+    expect(readFileSync(join(testDir, "config.toml"), "utf8")).toBe(injected);
+    expect(existsSync(journalPath)).toBe(true);
+  });
+
+  test("markJournalIntentionalShutdown keeps the snapshot and only clears the crash verdict", () => {
+    const journalPath = protectedJournalPath(testDir);
+    const original = "# original config\nmodel_provider = \"openai\"\n";
+    writeFileSync(join(testDir, "config.toml"), "# modified\n", "utf8");
+    writeFileSync(journalPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from(original).toString("base64"),
+      originalProfile: null,
+      pid: 999999,
+      timestamp: new Date().toISOString(),
+    }), "utf8");
+
+    const r = runScript(testDir, `
+      const { markJournalIntentionalShutdown } = require("./src/codex/journal");
+      markJournalIntentionalShutdown();
+      console.log(JSON.stringify({ ok: true }));
+    `);
+    expect(r.status).toBe(0);
+    const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+    expect(journal.intentionalShutdown).toBe(true);
+    expect(journal.originalConfig).toBe(Buffer.from(original).toString("base64"));
+  });
+
   test("reconcileJournal handles corrupt JSON gracefully", () => {
-    const journalPath = join(testDir, "opencodex-journal.json");
+    const journalPath = protectedJournalPath(testDir);
     writeFileSync(journalPath, "NOT VALID JSON{{{", "utf8");
 
     const r = runScript(testDir, `
@@ -95,7 +229,7 @@ describe("codex-journal", () => {
   });
 
   test("reconcileJournal skips when journaled PID is alive", () => {
-    const journalPath = join(testDir, "opencodex-journal.json");
+    const journalPath = protectedJournalPath(testDir);
     const modified = "# modified by opencodex\n";
     writeFileSync(join(testDir, "config.toml"), modified, "utf8");
     writeFileSync(journalPath, JSON.stringify({
@@ -118,7 +252,7 @@ describe("codex-journal", () => {
   });
 
   test("removeJournal cleans up", () => {
-    const journalPath = join(testDir, "opencodex-journal.json");
+    const journalPath = protectedJournalPath(testDir);
     writeFileSync(journalPath, "{}", "utf8");
 
     const r = runScript(testDir, `
@@ -126,10 +260,144 @@ describe("codex-journal", () => {
       removeJournal();
       const fs = require("fs");
       const path = require("path");
-      console.log(JSON.stringify({ exists: fs.existsSync(path.join(process.env.CODEX_HOME, "opencodex-journal.json")) }));
+      console.log(JSON.stringify({ exists: fs.existsSync(path.join(process.env.OPENCODEX_HOME, "codex-journal.json")) }));
     `);
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout).exists).toBe(false);
+  });
+
+  test("removeCodexConfig is a successful no-op when Codex is not installed", () => {
+    writeFileSync(join(testDir, "opencodex.config.toml"), 'openai_base_url = "http://127.0.0.1:10100/v1"\n', "utf8");
+    rmSync(join(testDir, "config.toml"));
+    const r = runScript(testDir, `
+      const { removeCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
+      console.log(JSON.stringify({ remove: removeCodexConfig(), restore: restoreNativeCodex() }));
+    `);
+
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.remove.success).toBe(true);
+    expect(result.remove.message).toContain("no native restore was needed");
+    expect(result.restore.success).toBe(true);
+    expect(existsSync(join(testDir, "opencodex.config.toml"))).toBe(false);
+  });
+
+  test("removeCodexConfig reports damaged managed-default cleanup and preserves the ambiguous value", () => {
+    writeFileSync(join(testDir, "config.toml"), [
+      "# Auto-injected by opencodex",
+      'openai_base_url = "http://127.0.0.1:10100/v1"',
+      "",
+      MANAGED_AGENTS_TABLE_MARKER,
+      "[agents]",
+      MANAGED_SUBAGENT_DEFAULT_MARKER,
+      "",
+      'default_subagent_model = "gpt-5.6-sol"',
+      "",
+    ].join("\n"), "utf8");
+
+    const r = runScript(testDir, `
+      const { removeCodexConfig } = require("./src/codex/inject");
+      console.log(JSON.stringify(removeCodexConfig()));
+    `);
+
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("could not be safely removed");
+    expect(result.message).toContain("orphaned managed subagent default marker");
+    const after = readFileSync(join(testDir, "config.toml"), "utf8");
+    expect(after).not.toContain("openai_base_url");
+    expect(after).toContain("# Managed by opencodex: native subagent default");
+    expect(after).toContain('default_subagent_model = "gpt-5.6-sol"');
+  });
+
+  test("removeCodexConfig ignores unsupported user-owned agents syntax when no managed marker exists", () => {
+    const userAgents = 'agents = { default_subagent_model = "user/model" }';
+    writeFileSync(join(testDir, "config.toml"), [
+      "# Auto-injected by opencodex",
+      'openai_base_url = "http://127.0.0.1:10100/v1"',
+      userAgents,
+      "",
+    ].join("\n"), "utf8");
+
+    const r = runScript(testDir, `
+      const { removeCodexConfig } = require("./src/codex/inject");
+      console.log(JSON.stringify(removeCodexConfig()));
+    `);
+
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.success).toBe(true);
+    const after = readFileSync(join(testDir, "config.toml"), "utf8");
+    expect(after).not.toContain("openai_base_url");
+    expect(after).toContain(userAgents);
+  });
+
+  test("restoreNativeCodex restores an exact unchanged journal snapshot with managed defaults", () => {
+    const original = '# original config\nmodel_provider = "openai"\n';
+    writeFileSync(join(testDir, "config.toml"), original, "utf8");
+
+    const r = runScript(testDir, `
+      const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
+      (async () => {
+        await injectCodexConfig(10100, {
+          port: 10100,
+          providers: {},
+          defaultProvider: "openai",
+          injectionModel: "gpt-5.6-sol",
+          injectionEffort: "high",
+          syncCodexSubagentDefaults: true,
+        }, { catalogPath: null });
+        console.log(JSON.stringify(restoreNativeCodex()));
+      })();
+    `);
+
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("restored from opencodex journal");
+    expect(readFileSync(join(testDir, "config.toml"), "utf8")).toBe(original);
+    expect(existsSync(protectedJournalPath(testDir))).toBe(false);
+  });
+
+  test("restoreNativeCodex reports damaged managed-default cleanup during fallback restore", () => {
+    const original = '# original config\nmodel_provider = "openai"\n';
+    writeFileSync(join(testDir, "config.toml"), original, "utf8");
+
+    const r = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
+      (async () => {
+        const configPath = path.join(process.env.CODEX_HOME, "config.toml");
+        await injectCodexConfig(10100, {
+          port: 10100,
+          providers: {},
+          defaultProvider: "openai",
+          injectionModel: "gpt-5.6-sol",
+          injectionEffort: "high",
+          syncCodexSubagentDefaults: true,
+        }, { catalogPath: null });
+        const marker = ${JSON.stringify(MANAGED_SUBAGENT_DEFAULT_MARKER)};
+        const injected = fs.readFileSync(configPath, "utf8");
+        fs.writeFileSync(configPath, injected.replace(
+          marker + '\\ndefault_subagent_model',
+          marker + '\\n\\ndefault_subagent_model',
+        ), "utf8");
+        console.log(JSON.stringify(restoreNativeCodex()));
+      })();
+    `);
+
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("could not be safely removed");
+    expect(result.message).toContain("orphaned managed subagent default marker");
+    const after = readFileSync(join(testDir, "config.toml"), "utf8");
+    expect(after).not.toContain("openai_base_url");
+    expect(after).toContain("# Managed by opencodex: native subagent default");
+    expect(after).toContain('default_subagent_model = "gpt-5.6-sol"');
+    expect(existsSync(protectedJournalPath(testDir))).toBe(true);
   });
 
   test("restoreNativeCodex uses journal snapshot for normal stop without losing custom defaults", () => {
@@ -175,7 +443,7 @@ describe("codex-journal", () => {
     expect(JSON.parse(r.stdout).success).toBe(true);
     expect(readFileSync(join(testDir, "config.toml"), "utf8")).toBe(originalConfig);
     expect(readFileSync(join(testDir, "opencodex.config.toml"), "utf8")).toBe(originalProfile);
-    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(false);
+    expect(existsSync(protectedJournalPath(testDir))).toBe(false);
   });
 
   test("injectCodexConfig creates a restorable journal for direct sync/init paths", () => {
@@ -214,7 +482,14 @@ describe("codex-journal", () => {
       const path = require("path");
       const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
       (async () => {
-        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        await injectCodexConfig(10100, {
+          port: 10100,
+          providers: {},
+          defaultProvider: "openai",
+          injectionModel: "gpt-5.6-sol",
+          injectionEffort: "high",
+          syncCodexSubagentDefaults: true,
+        }, { catalogPath: null });
         fs.appendFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "\\n[tools]\\nweb_search = true\\n", "utf8");
         const result = restoreNativeCodex();
         console.log(JSON.stringify({ success: result.success, message: result.message }));
@@ -226,7 +501,10 @@ describe("codex-journal", () => {
     expect(restored).toContain("[tools]");
     expect(restored).toContain("web_search = true");
     expect(restored).not.toContain("[model_providers.opencodex]");
-    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(true);
+    expect(restored).not.toContain("Managed by opencodex: native subagent");
+    expect(restored).not.toContain("default_subagent_model");
+    expect(restored).not.toContain("default_subagent_reasoning_effort");
+    expect(existsSync(protectedJournalPath(testDir))).toBe(true);
   });
 
   test("restoreNativeCodex restores unchanged profile even when config was edited after injection", () => {
@@ -250,7 +528,7 @@ describe("codex-journal", () => {
     expect(r.status).toBe(0);
     expect(readFileSync(join(testDir, "config.toml"), "utf8")).toContain("[tools]");
     expect(readFileSync(join(testDir, "opencodex.config.toml"), "utf8")).toBe(originalProfile);
-    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(true);
+    expect(existsSync(protectedJournalPath(testDir))).toBe(true);
   });
 
   test("full lifecycle: write → crash → reconcile restores", () => {
@@ -261,7 +539,7 @@ describe("codex-journal", () => {
     `);
     expect(r.status).toBe(0);
 
-    const journalPath = join(testDir, "opencodex-journal.json");
+    const journalPath = protectedJournalPath(testDir);
     expect(existsSync(journalPath)).toBe(true);
     const journal = JSON.parse(readFileSync(journalPath, "utf8"));
 
@@ -306,7 +584,7 @@ describe("codex-journal", () => {
     expect(r.status).toBe(0);
     const { nativeBaseline } = JSON.parse(r.stdout) as { nativeBaseline: string };
 
-    const journalPath = join(testDir, "opencodex-journal.json");
+    const journalPath = protectedJournalPath(testDir);
     const journal = JSON.parse(readFileSync(journalPath, "utf8"));
     expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toBe(nativeBaseline);
     // A refreshed record is a new transaction: the day-one fingerprint is gone,
@@ -317,7 +595,7 @@ describe("codex-journal", () => {
     const r2 = runScript(testDir, `
       const fs = require("fs");
       const path = require("path");
-      const journalPath = path.join(process.env.CODEX_HOME, "opencodex-journal.json");
+      const journalPath = path.join(process.env.OPENCODEX_HOME, "codex-journal.json");
       const j = JSON.parse(fs.readFileSync(journalPath, "utf8"));
       fs.writeFileSync(journalPath, JSON.stringify({ ...j, pid: 999999 }));
       const { reconcileJournal } = require("./src/codex/journal");
@@ -350,7 +628,7 @@ describe("codex-journal", () => {
       })();
     `);
     expect(r.status).toBe(0);
-    const journal = JSON.parse(readFileSync(join(testDir, "opencodex-journal.json"), "utf8"));
+    const journal = JSON.parse(readFileSync(protectedJournalPath(testDir), "utf8"));
     expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toBe(original);
   });
 
@@ -395,13 +673,16 @@ describe("codex-journal", () => {
    */
   test("a hashless journal from another process can still be marked (#477)", () => {
     runScript(testDir, `require("./src/codex/journal").writeJournal(); console.log("journaled");`);
-    const journalPath = join(testDir, "opencodex-journal.json");
+    const journalPath = protectedJournalPath(testDir);
     const first = JSON.parse(readFileSync(journalPath, "utf8"));
     expect(first.injectedConfigHash).toBeUndefined();
 
     const r = runScript(testDir, `
       const { markJournalInjectedState } = require("./src/codex/journal");
-      markJournalInjectedState("# injected\\n", null);
+      markJournalInjectedState("# injected\\n", null, {
+        injectedOpenaiBaseUrl: null,
+        injectedCatalogPath: null,
+      });
       console.log(String(process.pid));
     `);
     expect(r.status).toBe(0);
@@ -412,10 +693,42 @@ describe("codex-journal", () => {
     expect(typeof second.injectedConfigHash).toBe("string"); // marked by the second
   });
 
+  test("reinjection keeps the first config hash while refreshing owned route and catalog", () => {
+    const r = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const { writeJournal, markJournalInjectedState } = require("./src/codex/journal");
+      const journalPath = path.join(process.env.OPENCODEX_HOME, "codex-journal.json");
+      writeJournal();
+      markJournalInjectedState("# first injection\\n", null, {
+        injectedOpenaiBaseUrl: "http://127.0.0.1:10100/v1",
+        injectedCatalogPath: "first-catalog.json",
+      });
+      const first = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+      markJournalInjectedState("# second injection\\n", "# second profile\\n", {
+        injectedOpenaiBaseUrl: "http://127.0.0.1:10200/v1",
+        injectedCatalogPath: "second-catalog.json",
+      });
+      const second = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+      console.log(JSON.stringify({ firstHash: first.injectedConfigHash, secondHash: second.injectedConfigHash }));
+    `);
+    expect(r.status).toBe(0);
+    const hashes = JSON.parse(r.stdout) as { firstHash: string; secondHash: string };
+    expect(typeof hashes.firstHash).toBe("string");
+    expect(hashes.firstHash).toBe(createHash("sha256").update("# first injection\n").digest("hex"));
+    expect(hashes.secondHash).toBe(hashes.firstHash);
+
+    const journal = JSON.parse(readFileSync(protectedJournalPath(testDir), "utf8"));
+    expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toContain("# original config");
+    expect(journal.injectedOpenaiBaseUrl).toBe("http://127.0.0.1:10200/v1");
+    expect(journal.injectedCatalogPath).toBe("second-catalog.json");
+    expect(typeof journal.injectedProfileHash).toBe("string");
+  });
+
   test("writeJournal() with no options still snapshots a native config", () => {
     const r = runScript(testDir, `require("./src/codex/journal").writeJournal(); console.log("written");`);
     expect(r.status).toBe(0);
-    const journal = JSON.parse(readFileSync(join(testDir, "opencodex-journal.json"), "utf8"));
+    const journal = JSON.parse(readFileSync(protectedJournalPath(testDir), "utf8"));
     expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toContain("original config");
   });
 
@@ -429,6 +742,6 @@ describe("codex-journal", () => {
       "",
     ].join("\n"), "utf8");
     runScript(testDir, `require("./src/codex/journal").writeJournal(); console.log("done");`);
-    expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(false);
+    expect(existsSync(protectedJournalPath(testDir))).toBe(false);
   });
 });

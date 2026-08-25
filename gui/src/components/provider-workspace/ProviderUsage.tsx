@@ -5,16 +5,30 @@
 import { Fragment, useMemo, useState } from "react";
 import { useT, useI18n } from "../../i18n/shared";
 import QuotaBars from "../QuotaBars";
+import { IconRefresh } from "../../icons";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatRelativeTime, relativeTimeLabelsFromT, formatRequestCount, formatTokenCount, formatCostUsd } from "../../provider-workspace/usage";
 import { accountQuotaFromReport, formatQuotaSourceLabel, type ProviderQuotaReportView } from "../../provider-workspace/report";
 import type { ProviderUsageTotals, ProviderModelUsageRow } from "./types";
 
-export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsage }: {
+export default function ProviderUsage({
+  item,
+  usageTotals,
+  quotaReport,
+  modelUsage,
+  quotaRefreshing = false,
+  quotaRefreshError = false,
+  quotaRefreshedAt,
+  onRefreshQuota,
+}: {
   item: WorkspaceItem;
   usageTotals?: ProviderUsageTotals;
   quotaReport?: ProviderQuotaReportView;
   modelUsage?: ProviderModelUsageRow[];
+  quotaRefreshing?: boolean;
+  quotaRefreshError?: boolean;
+  quotaRefreshedAt?: number;
+  onRefreshQuota?: () => void;
 }) {
   const t = useT();
   const { locale } = useI18n();
@@ -135,7 +149,30 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
       )}
 
       <div className="pws-usage-block">
-        <h3 className="pws-section-title">{t("pws.rateLimits")}</h3>
+        <div className="pws-usage-heading-row">
+          <h3 className="pws-section-title">{t("pws.rateLimits")}</h3>
+          {onRefreshQuota && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={onRefreshQuota}
+              disabled={quotaRefreshing}
+            >
+              <IconRefresh width={14} aria-hidden="true" />
+              {quotaRefreshing ? t("pws.quotaRefreshing") : t("pws.quotaRefresh")}
+            </button>
+          )}
+        </div>
+        {quotaRefreshError && (
+          <p className="pwi-settings-msg pwi-settings-msg--err" role="alert">
+            {t("pws.quotaRefreshFailed")}
+          </p>
+        )}
+        {typeof quotaRefreshedAt === "number" && !quotaRefreshError && (
+          <p className="muted text-label" role="status">
+            {t("pws.quotaRefreshed")}
+          </p>
+        )}
         {quota ? (
           <>
             <QuotaBars quota={quota} plan={null} threshold={80} t={t} layout="stacked" />

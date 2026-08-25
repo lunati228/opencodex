@@ -6,6 +6,7 @@ import {
   CURSOR_ROUTING_LEVELS,
   CURSOR_STATIC_MODELS,
   cursorCodexToWireModelId,
+  cursorCheckpointModelAffinityId,
   filterCursorConfiguredModelsByLiveDiscovery,
   isCursorModelAvailableForAccount,
   cursorModelContextWindows,
@@ -16,6 +17,7 @@ import {
   inferCursorContextWindow,
   isCursorExternalWireModel,
   isCursorNativeWireModel,
+  cursorNeedsExternalToolContinuation,
   normalizeCursorModels,
 } from "../src/adapters/cursor/discovery";
 
@@ -36,6 +38,7 @@ describe("Cursor discovery metadata", () => {
     expect(ids).toContain("gpt-5.5");
     expect(ids).toContain("glm-5.2");
     expect(ids).toContain("kimi-k2.7-code");
+    expect(ids).toContain("kimi-k3");
     expect(ids).toContain("claude-opus-4-7-fast");
     // 260709 refresh: stale ids dropped from the static seed (cursor.com docs); gpt-5.5-extra
     // stays — it survives the live GetUsableModels filter (004_live_snapshot.md).
@@ -43,6 +46,8 @@ describe("Cursor discovery metadata", () => {
     expect(ids).not.toContain("grok-4.3");
     expect(ids).not.toContain("kimi-k2.5");
     expect(ids).toContain("gpt-5.5-extra");
+    expect(ids).toContain("grok-4.6");
+    expect(ids).toContain("grok-4.6-fast");
     expect(ids).not.toContain("composer-2");
     // `auto` mirrors the jawcode SOT `default` entry (200k), not the generic fallback window.
     for (const id of CURSOR_ROUTER_MODEL_IDS) {
@@ -62,7 +67,16 @@ describe("Cursor discovery metadata", () => {
 
     // Issue #117: Cursor GetUsableModels may return ids with a `cursor-` wire prefix.
     expect(isCursorModelAvailableForAccount("grok-4.5", ["cursor-grok-4.5-high"])).toBe(true);
+    // Current Grok Fast wire ids put `-fast` after the effort tier.
+    expect(isCursorModelAvailableForAccount("grok-4.5-fast", ["cursor-grok-4.5-low-fast"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("grok-4.5-fast", ["cursor-grok-4.5-high-fast"])).toBe(true);
+    // Older snapshots used `{base}-fast-{effort}`; keep discovery compatibility.
     expect(isCursorModelAvailableForAccount("grok-4.5-fast", ["cursor-grok-4.5-fast-medium"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("grok-4.5-fast", ["cursor-grok-4.5-high"])).toBe(false);
+    expect(isCursorModelAvailableForAccount("grok-4.5", ["cursor-grok-4.5-high-fast"])).toBe(false);
+    expect(isCursorModelAvailableForAccount("grok-4.6", ["cursor-grok-4.6-xhigh"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("grok-4.6-fast", ["cursor-grok-4.6-xhigh-fast"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("grok-4.6", ["cursor-grok-4.6-xhigh-fast"])).toBe(false);
     expect(isCursorModelAvailableForAccount("gpt-5.4", ["cursor-gpt-5.4-high"])).toBe(true);
     // Prefixed sibling rejection: cursor- prefix must not bypass sibling-model checks.
     expect(isCursorModelAvailableForAccount("gpt-5.5", ["cursor-gpt-5.5-extra-high"])).toBe(false);
@@ -73,6 +87,18 @@ describe("Cursor discovery metadata", () => {
       ["gpt-5.4-high"],
     );
     expect(filtered.map(model => model.id)).toEqual(["gpt-5.4"]);
+
+    const grok = filterCursorConfiguredModelsByLiveDiscovery(
+      [{ id: "grok-4.5" }, { id: "grok-4.5-fast" }],
+      ["cursor-grok-4.5-high", "cursor-grok-4.5-high-fast"],
+    );
+    expect(grok.map(model => model.id)).toEqual(["grok-4.5", "grok-4.5-fast"]);
+
+    const grok46 = filterCursorConfiguredModelsByLiveDiscovery(
+      [{ id: "grok-4.6" }, { id: "grok-4.6-fast" }],
+      ["cursor-grok-4.6-xhigh", "cursor-grok-4.6-xhigh-fast"],
+    );
+    expect(grok46.map(model => model.id)).toEqual(["grok-4.6", "grok-4.6-fast"]);
   });
 
   test("live discovery filter always keeps all router levels when GetUsableModels omits them", () => {
@@ -117,6 +143,7 @@ describe("Cursor discovery metadata", () => {
     expect(inferCursorContextWindow("gemini-3.5-flash")).toBe(1_000_000);
     expect(inferCursorContextWindow("glm-5.2")).toBe(1_000_000);
     expect(inferCursorContextWindow("grok-4.3")).toBe(256_000);
+    expect(inferCursorContextWindow("grok-4.6")).toBe(500_000);
     expect(inferCursorContextWindow("gpt-5.5")).toBe(272_000);
   });
 
@@ -135,6 +162,8 @@ describe("Cursor discovery metadata", () => {
       { id: "claude-opus-4-8", supportsReasoningEffort: true },
       { id: "glm-5.2", supportsReasoningEffort: true },
       { id: "grok-4.3", supportsReasoningEffort: true },
+      { id: "grok-4.6", supportsReasoningEffort: true },
+      { id: "grok-4.6-fast", supportsReasoningEffort: true },
       { id: "unknown-reasoning-model", supportsReasoningEffort: true },
       { id: "composer-2.5", supportsReasoningEffort: false },
     ]);
@@ -144,6 +173,8 @@ describe("Cursor discovery metadata", () => {
     expect(efforts["claude-opus-4-8"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(efforts["glm-5.2"]).toEqual(["high", "max"]);
     expect(efforts["grok-4.3"]).toEqual([]);
+    expect(efforts["grok-4.6"]).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(efforts["grok-4.6-fast"]).toEqual(["low", "medium", "high", "xhigh"]);
     expect(efforts["unknown-reasoning-model"]).toEqual([]);
     expect(efforts["composer-2.5"]).toEqual([]);
   });
@@ -157,5 +188,26 @@ describe("Cursor discovery metadata", () => {
     expect(isCursorExternalWireModel("gpt-5.6-sol-xhigh")).toBe(true);
     expect(isCursorExternalWireModel("claude-4.6-sonnet-high")).toBe(true);
     expect(isCursorExternalWireModel("cursor/gpt-5.6-sol")).toBe(true);
+  });
+
+  test("routes composer-2.5 tool continuations through the external userMessageAction path", () => {
+    expect(cursorNeedsExternalToolContinuation("composer-2.5")).toBe(true);
+    expect(cursorNeedsExternalToolContinuation("cursor/composer-2.5")).toBe(true);
+    expect(cursorNeedsExternalToolContinuation("composer-2.5-fast")).toBe(false);
+    expect(cursorNeedsExternalToolContinuation("cursor/composer-2.5-fast")).toBe(false);
+    expect(cursorNeedsExternalToolContinuation("auto")).toBe(false);
+    expect(cursorNeedsExternalToolContinuation("gpt-5.6-sol")).toBe(true);
+  });
+
+  test("normalizes Cursor checkpoint model affinity across prefix and effort", () => {
+    expect(cursorCheckpointModelAffinityId("cursor/grok-4.6")).toBe(
+      cursorCheckpointModelAffinityId("cursor-grok-4.6-low"),
+    );
+    expect(cursorCheckpointModelAffinityId("grok-4.6")).toBe(
+      cursorCheckpointModelAffinityId("cursor/grok-4.6"),
+    );
+    expect(cursorCheckpointModelAffinityId("cursor/gpt-5.6-sol")).not.toBe(
+      cursorCheckpointModelAffinityId("cursor/grok-4.6"),
+    );
   });
 });

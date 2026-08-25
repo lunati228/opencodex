@@ -33,8 +33,8 @@ Upstream Codex parser evidence:
 Local gap:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts
 ```
 
 ## Files
@@ -42,7 +42,7 @@ Local gap:
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/errors.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/errors.ts
 ```
 
 Complete content:
@@ -81,7 +81,7 @@ export function classifyError(status: number, type: string, message: string): Oc
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts
 ```
 
 Import classifier:
@@ -140,7 +140,7 @@ Update JSON error formatter:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts
 ```
 
 Expand hop-by-hop/stale header drops:
@@ -168,7 +168,7 @@ opencodex does not have complete upstream quota telemetry for translated provide
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/error-fidelity.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/error-fidelity.test.ts
 ```
 
 Complete content:

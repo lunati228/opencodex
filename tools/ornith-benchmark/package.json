@@ -1,0 +1,13 @@
+{
+  "name": "ornith-benchmark-harness",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "syntax": "node --check bin/ornith-benchmark.mjs"
+  }
+}

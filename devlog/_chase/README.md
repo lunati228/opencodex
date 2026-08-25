@@ -8,7 +8,7 @@ vendoring하지 않는다. 실제로 따라잡을 표면은 좁다: API 변환(t
 
 | slug | repo | 역할 | 로컬 |
 |---|---|---|---|
-| `gjc` (jawcode) | `lidge-jun/jawcode` (`packages/ai/src/providers/*.ts`) | opencodex 어댑터의 직접 포팅 출처 (1차 SOT) | `/Users/jun/Developer/new/700_projects/jawcode` 에 이미 존재 |
+| `gjc` (jawcode) | `lidge-jun/jawcode` (`packages/ai/src/providers/*.ts`) | opencodex 어댑터의 직접 포팅 출처 (1차 SOT) | `<private-user-home>/Developer/new/700_projects/jawcode` 에 이미 존재 |
 | `cca` | `router-for-me/CLIProxyAPI` (Go) | wire/auth/quirks 외부 교차검증 SOT (2차) | 없음. 필요 시 `_cca/`로 shallow clone |
 
 주의: jawcode는 gajae-code(에이전트)가 아니다. 프록시 프로바이더 레이어는
@@ -71,15 +71,15 @@ curl -fsSL https://raw.githubusercontent.com/router-for-me/CLIProxyAPI/main/inte
 git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI devlog/_chase/_cca
 
 # gjc: 이미 워크스페이스에 있어 보통 심볼릭이면 충분
-ln -s /Users/jun/Developer/new/700_projects/jawcode devlog/_chase/_gjc
+ln -s <private-user-home>/Developer/new/700_projects/jawcode devlog/_chase/_gjc
 ```
 
 착수/대조 전 최신화:
 
 ```bash
 git -C devlog/_chase/_cca fetch origin && git -C devlog/_chase/_cca log -1 --oneline
-git -C /Users/jun/Developer/new/700_projects/jawcode fetch origin && \
-  git -C /Users/jun/Developer/new/700_projects/jawcode log -1 --oneline
+git -C <private-user-home>/Developer/new/700_projects/jawcode fetch origin && \
+  git -C <private-user-home>/Developer/new/700_projects/jawcode log -1 --oneline
 ```
 
 ## opencodex 대조 표면 (따라잡을 지점)

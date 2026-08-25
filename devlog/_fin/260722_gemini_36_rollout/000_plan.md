@@ -101,7 +101,7 @@ The probe emitted no token, project ID, authorization header, or raw upstream er
 - Cursor and OrcaRouter remain unchanged.
 - Focused tests and typecheck pass; all three 3.6 Antigravity tiers complete a minimal live prompt through the current source adapter. The user explicitly removed daemon restart from this run during C, so no restarted-daemon claim is made.
 - The completed Gemini branch is committed and merged with a normal merge into the local `dev` worktree without modifying or staging its unrelated `devlog/_plan/260722_issue_bug_sweep/000_plan.md` change. No remote push is performed.
-- After merged-`dev` verification passes, the linked `/Users/jun/.codex/worktrees/2d67/opencodex` worktree is removed from the main repository. The merged `gemini-3.6` branch ref is retained unless separately requested.
+- After merged-`dev` verification passes, the linked `<private-user-home>/.codex/worktrees/2d67/opencodex` worktree is removed from the main repository. The merged `gemini-3.6` branch ref is retained unless separately requested.
 
 ## Risks and rollback
 

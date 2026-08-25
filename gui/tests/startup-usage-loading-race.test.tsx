@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import { act, useState } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
+import { clearClientResourceStoresForTests } from "../src/client-resource";
 import Startup from "../src/pages/Startup";
 import Usage from "../src/pages/Usage";
 
@@ -19,6 +20,9 @@ const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   previousGlobals = Object.fromEntries(globals.map(key => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
+  // These pages read through the shared resource layer, whose cache is module-level. Without a
+  // reset, a sibling case's payload satisfies the mount and the race under test never starts.
+  clearClientResourceStoresForTests();
   testWindow = new Window({ url: "http://localhost/" });
   Object.defineProperties(globalThis, {
     document: { configurable: true, value: testWindow.document },
@@ -31,6 +35,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  clearClientResourceStoresForTests();
   testWindow.close();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
@@ -91,7 +96,7 @@ test("an aborted Startup fetch must not clear loading while its replacement is i
     platform: "darwin",
     recommendedCommand,
     diagnosticStale: false,
-    commands: { installService: "ocx service install", installShim: "ocx shim install", restoreNative: "ocx restore" },
+    commands: { installService: "ocx service install", repairService: "ocx service repair", installShim: "ocx shim install", restoreNative: "ocx restore" },
   });
   const STALE = health("stale-startup-marker");
   const FRESH = health("fresh-startup-marker");
@@ -128,15 +133,17 @@ test("an aborted Startup fetch must not clear loading while its replacement is i
   await settle();
 
   expect(container.textContent).toContain("Checking startup protection");
-  const refresh = container.querySelector<HTMLButtonElement>("button.btn");
-  expect(refresh?.disabled).toBe(true);
+  const refresh = Array.from(container.querySelectorAll<HTMLButtonElement>("button.btn"))
+    .find(button => (button.textContent ?? "").includes("Refresh"));
+  expect(refresh).toBeTruthy();
+  expect(refresh!.disabled).toBe(true);
 
   await act(async () => {
     gates[1]!.resolve(FRESH);
     await Promise.resolve();
   });
   await waitFor(() => !(container.textContent ?? "").includes("Checking startup protection"));
-  expect(refresh?.disabled).toBe(false);
+  expect(refresh!.disabled).toBe(false);
 
   await act(async () => { root.unmount(); });
   container.remove();

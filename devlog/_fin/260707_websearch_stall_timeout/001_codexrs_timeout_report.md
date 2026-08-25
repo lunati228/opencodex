@@ -1,6 +1,6 @@
 # 001 — codex-rs timeout semantics (gpt-5.5 explorer report, agent 019f3cb4-6149-7113-874f-d1b99745ce6f)
 
-Clone: /Users/jun/Developer/codex/120_codex-cli/codex-rs (HEAD 2026-07-01 129ea2aaf)
+Clone: <private-user-home>/Developer/codex/120_codex-cli/codex-rs (HEAD 2026-07-01 129ea2aaf)
 
 1. Stream idle timeout: `timeout(idle_timeout, stream.next())` over an eventsource stream
    (codex-api/src/sse/responses.rs:475); ANY yielded SSE event re-arms it BEFORE type parsing;

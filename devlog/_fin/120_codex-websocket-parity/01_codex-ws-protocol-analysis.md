@@ -4,7 +4,7 @@ Reference map of the wire protocol Codex speaks on the WS path, derived by readi
 codex checkout**. All citations are relative to:
 
 ```text
-/Users/jun/Developer/codex/codex-cli/codex-rs/
+<private-user-home>/Developer/codex/codex-cli/codex-rs/
 ```
 
 Files: `codex-api/src/endpoint/responses_websocket.rs` (WS client), `codex-api/src/common.rs`

@@ -1,10 +1,13 @@
 import { getCodexAccountHealthSnapshot, type CodexCooldownSource } from "../codex/routing";
+import { getAnthropicAccountHealthSnapshot } from "./anthropic-routing";
 import { isAccountNeedsReauth } from "../codex/account-runtime-state";
 import { getCodexAccountCredential, listCodexAccountIds } from "../codex/account-store";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
+import { readRuntimePort } from "../config";
+import { LOCAL_MANAGEMENT_READ_PATHS } from "../lib/local-management-capability";
 import { maskAccountId } from "../lib/privacy";
-import { loadServiceTokenFromFile } from "../lib/service-secrets";
-import { findLiveProxy, probeHostname } from "../server/proxy-liveness";
+import { findLiveProxy } from "../server/proxy-liveness";
+import { fetchBoundLocalManagementRead } from "../server/local-management-read-client";
 import { loadAuthStore, peekAuthStore, peekOAuthRefreshIntent, readOAuthRefreshIntent } from "./store";
 import type { ProviderAccount } from "./types";
 
@@ -174,9 +177,14 @@ export function projectStoredOAuthAccountHealth(
   now = Date.now(),
   opts: { observeOnly?: boolean } = {},
 ): OAuthAccountHealth {
+  const anthropicSnap = provider === "anthropic"
+    ? getAnthropicAccountHealthSnapshot(account.id, now)
+    : null;
   return projectOAuthAccountHealth({
     needsReauth: account.needsReauth === true,
     reauthReason: account.needsReauth === true ? "refresh_failed" : undefined,
+    cooldownUntilMs: anthropicSnap?.cooldownUntil,
+    cooldownReason: anthropicSnap?.cooldownSource === "retry-after" ? "rate_limit" : anthropicSnap ? "quota" : undefined,
     warningReason: detectOAuthWarning(provider, account, opts.observeOnly === true, now),
     now,
   });
@@ -314,36 +322,51 @@ function coerceRemoteAccountHealth(
   return projectOAuthAccountHealth({ needsReauth: account.needsReauth === true });
 }
 
+type LiveProxyCodexHealthResult = {
+  source: CodexHealthSource;
+  entries: OAuthHealthEntry[] | null;
+};
+
 async function fetchCodexHealthFromLiveProxy(
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch | undefined = undefined,
   findLiveProxyImpl: typeof findLiveProxy = findLiveProxy,
-): Promise<OAuthHealthEntry[] | null> {
+  readRuntimePortImpl: typeof readRuntimePort = readRuntimePort,
+): Promise<LiveProxyCodexHealthResult> {
   const live = await findLiveProxyImpl();
-  if (!live) return null;
-  const token = process.env.OPENCODEX_API_AUTH_TOKEN ?? loadServiceTokenFromFile(process.env);
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (!live) return { source: "unavailable", entries: null };
   try {
-    const res = await fetchImpl(
-      `http://${probeHostname(live.hostname)}:${live.port}/api/codex-auth/accounts`,
-      { headers, signal: AbortSignal.timeout(4000) },
+    const read = await fetchBoundLocalManagementRead(
+      live,
+      LOCAL_MANAGEMENT_READ_PATHS.codexAccounts,
+      { fetchImpl, readRuntime: readRuntimePortImpl, timeoutMs: 4_000 },
     );
-    if (!res.ok) return null;
+    if (read.kind === "unavailable") {
+      return { source: "management-api-unavailable", entries: null };
+    }
+    const res = read.response;
+    if (res.status === 401 || res.status === 403) {
+      return { source: "management-auth-failed", entries: null };
+    }
+    if (!res.ok) return { source: "management-api-unavailable", entries: null };
     const json = await res.json() as { accounts?: ProxyCodexAccountHealth[] };
-    if (!Array.isArray(json.accounts)) return null;
+    if (!Array.isArray(json.accounts)) return { source: "management-api-unavailable", entries: null };
     const entries: OAuthHealthEntry[] = [];
     for (const account of json.accounts) {
       if (!account?.id || typeof account.id !== "string") continue;
       pushEntry(entries, "codex", account.id, coerceRemoteAccountHealth(account));
     }
-    return entries;
+    return { source: "management-api", entries };
   } catch {
-    return null;
+    return { source: "management-api-unavailable", entries: null };
   }
 }
 
 /** How CLI/doctor obtained Codex cooldown/reauth (proxy memory only lives in the proxy). */
-export type CodexHealthSource = "management-api" | "unavailable";
+export type CodexHealthSource =
+  | "management-api"
+  | "unavailable"
+  | "management-auth-failed"
+  | "management-api-unavailable";
 
 export type OAuthCliHealthReport = {
   entries: OAuthHealthEntry[];
@@ -353,6 +376,10 @@ export type OAuthCliHealthReport = {
 /** Shown by `ocx status` / `ocx doctor` when the proxy management API is unreachable. */
 export const CODEX_HEALTH_UNAVAILABLE_NOTE =
   "Codex health: unavailable (proxy not running; live cooldown/reauth requires the management API)";
+export const CODEX_HEALTH_AUTH_FAILED_NOTE =
+  "Codex health: unavailable (proxy running; management authentication failed)";
+export const CODEX_HEALTH_MANAGEMENT_API_UNAVAILABLE_NOTE =
+  "Codex health: unavailable (proxy running; management API did not return account health)";
 
 /**
  * CLI/doctor collector: observe-only OAuth store reads, and Codex health only from the
@@ -363,13 +390,18 @@ export async function collectOAuthHealthEntriesForCli(
   deps: {
     fetchImpl?: typeof fetch;
     findLiveProxyImpl?: typeof findLiveProxy;
+    readRuntimePortImpl?: typeof readRuntimePort;
   } = {},
 ): Promise<OAuthCliHealthReport> {
   const entries = collectOAuthHealthEntries(now, { observeOnly: true, includeLocalCodex: false });
-  const remote = await fetchCodexHealthFromLiveProxy(deps.fetchImpl, deps.findLiveProxyImpl);
-  if (remote) {
-    for (const entry of remote) entries.push(entry);
+  const remote = await fetchCodexHealthFromLiveProxy(
+    deps.fetchImpl,
+    deps.findLiveProxyImpl,
+    deps.readRuntimePortImpl,
+  );
+  if (remote.entries) {
+    for (const entry of remote.entries) entries.push(entry);
     return { entries, codexHealthSource: "management-api" };
   }
-  return { entries, codexHealthSource: "unavailable" };
+  return { entries, codexHealthSource: remote.source };
 }

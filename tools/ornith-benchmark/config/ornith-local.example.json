@@ -1,0 +1,124 @@
+{
+  "campaign_id": "<CAMPAIGN_ID>",
+  "candidate_id": "<CANDIDATE_ID>",
+  "llama_bench": "<LLAMA_BENCH_B10099_EXE>",
+  "llama_server": "<LLAMA_SERVER_B10099_EXE>",
+  "runtime_root": "<private-runtime-root>",
+  "runtime_manifest": "<private-runtime-manifest>",
+  "model": "<private-model-path>",
+  "install_manifest": "<private-model-manifest>",
+  "quality_manifest": "<repo>\\tools\\ornith-benchmark\\fixtures\\ornith-quality-v1\\manifest.json",
+  "result_root": "<EMPTY_RESULT_ROOT>",
+  "sandbox_root": "<EMPTY_SANDBOX_ROOT>",
+  "live": {
+    "server_model_id": "ornith-397b-featherweight",
+    "moe_cache_mode": "<on_OR_off>",
+    "arm_comparison_manifest": "<ABSOLUTE_HASH_BOUND_CONTROLLED_ARM_MANIFEST>",
+    "arm_comparison_manifest_sha256": "<SHA256_OF_CONTROLLED_ARM_MANIFEST>",
+    "server_port": "<INTEGER_1024_TO_65535>",
+    "nvidia_smi": "<ABSOLUTE_NVIDIA_SMI_EXE>",
+    "host_monitor": "C:\\Windows\\System32\\typeperf.exe",
+    "telemetry_pre_roll_seconds": 60,
+    "telemetry_post_roll_seconds": 30,
+    "telemetry_max_gap_seconds": 5,
+    "abort_temperature_c": "<OPERATOR_APPROVED_CEILING>",
+    "minimum_free_gib": "<MINIMUM_FREE_RESULT_VOLUME_GIB>",
+    "host_reserve": {
+      "available_reserve_gib": "<HOST_RAM_TO_KEEP_FREE_FOR_WINDOWS>",
+      "sustained_seconds": "<SECONDS_BELOW_RESERVE_BEFORE_ABORT>",
+      "committed_abort_pct": "<COMMIT_CHARGE_PCT_HARD_ABORT>"
+    },
+    "expected_physical_memory_bytes": "<EXPECTED_PHYSICAL_MEMORY_BYTES>",
+    "windows_process_control": {
+      "expected_windows_root": "C:\\Windows",
+      "helpers": {
+        "taskkill": {
+          "filename": "taskkill.exe",
+          "bytes": "<RECORDED_BYTES>",
+          "sha256": "<RECORDED_SHA256>",
+          "authenticode_status": "Valid",
+          "signature_type": "Catalog",
+          "is_os_binary": true,
+          "evidence_kind": "recorded_authenticode_evidence_bound_to_sha256",
+          "signer_subject": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+          "signer_issuer": "CN=Microsoft Windows Production PCA 2011, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+          "signer_thumbprint": "<RECORDED_SIGNER_THUMBPRINT>"
+        },
+        "typeperf": {
+          "filename": "typeperf.exe",
+          "bytes": "<RECORDED_BYTES>",
+          "sha256": "<RECORDED_SHA256>",
+          "authenticode_status": "Valid",
+          "signature_type": "Catalog",
+          "is_os_binary": true,
+          "evidence_kind": "recorded_authenticode_evidence_bound_to_sha256",
+          "signer_subject": "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+          "signer_issuer": "CN=Microsoft Windows Production PCA 2011, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+          "signer_thumbprint": "<RECORDED_SIGNER_THUMBPRINT>"
+        }
+      }
+    },
+    "cpu_moe_sweep": {
+      "values": [60, 58, 56, 54, 52, 50, 48],
+      "candidate_ids": [
+        "<PREDECLARED_CANDIDATE_60>",
+        "<PREDECLARED_CANDIDATE_58>",
+        "<PREDECLARED_CANDIDATE_56>",
+        "<PREDECLARED_CANDIDATE_54>",
+        "<PREDECLARED_CANDIDATE_52>",
+        "<PREDECLARED_CANDIDATE_50>",
+        "<PREDECLARED_CANDIDATE_48>"
+      ],
+      "index": "<ZERO_BASED_INDEX_MATCHING_THIS_CANDIDATE>"
+    }
+  },
+  "expected": {
+    "bench_sha256": "<LLAMA_BENCH_B10099_SHA256>",
+    "server_sha256": "<LLAMA_SERVER_B10099_SHA256>",
+    "runtime_manifest_sha256": "<PRIVATE_RUNTIME_MANIFEST_SHA256>",
+    "revision": "7b33f8b949a1346690b7e05c3fff9d52254eb1a6",
+    "model_bytes": "<PRIVATE_MODEL_BYTES>",
+    "model_sha256": "<PRIVATE_MODEL_SHA256>",
+    "install_manifest_sha256": "<PRIVATE_INSTALL_MANIFEST_SHA256>",
+    "quality_suite_sha256": "3b1d8c0558eebf265c8da8a08ffee3b60d6009467bfdf76024335b89470d6b47"
+  },
+  "candidate": {
+    "llama_tag": "b10099",
+    "llama_commit": "<FULL_LLAMA_COMMIT>",
+    "load_mode": "<mmap|dio|none>",
+    "device_order": ["<GPU_UUID_A_OR_B>", "<GPU_UUID_B_OR_A>"],
+    "backend_devices": ["<BACKEND_DEVICE_0>", "<BACKEND_DEVICE_1>"],
+    "split_mode": "<layer|row|tensor>",
+    "experimental": false,
+    "tensor_split": ["<SHARE_0>", "<SHARE_1>"],
+    "n_gpu_layers": "<INTEGER>",
+    "n_cpu_moe": "<ONE_OF_60_58_56_54_52_50_48>",
+    "fit": "off",
+    "spec_type": "none",
+    "ctx_size": 8192,
+    "generation_cap": 1024,
+    "batch": "<INTEGER>",
+    "ubatch": "<INTEGER>",
+    "threads": "<INTEGER>",
+    "threads_batch": "<INTEGER>",
+    "cpu_mask": "<HEX>",
+    "cpu_strict": "<BOOLEAN>",
+    "priority": "<INTEGER>",
+    "poll": "<INTEGER>",
+    "flash_attn": "<on|off>",
+    "cache_type_k": "<TYPE>",
+    "cache_type_v": "<TYPE>",
+    "kv_offload": "<BOOLEAN>",
+    "op_offload": "<BOOLEAN>",
+    "cache_ram_mib": "<INTEGER_MIB_0_DISABLES>",
+    "reasoning_format": "<FORMAT>",
+    "reasoning_budget": 1024,
+    "sampling": {
+      "seed": "<INTEGER>",
+      "temperature": "<NUMBER>",
+      "top_p": "<NUMBER>",
+      "min_p": "<NUMBER>",
+      "top_k": "<INTEGER>"
+    }
+  }
+}

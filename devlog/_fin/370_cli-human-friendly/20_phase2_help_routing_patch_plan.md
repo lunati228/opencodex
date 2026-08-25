@@ -18,7 +18,7 @@ This phase intentionally does not add `status --json`, `doctor`, `logs`, or life
 Authoritative matrix:
 
 ```path
-/Users/jun/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/11_help_surface_matrix.md
+<private-user-home>/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/11_help_surface_matrix.md
 ```
 
 Relevant findings:
@@ -53,7 +53,7 @@ Relevant findings:
 
 ## Planned Files
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts`
 
 Planned changes:
 
@@ -127,7 +127,7 @@ Planned changes:
    - `ocx service remove` as alias for `service uninstall`;
    - `ocx codex-shim remove` as alias for `codex-shim uninstall`.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/cli-help.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-help.test.ts`
 
 Planned tests:
 
@@ -142,7 +142,7 @@ Planned tests:
   - `ocx service uninstall --help`
   - `ocx codex-shim uninstall --help`
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/cli.md`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/cli.md`
 
 Planned documentation:
 
@@ -151,7 +151,7 @@ Planned documentation:
 - State that help/version are side-effect free.
 - Update service/shim alias tables to include `remove` if retained in implementation.
 
-### OPTIONAL MODIFY `/Users/jun/Developer/new/700_projects/opencodex/README.md`
+### OPTIONAL MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/README.md`
 
 Only if top-level README command list becomes inconsistent after implementation. Keep README concise; detailed behavior belongs in docs-site.
 

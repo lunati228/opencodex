@@ -26,8 +26,8 @@ dynamic import @jawcode-dev/ai at opencodex runtime -> spread jawcode Model into
 Primary static model registry:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.json
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.ts
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.json
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.ts
 ```
 
 `models.json` includes `contextWindow`, `maxTokens`, `reasoning`, `thinking`, `input`, `output`,
@@ -36,35 +36,35 @@ Primary static model registry:
 Relevant jawcode paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:22
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:30
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:34
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:41
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:50
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:874
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:898
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:899
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:936
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:938
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:22
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:30
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:34
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:41
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.ts:50
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:874
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:898
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:899
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:936
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:938
 ```
 
 Provider descriptors:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:48
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:60
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:64
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:128
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:296
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:48
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:60
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:64
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:128
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:296
 ```
 
 jawcode structure docs summarize the catalog fields:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/structure/30_providers.md:149
-/Users/jun/Developer/new/700_projects/jawcode/structure/30_providers.md:151
-/Users/jun/Developer/new/700_projects/jawcode/structure/30_providers.md:152
-/Users/jun/Developer/new/700_projects/jawcode/structure/30_providers.md:156
+<private-user-home>/Developer/new/700_projects/jawcode/structure/30_providers.md:149
+<private-user-home>/Developer/new/700_projects/jawcode/structure/30_providers.md:151
+<private-user-home>/Developer/new/700_projects/jawcode/structure/30_providers.md:152
+<private-user-home>/Developer/new/700_projects/jawcode/structure/30_providers.md:156
 ```
 
 ## Current opencodex Shape
@@ -82,17 +82,17 @@ export interface CatalogModel {
 Path:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:34
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:34
 ```
 
 Provider config is also narrower:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:204
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:208
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:209
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:222
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:227
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:204
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:208
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:209
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:222
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:227
 ```
 
 ## Direct Runtime Dependency Risk
@@ -100,9 +100,9 @@ Provider config is also narrower:
 `@jawcode-dev/ai` exports useful pieces:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/package.json:87
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/package.json:91
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/package.json:115
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/package.json:87
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/package.json:91
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/package.json:115
 ```
 
 But runtime importing it into opencodex is risky:
@@ -116,8 +116,8 @@ But runtime importing it into opencodex is risky:
 Current opencodex dependency baseline:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/package.json:18
-/Users/jun/Developer/new/700_projects/opencodex/package.json:31
+<private-user-home>/Developer/new/700_projects/opencodex/package.json:18
+<private-user-home>/Developer/new/700_projects/opencodex/package.json:31
 ```
 
 ## Recommended Projection
@@ -146,8 +146,8 @@ export interface OcxModelMetadata {
 Generated source candidates:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts
-/Users/jun/Developer/new/700_projects/opencodex/scripts/generate-jawcode-metadata.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts
+<private-user-home>/Developer/new/700_projects/opencodex/scripts/generate-jawcode-metadata.ts
 ```
 
 Do not write these in this docs phase; this is the Phase 100 implementation target.
@@ -174,12 +174,12 @@ Correction: `opencode-go` is already in jawcode. It is not an unmapped custom-on
 Evidence:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:130
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:178
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:859
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:862
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:2112
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:2338
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:130
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/descriptors.ts:178
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:859
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:862
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:2112
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:2338
 ```
 
 jawcode models it as an OpenAI-compatible provider using:
@@ -221,11 +221,11 @@ the prompt budget and break compaction thresholds.
 Relevant jawcode paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1694
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1707
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1742
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1743
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1744
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1694
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1707
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1742
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1743
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/provider-models/openai-compat.ts:1744
 ```
 
 ## Usage Mapping
@@ -233,21 +233,21 @@ Relevant jawcode paths:
 jawcode has richer per-response usage:
 
 ```text
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:493
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:495
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:497
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:499
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:501
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:503
-/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:514
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:493
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:495
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:497
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:499
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:501
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:503
+<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/types.ts:514
 ```
 
 opencodex currently has:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:158
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:159
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:160
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:158
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:159
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:160
 ```
 
 Phase 100 implementation should extend opencodex response usage separately from catalog metadata:

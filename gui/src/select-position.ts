@@ -21,6 +21,8 @@ const VIEWPORT_PAD_PX = 8;
 const MAX_MENU_HEIGHT_PX = 280;
 const MIN_MENU_HEIGHT_PX = 120;
 const BESIDE_MIN_WIDTH_PX = 160;
+/** Gap past the trigger's right edge for beside-placement (clears sidebar padding/border). */
+const BESIDE_GAP_PX = 12;
 
 function viewportHeight() {
   return typeof window !== "undefined" ? window.innerHeight : 800;
@@ -32,7 +34,7 @@ function viewportWidth() {
 
 export function computeSelectMenuStyle(
   trigger: SelectMenuTriggerRect,
-  { align = "left", placement = "below", menuHeight = MAX_MENU_HEIGHT_PX }: SelectMenuStyleOptions = {},
+  { align, placement = "below", menuHeight = MAX_MENU_HEIGHT_PX }: SelectMenuStyleOptions = {},
 ): CSSProperties {
   const measuredHeight = Math.min(Math.max(menuHeight, MIN_MENU_HEIGHT_PX), MAX_MENU_HEIGHT_PX);
   const vh = viewportHeight();
@@ -42,7 +44,7 @@ export function computeSelectMenuStyle(
     const spaceBelow = vh - trigger.top - VIEWPORT_PAD_PX;
     const spaceAbove = trigger.top - VIEWPORT_PAD_PX;
     const openAbove = measuredHeight + FLIP_GAP_PX > spaceBelow && spaceAbove > spaceBelow;
-    const left = Math.max(VIEWPORT_PAD_PX, Math.min(trigger.right + 6, vw - BESIDE_MIN_WIDTH_PX - VIEWPORT_PAD_PX));
+    const left = Math.max(VIEWPORT_PAD_PX, Math.min(trigger.right + BESIDE_GAP_PX, vw - BESIDE_MIN_WIDTH_PX - VIEWPORT_PAD_PX));
 
     if (openAbove) {
       return {
@@ -63,6 +65,7 @@ export function computeSelectMenuStyle(
     };
   }
 
+  const effectiveAlign = align ?? (trigger.right > vw / 2 ? "right" : "left");
   const width = Math.max(trigger.width, 0);
   const spaceBelow = vh - trigger.bottom - VIEWPORT_PAD_PX;
   const spaceAbove = trigger.top - VIEWPORT_PAD_PX;
@@ -75,8 +78,8 @@ export function computeSelectMenuStyle(
       minWidth: width,
       maxHeight: Math.max(0, Math.min(MAX_MENU_HEIGHT_PX, spaceAbove - MENU_GAP_PX)),
     };
-    if (align === "right") {
-      style.right = vw - trigger.right;
+    if (effectiveAlign === "right") {
+      style.right = Math.max(VIEWPORT_PAD_PX, vw - trigger.right);
     } else {
       style.left = Math.max(VIEWPORT_PAD_PX, Math.min(trigger.left, vw - VIEWPORT_PAD_PX - width));
     }
@@ -89,8 +92,8 @@ export function computeSelectMenuStyle(
     minWidth: width,
     maxHeight: Math.max(0, Math.min(MAX_MENU_HEIGHT_PX, spaceBelow - MENU_GAP_PX)),
   };
-  if (align === "right") {
-    style.right = vw - trigger.right;
+  if (effectiveAlign === "right") {
+    style.right = Math.max(VIEWPORT_PAD_PX, vw - trigger.right);
   } else {
     style.left = Math.max(VIEWPORT_PAD_PX, Math.min(trigger.left, vw - VIEWPORT_PAD_PX - width));
   }

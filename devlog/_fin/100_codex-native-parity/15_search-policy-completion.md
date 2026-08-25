@@ -7,9 +7,9 @@ Phase 100.2 implemented explicit routed search metadata and request-time sidecar
 Primary files:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/web-search.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/web-search.test.ts
 ```
 
 ## Implemented Behavior
@@ -48,8 +48,8 @@ the routed upstream model.
 Added or extended tests:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/web-search.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/web-search.test.ts
 ```
 
 Covered assertions:

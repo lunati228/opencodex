@@ -68,7 +68,7 @@ export function loadBundledCodexCatalog(deps: BundledCatalogDeps = {}): RawCatal
     } catch { /* try next candidate */ }
 ```
 
-On this machine, that exact command path resolved to `/Users/jun/.nvm/versions/node/v24.17.0/bin/codex`; there was no `CODEX_CLI_PATH` override and no OpenCodex shim-state candidate. Read-only runtime evidence was:
+On this machine, that exact command path resolved to `<private-user-home>/.nvm/versions/node/v24.17.0/bin/codex`; there was no `CODEX_CLI_PATH` override and no OpenCodex shim-state candidate. Read-only runtime evidence was:
 
 ```text
 $ codex --version

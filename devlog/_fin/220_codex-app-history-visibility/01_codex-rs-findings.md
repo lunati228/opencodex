@@ -7,7 +7,7 @@ The sidebar disappearance is caused by two independent filters in Codex App / ap
 1. Provider filter: when `model_providers` is omitted, app-server defaults to the active configured provider.
 2. Source filter: when `source_kinds` is omitted or empty, app-server defaults to `INTERACTIVE_SESSION_SOURCES`.
 
-In the local codex-rs checkout at `/Users/jun/Developer/codex/codex-cli/codex-rs`, `INTERACTIVE_SESSION_SOURCES` is:
+In the local codex-rs checkout at `<private-user-home>/Developer/codex/codex-cli/codex-rs`, `INTERACTIVE_SESSION_SOURCES` is:
 
 ```text
 cli
@@ -22,22 +22,22 @@ It does not include `exec`.
 
 codex-rs source anchors:
 
-- `/Users/jun/Developer/codex/codex-cli/codex-rs/rollout/src/lib.rs`
+- `<private-user-home>/Developer/codex/codex-cli/codex-rs/rollout/src/lib.rs`
   - `INTERACTIVE_SESSION_SOURCES` includes `Cli`, `VSCode`, `Custom("atlas")`, `Custom("chatgpt")`.
-- `/Users/jun/Developer/codex/codex-cli/codex-rs/app-server/src/filters.rs`
+- `<private-user-home>/Developer/codex/codex-cli/codex-rs/app-server/src/filters.rs`
   - `compute_source_filters(None)` returns `INTERACTIVE_SESSION_SOURCES`.
   - `compute_source_filters(Some(Vec::new()))` also returns `INTERACTIVE_SESSION_SOURCES`.
   - `ThreadSourceKind::Exec` requires an explicit source filter.
-- `/Users/jun/Developer/codex/codex-cli/codex-rs/app-server/src/request_processors/thread_processor.rs`
+- `<private-user-home>/Developer/codex/codex-cli/codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `model_providers: None` becomes `Some(vec![self.config.model_provider_id.clone()])`.
   - `source_kinds` flows through `compute_source_filters()`.
   - Those filters are passed to `thread_store.list_threads()`.
-- `/Users/jun/Developer/codex/codex-cli/codex-rs/state/src/runtime/threads.rs`
+- `<private-user-home>/Developer/codex/codex-cli/codex-rs/state/src/runtime/threads.rs`
   - SQL filter applies `threads.archived = 0`, `threads.preview <> ''`, optional `threads.source IN (...)`, optional `threads.model_provider IN (...)`, and optional `threads.cwd IN (...)`.
 
 ## Local DB evidence
 
-Read-only query against `/Users/jun/.codex/state_5.sqlite` for project cwd `/Users/jun/Developer/new/700_projects/opencodex`:
+Read-only query against `<private-user-home>/.codex/state_5.sqlite` for project cwd `<private-user-home>/Developer/new/700_projects/opencodex`:
 
 | model_provider | source | count |
 | --- | --- | ---: |

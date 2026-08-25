@@ -137,6 +137,28 @@ function compileGenerationConfig(value: unknown): JsonObject | undefined {
       : (["xhigh", "max", "ultra"].includes(raw) ? "high" : undefined);
     if (thinkingLevel) out.thinkingConfig = { thinkingLevel };
   }
+  // Structured-output schemas are request data, not executable configuration. Keep the wrapper
+  // on a strict allowlist while preserving the JSON Schema itself: Guardian relies on keywords
+  // such as enum, required, and additionalProperties that the tool-schema sanitizer may widen.
+  if (isObject(value.responseFormat) && isObject(value.responseFormat.text)) {
+    const text = value.responseFormat.text;
+    if (text.mimeType === "application/json") {
+      out.responseFormat = {
+        text: {
+          mimeType: "application/json",
+          ...(isObject(text.schema) ? { schema: text.schema } : {}),
+        },
+      };
+    }
+  }
+  if (value.responseMimeType === "application/json") {
+    out.responseMimeType = "application/json";
+    if (isObject(value.responseSchema)) out.responseSchema = value.responseSchema;
+  }
+  if (Array.isArray(value.responseModalities)) {
+    const valid = value.responseModalities.filter((m): m is string => typeof m === "string" && ["TEXT", "IMAGE", "AUDIO"].includes(m));
+    if (valid.length > 0) out.responseModalities = valid;
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

@@ -65,7 +65,7 @@ OUT:
 ## Release order
 
 1. Commit and push hardening on `dev`; set its upstream to `origin/dev` and wait for CI.
-2. Create clean sibling worktree `/Users/jun/Developer/new/700_projects/opencodex-release-2.7.10` on `preview`; fast-forward it to `origin/dev` and publish the next unused preview prerelease.
+2. Create clean sibling worktree `<private-user-home>/Developer/new/700_projects/opencodex-release-2.7.10` on `preview`; fast-forward it to `origin/dev` and publish the next unused preview prerelease.
 3. In the primary worktree, fetch and fast-forward `dev` through `origin/preview`, then push `origin/dev`.
 4. In the clean release worktree, switch to `main`, fast-forward to `origin/dev`, and publish stable `2.7.10`.
 5. Fast-forward primary `dev` and release-worktree `preview` to `origin/main`; push both and verify final CI/dist-tags/releases.

@@ -78,6 +78,22 @@ bun run release <version> --publish # CI-gated dry-run を確認した後、実�
 bun run release:watch               # 直近の Release ワークフロー run を監視
 ```
 
+## ブランチ
+
+- `dev` — 唯一の統合先。すべての PR をここに出します。
+- `main` — リリース専用。`dev` からメンテナーが昇格させるときだけ動きます。機能 PR を直接
+  出さないでください。
+- `preview` — プレリリーストレイン。
+
+Go ネイティブポートを担っていた `dev2-go` は廃止し、2 本の統合ラインを維持する方針も
+終了しました。履歴は
+[lidge-jun/opencodex-go-archive](https://github.com/lidge-jun/opencodex-go-archive)
+に読み取り専用で残しています。現在は `dev` の Bun ネイティブ TypeScript が単一のランタイム
+ラインです。
+
+リベース PR を歓迎します。古いブランチを現在の head にリベースすることは、ノイズではなく
+通常の貢献です。説明欄に元のコミットを記載してください。
+
 ## 規約
 
 - **ES Modules のみ**(`import`/`export`)、TypeScript、`strict` モード。`bun x tsc --noEmit` をクリーンに

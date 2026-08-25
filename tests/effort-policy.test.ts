@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyEffortCap, effortCapAppliesTo, effortCapFor, isThreadSpawnRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
+import { applyEffortCap, effortCapAppliesTo, effortCapFor, isThreadSpawnRequest, resolveCappedEffort, stripEmptyLadderEffort, supportedLadderFor } from "../src/server/effort-policy";
 import { collabSurface } from "../src/server/responses";
 import { handleManagementAPI } from "../src/server/management-api";
 import { NoEnabledOpenAiProviderError, routeModel } from "../src/router";
@@ -173,6 +173,26 @@ describe("resolveCappedEffort (ladder-aware resolution)", () => {
   });
 });
 
+describe("stripEmptyLadderEffort", () => {
+  test("keeps a summary-only object on an empty ladder", () => {
+    expect(stripEmptyLadderEffort({ summary: "auto" }, [])).toEqual({ summary: "auto" });
+  });
+
+  test("strips effort but keeps summary on an empty ladder", () => {
+    expect(stripEmptyLadderEffort({ effort: "max", summary: "auto" }, [])).toEqual({ summary: "auto" });
+  });
+
+  test("drops an effort-only object on an empty ladder", () => {
+    expect(stripEmptyLadderEffort({ effort: "high" }, [])).toBeUndefined();
+  });
+
+  test("leaves reasoning untouched when the ladder is unknown or non-empty", () => {
+    const reasoning = { effort: "high", summary: "auto" };
+    expect(stripEmptyLadderEffort(reasoning, undefined)).toBe(reasoning);
+    expect(stripEmptyLadderEffort(reasoning, ["high"])).toBe(reasoning);
+  });
+});
+
 describe("applyEffortCap strip paths", () => {
   test("no-effort model strips even a below-cap effort from BOTH shapes, keeping summary", () => {
     const config = makeConfig({ effortCap: "high" });
@@ -219,6 +239,8 @@ describe("supportedLadderFor (real routeModel routes)", () => {
     } as Partial<OcxConfig>);
     const route = routeModel(config, "xai/grok-4.5");
     expect(supportedLadderFor(route)).toEqual(["low", "medium", "high"]);
+    const grok46 = routeModel(config, "xai/grok-4.6");
+    expect(supportedLadderFor(grok46)).toEqual(["low", "medium", "high", "xhigh"]);
     const noReasoning = routeModel(config, "xai/grok-composer-2.5-fast");
     expect(supportedLadderFor(noReasoning)).toEqual([]);
   });
@@ -415,6 +437,32 @@ describe("cap composition with downstream clamps", () => {
     expect(nativeEffortClamp("gpt-5.4", "ultra")).toBe("xhigh");
     expect(nativeEffortClamp("gpt-5.4", "medium")).toBeNull();
   });
+
+  test("ultra never reaches the wire, not even on the models that advertise it", () => {
+    // sol and terra DO carry `ultra` in supported_reasoning_levels (it is a real rung of
+    // the upstream snapshot's UI ladder), which is exactly why the membership test used to
+    // pass it through. `ultra` is a product tier meaning "max + proactive delegation";
+    // codex-rs converts it to `max` in the picker (openai/codex#30585), but a spawn_agent
+    // reasoning_effort override skips that conversion. Measured against the live ChatGPT
+    // backend: ultra -> 400 "Invalid value: 'ultra'", max -> 200.
+    for (const slug of ["gpt-5.6-sol", "gpt-5.6-terra"]) {
+      expect(nativeEffortClamp(slug, "ultra")).toBe("max");
+      // max is genuinely supported on these two and must NOT be clamped — that would
+      // silently downgrade every Ultra and Max turn to xhigh.
+      expect(nativeEffortClamp(slug, "max")).toBeNull();
+    }
+    // luna has max but no ultra; the answer is the same rung either way.
+    expect(nativeEffortClamp("gpt-5.6-luna", "ultra")).toBe("max");
+    expect(nativeEffortClamp("gpt-5.6-luna", "max")).toBeNull();
+    // Old-ladder natives keep stopping at xhigh.
+    expect(nativeEffortClamp("gpt-5.5", "ultra")).toBe("xhigh");
+    expect(nativeEffortClamp("gpt-5.5", "max")).toBe("xhigh");
+    // An off-snapshot gpt-5.6 native has a real max rung but still must not emit ultra.
+    expect(nativeEffortClamp("gpt-5.6-unreleased", "ultra")).toBe("max");
+    expect(nativeEffortClamp("gpt-5.6-unreleased", "max")).toBeNull();
+    // Routed models map efforts in their own adapters and are never clamped here.
+    expect(nativeEffortClamp("qwen-local/huihui-qwen3.8-27b-abliterated-q6-k-l", "ultra")).toBeNull();
+  });
 });
 
 describe("/api/effort-caps", () => {
@@ -467,3 +515,4 @@ describe("/api/effort-caps", () => {
     expect(config.subagentEffortCap).toBe("low");
   });
 });
+import { ManagementRequest as Request } from "./helpers/management-auth";

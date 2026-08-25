@@ -120,9 +120,9 @@ c83618ab2098525d343df2160d98b2449dca6d5d
 The main opencodex implementation surfaces referenced by the plan are:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts
 ```

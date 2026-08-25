@@ -1,7 +1,12 @@
-import { constants, copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { atomicWriteFile } from "../config";
+import {
+  atomicWriteSecretFile,
+  atomicWriteSecretFileNoReplace,
+  hardenDirectoryForSecretWrite,
+  readFileFromHardenedDirectoryRequired,
+} from "../config";
 import { applyEol, dominantEol, isLoopbackHostname, providerBaseHost } from "../codex/inject";
 
 export interface GrokInjectModel {
@@ -24,7 +29,12 @@ const END_MARKER = "# <<< opencodex managed block <<<";
 // cli-chat-proxy and 401s. Per-model direct fields DO route. So every [model.*] block carries its
 // own base_url/api_backend/api_key and no [model_providers] table is emitted at all.
 
-interface ManagedRegion {
+/**
+ * INTERNAL API shared with `./inspect` (WP2, devlog 260803_integrations_toggle_all/012).
+ * The inspector and the writer are its only callers — one parser for one fence, so a
+ * read and a strip can never disagree about where our block starts and stops.
+ */
+export interface ManagedRegion {
   start: number;
   end: number;
   orphaned: boolean;
@@ -34,11 +44,16 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function resolveGrokHome(grokHome?: string): string {
+/**
+ * INTERNAL API shared with `./inspect`, so the reader and the writer resolve the
+ * authoritative home identically (GROK_HOME, then ~/.grok). Not a public surface.
+ */
+export function resolveGrokHome(grokHome?: string): string {
   return grokHome ?? (process.env.GROK_HOME || join(homedir(), ".grok"));
 }
 
-function isDirectory(path: string): boolean {
+/** INTERNAL API shared with `./inspect` — a missing home is a STATE, not an error. */
+export function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
   } catch {
@@ -46,7 +61,8 @@ function isDirectory(path: string): boolean {
   }
 }
 
-function findManagedRegion(content: string): ManagedRegion | null {
+/** INTERNAL API — see `ManagedRegion` above. Not a public fence-parsing surface. */
+export function findManagedRegion(content: string): ManagedRegion | null {
   const start = content.indexOf(BEGIN_MARKER);
   if (start === -1) return null;
   const endMarkerStart = content.indexOf(END_MARKER, start + BEGIN_MARKER.length);
@@ -172,6 +188,16 @@ function isLoopbackBaseUrl(value: string | undefined): boolean {
  */
 function findOpencodexOrphans(content: string, region: ManagedRegion | null): OrphanTable[] {
   const orphans: OrphanTable[] = [];
+  // A pre-fence orphan's body must stop AT the fence. The managed block opens with a
+  // COMMENT, not a table header, so a span that runs to "the next table header" swallows
+  // the BEGIN marker whenever no other table separates them — and removing the orphan then
+  // deletes the fence opener itself, which strands the END marker and makes every later
+  // sync re-append a block (the #511 duplicate loop, one layer down).
+  // `region` is null ONLY when BEGIN_MARKER is absent (see findManagedRegion), so -1
+  // disables the clamp for marker-less files without a redundant scan.
+  const fenceStart = region ? region.start : -1;
+  const clampEnd = (start: number, end: number): number =>
+    fenceStart >= 0 && start < fenceStart ? Math.min(end, fenceStart) : end;
   // Collect every table header first: a table body runs to the NEXT header, whatever it is.
   const headers: Array<{ index: number; length: number; segments: string[]; array: boolean }> = [];
   for (const match of content.matchAll(ANY_TABLE_HEADER)) {
@@ -186,7 +212,7 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
     if (header.array || header.segments.length !== 2 || header.segments[0] !== "model") continue;
     // Inside the fence the regular splice already owns it.
     if (region && header.index >= region.start && header.index < region.end) continue;
-    const bodyEnd = headers[position + 1]?.index ?? content.length;
+    const bodyEnd = clampEnd(header.index, headers[position + 1]?.index ?? content.length);
     const keys = tableBodyKeys(content.slice(header.index + header.length, bodyEnd));
     if (keys.get("api_key") !== OPENCODEX_API_KEY) continue;
     if (!isLoopbackBaseUrl(keys.get("base_url"))) continue;
@@ -197,9 +223,13 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
     let end = bodyEnd;
     for (let next = position + 1; next < headers.length; next += 1) {
       const child = headers[next]!;
+      // Only a PRE-fence parent may be cut short by the fence. Without the parent test a
+      // below-fence orphan would break on its first child (every index is past the fence),
+      // leaving the sub-table behind to keep the alias reserved — the -2 loop again.
+      if (fenceStart >= 0 && header.index < fenceStart && child.index >= fenceStart) break;
       if (child.segments.length <= 2) break;
       if (child.segments[0] !== "model" || child.segments[1] !== header.segments[1]) break;
-      end = headers[next + 1]?.index ?? content.length;
+      end = clampEnd(header.index, headers[next + 1]?.index ?? content.length);
     }
     orphans.push({ alias: header.segments[1]!, modelId: keys.get("model"), start: header.index, end });
   }
@@ -246,11 +276,8 @@ function orphanedMarkerResult(action: string): GrokInjectResult {
 
 function copyBackupOnce(configPath: string, backupPath: string): void {
   if (existsSync(backupPath)) return;
-  try {
-    copyFileSync(configPath, backupPath, constants.COPYFILE_EXCL);
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-  }
+  const original = readFileFromHardenedDirectoryRequired(configPath).toString("utf8");
+  atomicWriteSecretFileNoReplace(backupPath, original);
 }
 
 function errorResult(action: string, error: unknown): GrokInjectResult {
@@ -299,7 +326,7 @@ export function buildGrokManagedBlock(
       `[model.${alias}]`,
       `model = ${tomlString(model.id)}`,
       `base_url = ${tomlString(baseUrl)}`,
-      'api_backend = "chat_completions"',
+      'api_backend = "responses"',
       'api_key = "opencodex-loopback"',
       `name = ${tomlString(model.name ?? `OCX ${model.id}`)}`,
       // Best-effort attribution tag for the usage dashboard. Upstream Grok sends
@@ -358,8 +385,11 @@ export function injectGrokConfig(
   const configPath = join(grokHome, "config.toml");
   const backupPath = join(grokHome, "config.toml.bak-opencodex");
   try {
+    hardenDirectoryForSecretWrite(grokHome);
     const configExisted = existsSync(configPath);
-    const rawContent = configExisted ? readFileSync(configPath, "utf8") : "";
+    const rawContent = configExisted
+      ? readFileFromHardenedDirectoryRequired(configPath).toString("utf8")
+      : "";
     const eol = dominantEol(rawContent);
     const originalContent = applyEol(rawContent, "\n");
     const originalRegion = findManagedRegion(originalContent);
@@ -414,8 +444,14 @@ export function injectGrokConfig(
     if (output === rawContent) {
       return { ok: true, changed: false, message: "Grok config already contains the current opencodex managed block." };
     }
-    if (configExisted && !region) copyBackupOnce(configPath, backupPath);
-    atomicWriteFile(configPath, output);
+    // Back up before a first-time fence write AND before any sweep, since adopting an orphan
+    // deletes a table the user has in their file. Previously the adjacent-orphan layout got a
+    // backup only as a side effect of the fence being destroyed (which made `region` falsy);
+    // preserving the fence must not silently drop that safety net.
+    if (configExisted && (!region || orphans.length > 0)) copyBackupOnce(configPath, backupPath);
+    // Fork: Grok's config.toml carries an api_key, so it is written through the hardened-secret
+    // path rather than atomicWriteFile. Orthogonal to the sweep fix above.
+    atomicWriteSecretFile(configPath, output);
     return {
       ok: true,
       changed: true,
@@ -445,7 +481,8 @@ export function stripGrokConfig(opts: { grokHome?: string } = {}): GrokInjectRes
   }
 
   try {
-    const rawContent = readFileSync(configPath, "utf8");
+    hardenDirectoryForSecretWrite(grokHome);
+    const rawContent = readFileFromHardenedDirectoryRequired(configPath).toString("utf8");
     const eol = dominantEol(rawContent);
     const content = applyEol(rawContent, "\n");
     const region = findManagedRegion(content);
@@ -465,7 +502,7 @@ export function stripGrokConfig(opts: { grokHome?: string } = {}): GrokInjectRes
     if (prefix.endsWith("\n\n")) prefix = prefix.slice(0, -1);
     else if (restOfFile.length === 0 && prefix.endsWith("\n")) prefix = prefix.slice(0, -1);
     const stripped = prefix + restOfFile;
-    atomicWriteFile(configPath, applyEol(stripped, eol));
+    atomicWriteSecretFile(configPath, applyEol(stripped, eol));
 
     return {
       ok: true,

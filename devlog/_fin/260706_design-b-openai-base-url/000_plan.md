@@ -2,7 +2,7 @@
 
 - **Date:** 2026-07-06 · **Branch:** dev-B (from origin/dev @ 23cc4ed) · **Class:** C4
 - **Loop archetype:** spec-satisfaction repair (verifier defines done: bun test suite + targeted E2E facts)
-- **Trigger:** macmini-cf spike (2026-07-05) proved `openai_base_url` routes plain codex
+- **Trigger:** remote macOS spike (2026-07-05) proved `openai_base_url` routes plain codex
   through the proxy with threads tagged `openai` — the re-tag failure class disappears.
 - **Goal:** plain `codex` routes through ocx WITHOUT changing `model_provider`, so
   Codex thread history never needs remapping or restore.

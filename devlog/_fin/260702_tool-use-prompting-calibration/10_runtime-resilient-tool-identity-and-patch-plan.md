@@ -109,19 +109,19 @@ sensitivity exists, not as proof that the current exact alias choice is final.
 
 `codex-rs` source shows separate instruction and tool planes:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:260`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:260`
   has `ModelInfo`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:281`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:281`
   carries base instructions.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:289`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:289`
   and nearby fields carry tool capability metadata.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:539`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:539`
   through `:550` resolve base instruction priority.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2638`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2638`
   through `:2863` build the dynamic initial context.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:897`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:897`
   through `:906` attach tool specs and parallel-tool capability to the prompt.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:742`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:742`
   through `:779` serialize `instructions`, `input`, `tools`,
   `tool_choice`, and `parallel_tool_calls` into the Responses request.
 
@@ -135,27 +135,27 @@ visible request data.
 The `ToolSpec` enum includes function, namespace, hosted, and custom/freeform
 tool shapes:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:17`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:17`
   through `:65`.
 
 `spec_plan.rs` builds the visible spec list from runtime plans, provider/model
 capabilities, feature flags, MCP tools, dynamic tools, extension tools, and
 hosted tools:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:147`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:147`
   through `:225`.
 - Shell registration:
-  `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:546`.
+  `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:546`.
 - Utility/edit/image registration:
-  `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:593`.
+  `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:593`.
 - Collaboration tools:
-  `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:649`.
+  `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:649`.
 - MCP runtime tools:
-  `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:746`.
+  `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:746`.
 - Dynamic tools:
-  `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:772`.
+  `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:772`.
 - Tool search:
-  `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:796`.
+  `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:796`.
 
 This is why the durable rule must say "current catalog" rather than "the
 Codex tool list is X."
@@ -165,32 +165,32 @@ Codex tool list is X."
 Parallelism is not only a prompt preference. Runtime locking distinguishes
 parallel-capable and non-parallel handlers:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:31`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:36`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:88`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:115`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:118`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:31`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:36`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:88`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:115`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:118`.
 
 `apply_patch` is a grammar-shaped custom/freeform tool, not a generic JSON
 function:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:7`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:18`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:20`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:7`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:18`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:20`.
 
 The handler accepts and verifies the custom payload:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:300`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:324`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:351`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:389`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:300`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:324`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:351`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:389`.
 
 Shell-shaped `apply_patch` commands can also be intercepted and routed through
 the same patch path:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:492`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:504`.
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs:222`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:492`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:504`.
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs:222`.
 
 ## Official Codex manual facts
 
@@ -313,7 +313,7 @@ to the current bridge contract without erasing Cursor's own rule stack.
 
 Attachment evidence:
 
-- `/Users/jun/.codex/attachments/4c992852-bbee-403c-a20c-4cb8fbb400e8/pasted-text.txt`.
+- `<private-user-home>/.codex/attachments/4c992852-bbee-403c-a20c-4cb8fbb400e8/pasted-text.txt`.
 
 Observed trace:
 
@@ -982,10 +982,10 @@ Result:
   builder.
 - **Verification**: Verified local Cursor diff with `git diff`, source anchors
   with `nl -ba`/`sed`, Codex official manual via
-  `node /Users/jun/.codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs`,
+  `node <private-user-home>/.codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs`,
   external comparison via five Spark-search subagents plus official docs
   fetches, and the attached Cursor/native Codex tool-count transcript at
-  `/Users/jun/.codex/attachments/4c992852-bbee-403c-a20c-4cb8fbb400e8/pasted-text.txt`.
+  `<private-user-home>/.codex/attachments/4c992852-bbee-403c-a20c-4cb8fbb400e8/pasted-text.txt`.
 
 ### `src/adapters/cursor/tool-definitions.ts` - Cursor tool-use prompt calibration
 

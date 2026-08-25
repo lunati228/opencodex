@@ -10,9 +10,9 @@ The fix must preserve user data by default, document the exact reproduction, exp
 
 The local `ocx` binary is the development checkout:
 
-- `/Users/jun/.local/bin/ocx`
-- `/Users/jun/Developer/new/700_projects/opencodex/dist/bin/ocx`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts`
+- `<private-user-home>/.local/bin/ocx`
+- `<private-user-home>/Developer/new/700_projects/opencodex/dist/bin/ocx`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts`
 
 Observed behavior:
 
@@ -24,7 +24,7 @@ Observed behavior:
 
 Local config evidence:
 
-- `/Users/jun/.opencodex/config.json` currently has no `syncResumeHistory` key, so PR #13's default is "do not rewrite resume history".
+- `<private-user-home>/.opencodex/config.json` currently has no `syncResumeHistory` key, so PR #13's default is "do not rewrite resume history".
 - `~/.codex/config.toml` can be in native mode after `ocx stop`, with no root `model_provider = "opencodex"`.
 
 Local Codex state evidence from `~/.codex/state_5.sqlite`:
@@ -91,21 +91,21 @@ Limitation:
 
 Likely code files:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/codex-history-provider.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/codex-inject.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/types.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-history-provider.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-inject.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts`
 
 Likely tests:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-history-provider.test.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-inject.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-history-provider.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-inject.test.ts`
 
 Likely docs:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/README.md`
-- `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/configuration.md`
-- `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/ko/reference/configuration.md`
-- `/Users/jun/Developer/new/700_projects/opencodex/docs-site/src/content/docs/zh/reference/configuration.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/README.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/reference/configuration.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/ko/reference/configuration.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/docs-site/src/content/docs/zh/reference/configuration.md`
 
 ## Safety rules
 

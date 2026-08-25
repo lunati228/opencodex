@@ -9,17 +9,18 @@ import { buildModelsRequest, resolveModelsAuthToken } from "../../oauth";
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
-import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../../generated/jawcode-model-metadata";
+import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
-import { routedSlug, slugEquals, slugsEquivalent } from "../../providers/slug-codec";
+import { routedSlug, slugEquals, slugEquivalenceKey, slugsEquivalent } from "../../providers/slug-codec";
 import { CODEX_GPT5_IDENTITY_LINE } from "../../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../../adapters/cursor/live-models";
 import { isCanonicalOpenAiForwardProvider, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import {
   COMBO_NAMESPACE,
+  comboDisabledModelSelectors,
   comboModelId,
   getCombo,
   listComboIds,
@@ -37,6 +38,37 @@ import type { CatalogModel } from "./parsing";
 export const openAiApiCollisionWarnings = new Set<string>();
 
 export const comboCatalogWarningSignatures = new Map<string, string>();
+
+/**
+ * Why `deriveComboCatalogModel` rejected a configured combo (#484 / #516).
+ * Distinguishes unresolved/incomplete member metadata from a complete but empty
+ * modality intersection so diagnostics do not send operators to the wrong fix.
+ */
+export type ComboCatalogOmissionReason =
+  | "incomplete_metadata"
+  | "incompatible_modalities";
+
+/** Combos omitted from the catalog during the most recent `gatherRoutedModels` call (#484). */
+export interface ComboCatalogOmission {
+  id: string;
+  targets: string[];
+  reason: ComboCatalogOmissionReason;
+  message: string;
+}
+
+let lastComboCatalogOmissions: ComboCatalogOmission[] = [];
+
+export function clearLastComboCatalogOmissions(): void {
+  lastComboCatalogOmissions = [];
+}
+
+export function getLastComboCatalogOmissions(): readonly ComboCatalogOmission[] {
+  return lastComboCatalogOmissions;
+}
+
+export function replaceLastComboCatalogOmissions(items: readonly ComboCatalogOmission[]): void {
+  lastComboCatalogOmissions = [...items];
+}
 
 export function intersectStrings(values: readonly string[][]): string[] {
   if (values.length === 0) return [];
@@ -60,28 +92,67 @@ export function effectiveComboDefault(
   return atOrBelow.at(-1)?.effort ?? ranked[0]!.effort;
 }
 
+/**
+ * Classify a combo derivation failure. Returns `null` when the combo would catalog.
+ * Callers that already know derivation failed can map the reason into diagnostics.
+ */
+export function comboCatalogOmissionReason(
+  combo: NormalizedComboConfig,
+  members: readonly CatalogModel[],
+): ComboCatalogOmissionReason | null {
+  if (combo.targets.length === 0) return "incomplete_metadata";
+  if (new Set(combo.targets.map(targetKey)).size !== combo.targets.length) {
+    return "incomplete_metadata";
+  }
+  if (members.length !== combo.targets.length) return "incomplete_metadata";
+  if (!members.every((member, index) => (
+    `${member.provider}/${member.id}` === targetKey(combo.targets[index]!)
+  ))) {
+    return "incomplete_metadata";
+  }
+  const contexts = members.map(member => member.contextWindow);
+  if (contexts.some(value => typeof value !== "number" || value <= 0)) {
+    return "incomplete_metadata";
+  }
+
+  const inputModalities = intersectStrings(
+    members.map(member => member.inputModalities ?? ["text"]),
+  );
+  if (inputModalities.length === 0) return "incompatible_modalities";
+  return null;
+}
+
 export function deriveComboCatalogModel(
   id: string,
   combo: NormalizedComboConfig,
   members: readonly CatalogModel[],
 ): CatalogModel | null {
-  if (combo.targets.length === 0) return null;
-  if (new Set(combo.targets.map(targetKey)).size !== combo.targets.length) return null;
-  if (members.length !== combo.targets.length) return null;
-  if (!members.every((member, index) => (
-    `${member.provider}/${member.id}` === targetKey(combo.targets[index]!)
-  ))) return null;
-  const contexts = members.map(member => member.contextWindow);
-  if (contexts.some(value => typeof value !== "number" || value <= 0)) return null;
+  if (comboCatalogOmissionReason(combo, members) !== null) return null;
 
-  const inputModalities = intersectStrings(
+  const derivedInputModalities = intersectStrings(
     members.map(member => member.inputModalities ?? ["text"]),
   );
+  const inputModalities = combo.imageInput === "disabled"
+    ? derivedInputModalities.filter(modality => modality !== "image")
+    : derivedInputModalities;
   if (inputModalities.length === 0) return null;
-  const reasoningEfforts = intersectStrings(
-    members.map(member => member.reasoningEfforts ?? []),
+  // Unknown ladders (`undefined`) are wildcards for catalog derivation — same
+  // boundary as the GUI picker. An explicit empty ladder still constrains.
+  const advertisedLadders = members
+    .map(member => member.reasoningEfforts)
+    .filter((ladder): ladder is string[] => ladder !== undefined);
+  const reasoningEfforts = advertisedLadders.length === 0
+    ? []
+    : intersectStrings(advertisedLadders);
+  const contextWindow = Math.min(...members.map(member => member.contextWindow!));
+  const limitingMembers = members.filter(member => member.contextWindow === contextWindow);
+  const hasLimitingContextCapMetadata = limitingMembers.some(
+    member => typeof member.contextCapped === "boolean",
   );
-  const contextWindow = Math.min(...contexts as number[]);
+  // A combo is cap-limited only when every member defining its effective minimum was
+  // itself reduced by a provider cap. An uncapped member at the same minimum means the
+  // combo would have the same window even without the cap.
+  const contextCapped = limitingMembers.every(member => member.contextCapped === true);
   const maxInputTokens = Math.min(
     ...members.map(member => member.maxInputTokens ?? member.contextWindow!),
   );
@@ -96,14 +167,25 @@ export function deriveComboCatalogModel(
     owned_by: COMBO_NAMESPACE,
     contextWindow,
     maxInputTokens,
+    ...(hasLimitingContextCapMetadata ? { contextCapped } : {}),
     inputModalities,
     reasoningEfforts,
     ...(combo.alias ? { alias: combo.alias } : {}),
+    ...(combo.nativeAlias ? { nativeAlias: true } : {}),
+    ...(combo.displayName ? { displayName: combo.displayName } : {}),
     ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
     ...(members.every(member => member.parallelToolCalls === true)
       ? { parallelToolCalls: true }
       : {}),
+    ...(members.every(member => member.supportsServiceTier === true)
+      ? { supportsServiceTier: true }
+      : members.some(member => member.supportsServiceTier === false)
+        ? { supportsServiceTier: false }
+        : {}),
     ...(members.some(member => member.supportsReasoningSummaries === false) ? { supportsReasoningSummaries: false } : {}),
+    ...(members.every(member => member.codexToolMode === "shell")
+      ? { codexToolMode: "shell" as const }
+      : {}),
   };
 }
 
@@ -136,20 +218,62 @@ export function comboCatalogWarningSignature(
   }).sort((a, b) => a.key.localeCompare(b.key)));
 }
 
+export function comboCatalogOmissionDetail(reason: ComboCatalogOmissionReason): string {
+  return reason === "incompatible_modalities"
+    ? "members have no common input modalities"
+    : "member capabilities are incomplete";
+}
+
+/** One-line sync/CLI summary that respects the actual omission reason(s). */
+export function summarizeComboCatalogOmissions(
+  omissions: readonly Pick<ComboCatalogOmission, "reason">[],
+): string {
+  const n = omissions.length;
+  const prefix = `${n} combo${n === 1 ? "" : "s"} omitted from the catalog`;
+  if (n === 0) return prefix + ".";
+  const reasons = new Set(omissions.map(item => item.reason));
+  if (reasons.size === 1) {
+    return `${prefix} because ${comboCatalogOmissionDetail([...reasons][0]!)}.`;
+  }
+  return `${prefix}.`;
+}
+
+export function buildComboCatalogOmission(
+  id: string,
+  combo: NormalizedComboConfig,
+  members: readonly CatalogModel[],
+): ComboCatalogOmission {
+  const targets = combo.targets
+    .map(target => safeCatalogWarningLabel(targetKey(target)))
+    .sort((a, b) => a.localeCompare(b));
+  const reason = comboCatalogOmissionReason(combo, members) ?? "incomplete_metadata";
+  return {
+    id,
+    targets,
+    reason,
+    message: `[opencodex] Combo "${safeCatalogWarningLabel(id)}" is omitted from the catalog because ${comboCatalogOmissionDetail(reason)}: ${targets.join(", ")}.`,
+  };
+}
+
+/**
+ * Record a combo omitted from `/v1/models` + on-disk catalog and warn once per signature.
+ * Callers that need a race-free list (catalog sync) pass a local `sink` from the same
+ * gather invocation instead of reading process-global state afterward (#484 review).
+ */
 export function warnUncataloguedComboOnce(
   id: string,
   combo: NormalizedComboConfig,
   members: readonly CatalogModel[],
-): void {
+  sink: ComboCatalogOmission[] = lastComboCatalogOmissions,
+): ComboCatalogOmission {
+  const omission = buildComboCatalogOmission(id, combo, members);
+  sink.push(omission);
   const signature = comboCatalogWarningSignature(combo, members);
-  if (comboCatalogWarningSignatures.get(id) === signature) return;
-  comboCatalogWarningSignatures.set(id, signature);
-  const targets = combo.targets
-    .map(target => safeCatalogWarningLabel(targetKey(target)))
-    .sort((a, b) => a.localeCompare(b));
-  console.warn(
-    `[opencodex] Combo "${safeCatalogWarningLabel(id)}" is omitted from the catalog because member capabilities are incomplete: ${targets.join(", ")}.`,
-  );
+  if (comboCatalogWarningSignatures.get(id) !== signature) {
+    comboCatalogWarningSignatures.set(id, signature);
+    console.warn(omission.message);
+  }
+  return omission;
 }
 
 export function exactComboCatalogSlugs(
@@ -157,12 +281,15 @@ export function exactComboCatalogSlugs(
 ): Set<string> {
   const disabled = new Set(config.disabledModels ?? []);
   return new Set(listComboIds(config).flatMap(id => {
-    const alias = typeof config.combos?.[id]?.alias === "string"
-      ? config.combos[id]!.alias!.trim()
+    const raw = config.combos?.[id];
+    const alias = typeof raw?.alias === "string"
+      ? raw.alias.trim()
       : "";
     const canonical = comboModelId(id);
     const publicSlug = alias || canonical;
-    return disabled.has(publicSlug) || disabled.has(canonical) ? [] : [publicSlug];
+    const comboDisabled = comboDisabledModelSelectors(id, raw ?? {})
+      .some(selector => disabled.has(selector));
+    return comboDisabled ? [] : [publicSlug];
   }));
 }
 
@@ -187,11 +314,52 @@ export const slugAliasCollisionWarnings = new Set<string>();
 
 export const comboMasqueradeCollisionWarnings = new Set<string>();
 
+export const comboUnrestorableShadowWarnings = new Set<string>();
+
+export const accountSelectorShadowCollisionWarnings = new Set<string>();
+let lastWarningReconciledGeneration = 0;
+
+export function reconcileCatalogWarningMemos(generation: number): number {
+  if (generation <= lastWarningReconciledGeneration) return 0;
+  const removed = openAiApiCollisionWarnings.size
+    + comboCatalogWarningSignatures.size
+    + slugAliasCollisionWarnings.size
+    + comboMasqueradeCollisionWarnings.size
+    + comboUnrestorableShadowWarnings.size
+    + accountSelectorShadowCollisionWarnings.size;
+  openAiApiCollisionWarnings.clear();
+  comboCatalogWarningSignatures.clear();
+  slugAliasCollisionWarnings.clear();
+  comboMasqueradeCollisionWarnings.clear();
+  comboUnrestorableShadowWarnings.clear();
+  accountSelectorShadowCollisionWarnings.clear();
+  lastWarningReconciledGeneration = generation;
+  return removed;
+}
+
 export function warnComboMasqueradeCollisionOnce(slug: string): void {
   if (comboMasqueradeCollisionWarnings.has(slug)) return;
   comboMasqueradeCollisionWarnings.add(slug);
   console.warn(
     `[opencodex] combo alias collision on "${safeCatalogWarningLabel(slug)}": the combo wins and the shadowed provider model is omitted from the catalog.`,
+  );
+}
+
+export function warnComboUnrestorableShadowOnce(slug: string): void {
+  const key = slugEquivalenceKey(slug);
+  if (comboUnrestorableShadowWarnings.has(key)) return;
+  comboUnrestorableShadowWarnings.add(key);
+  console.warn(
+    `[opencodex] combo alias collision on "${safeCatalogWarningLabel(slug)}": the existing user-managed or foreign catalog row is retained because no pristine backup can restore it. Rename the combo alias to expose both models.`,
+  );
+}
+
+/** Warn once when a live provider row loses its reserved slug to an account selector. */
+export function warnAccountSelectorShadowedProviderOnce(slug: string): void {
+  if (accountSelectorShadowCollisionWarnings.has(slug)) return;
+  accountSelectorShadowCollisionWarnings.add(slug);
+  console.warn(
+    `[opencodex] account selector collision on "${safeCatalogWarningLabel(slug)}": the account-bound native model wins and the shadowed provider model is omitted from the catalog. Rename the provider or account selector.`,
   );
 }
 

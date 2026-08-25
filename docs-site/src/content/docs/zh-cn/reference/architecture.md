@@ -101,10 +101,12 @@ src/
 | `done` | `response.completed`（带 usage） |
 | `error` | `response.failed`（带 `last_error`） |
 
-桥接器还会运行**心跳保活**（RC3）：上游没有数据时，每 2 秒发送一次解析器会忽略的
-`response.heartbeat` SSE event，以重新启动 Codex 的空闲计时器。默认**停滞截止时间**为 300 秒
-（`stallTimeoutSec`）；达到该时限后会中止上游，并发出 reason 为
-`upstream_stall_timeout` 的 `response.incomplete`，避免挂起的连接无限期阻塞 Codex。
+桥接器还会运行**心跳保活**（RC3）：上游没有数据时，每 2 秒发送一个 SSE 注释行
+（`: opencodex heartbeat`）来重新启动 Codex 的空闲计时器。注释行会被每个
+eventsource 解析器丢弃而不会产生任何事件，因此严格的 Responses 解码器永远不会
+遇到未知 variant。默认**停滞截止时间**为 300 秒（`stallTimeoutSec`）；达到该时限后
+会中止上游，并发出 reason 为 `upstream_stall_timeout` 的 `response.incomplete`，
+避免挂起的连接无限期阻塞 Codex。
 
 解析器捕获的命名空间映射、freeform 集合与 tool-search 集合会把工具调用区分为三种 Responses
 item，因此 MCP 命名空间、`apply_patch` 风格的 freeform 工具和客户端执行的 `tool_search` 都能
@@ -148,14 +150,22 @@ Codex context compaction 同样适用于路由模型。`server/responses/compact
 
 ## Reasoning effort
 
-`reasoning-effort.ts` 把 Codex 的 reasoning 标签转换为各 provider 的 wire 值。Codex 目录会
-公布 Codex 接受的标签（`low` / `medium` / `high` / `xhigh` / `max`），但上游 provider 可能只
-支持更小的子集，或要求真实 alias。该模块会：
+`reasoning-effort.ts` 把 Codex 的 reasoning 标签转换为各 provider 的 wire 值。已明确声明的
+非 GPT 阶梯会按配置原样显示，不会合成额外档位；未声明的条目保留兼容默认值，而 GPT 系列保留
+既有的 Codex 产品档位。该模块会：
 
 - 定义标准的 `CODEX_REASONING_LEVELS` 及其排序。
 - 精确级别不可用时，把请求的 effort 限制到最接近的支持层级。
 - 解析模型级和 provider 级 `reasoningEffortMap` override，用于自定义 wire 映射。
 - 对 `noReasoningModels` 中的模型完全移除 effort。
+
+例如 Gemini 3.7 Flash 只显示 `low` / `medium` / `high`；托管 Qwen 只显示
+`low` / `medium` / `xhigh`，并默认使用 `xhigh`。旧配置值只会在 wire 边界被钳制或映射。
+
+Qwen3.8-Max 是旧版 Qwen3.x budget 契约之外、明确使用直接 effort 的例外。Alibaba Token
+Plan 把其上游支持等级记录为 `low`、`medium` 和 `xhigh`（默认值），并通过
+`reasoning_effort` 发送最终值；仅供 Codex 兼容的顶档在发送时会限制为 `xhigh`。运行时的
+注册表补全会修复仍把该模型归类为 `thinking_budget` 模型的旧版持久化预设元数据。
 
 ## 核心类型
 

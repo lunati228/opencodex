@@ -135,14 +135,14 @@ Recommendation:
 
 ## Local Claude Code / CLI Source Comparison
 
-Local source root: `/Users/jun/Developer/codex`
+Local source root: `<private-user-home>/Developer/codex`
 
 Relevant findings:
 
-- `/Users/jun/Developer/codex/002_prompt-context/claude-code_prompt/26-permission_scope-permission-scope-defs.md` shows Claude Code-derived logic reading `usage.cache_read_input_tokens` and `usage.cache_creation_input_tokens` separately.
+- `<private-user-home>/Developer/codex/002_prompt-context/claude-code_prompt/26-permission_scope-permission-scope-defs.md` shows Claude Code-derived logic reading `usage.cache_read_input_tokens` and `usage.cache_creation_input_tokens` separately.
 - The same source marks selected text blocks with `cache_control` and logs actual input as `inputTokens + cacheReadInputTokens + cacheCreationInputTokens`.
-- `/Users/jun/Developer/codex/002_prompt-context/02_ai_prompt.md` and `/Users/jun/Developer/codex/010_memory-pipeline/10_ai_memory.md` describe Aider/Claude-style cache strategies that mark stable examples/system/repo/chat-file regions.
-- Copilot CLI extracted sources under `/Users/jun/Developer/codex/151_copilot_cli/` track `cacheReadTokens` and `cacheWriteTokens` separately in telemetry.
+- `<private-user-home>/Developer/codex/002_prompt-context/02_ai_prompt.md` and `<private-user-home>/Developer/codex/010_memory-pipeline/10_ai_memory.md` describe Aider/Claude-style cache strategies that mark stable examples/system/repo/chat-file regions.
+- Copilot CLI extracted sources under `<private-user-home>/Developer/codex/151_copilot_cli/` track `cacheReadTokens` and `cacheWriteTokens` separately in telemetry.
 
 Implications for opencodex:
 

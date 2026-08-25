@@ -20,12 +20,19 @@ function migratableConfig(): OcxConfig {
   } as unknown as OcxConfig;
 }
 
+function namespaceCollidingConfig(): OcxConfig {
+  return {
+    ...migratableConfig(),
+    codexAccountNamespaces: { "alibaba-token-plan-intl": "pool-a" },
+  };
+}
+
 test("moves a Beijing entry holding an international endpoint", () => {
   const config = migratableConfig();
   // Beijing catalog fields, as `ocx provider add` would have persisted them.
   Object.assign(config.providers["alibaba-token-plan"]!, {
-    models: ["qwen3.8-max-preview", "qwen3.7-max"],
-    defaultModel: "qwen3.8-max-preview",
+    models: ["qwen3.8-max", "qwen3.7-max"],
+    defaultModel: "qwen3.8-max",
   });
 
   const projection = projectAlibabaRegionMigration(config);
@@ -94,6 +101,51 @@ test("refuses to merge when the intl entry exists, and says why", () => {
   expect(projection.warnings[0]).toContain("already exists");
 });
 
+test("refuses to replace an account namespace with the intl provider", () => {
+  const config = namespaceCollidingConfig();
+  const before = structuredClone(config);
+
+  const projection = projectAlibabaRegionMigration(config);
+  expect(projection.changed).toBe(false);
+  expect(projection.config).toEqual(before);
+  expect(projection.warnings).toHaveLength(1);
+  expect(projection.warnings[0]).toContain("reserved by a configured Codex account namespace");
+  expect(projection.warnings[0]).toContain("Rename the account selector");
+});
+
+test("refuses a mixed-case account namespace that owns the intl provider id", () => {
+  const config = migratableConfig();
+  config.codexAccountNamespaces = { "ALIBABA-TOKEN-PLAN-INTL": "pool-a" };
+  const before = structuredClone(config);
+
+  const projection = projectAlibabaRegionMigration(config);
+
+  expect(projection.changed).toBe(false);
+  expect(projection.config).toEqual(before);
+  expect(projection.warnings).toHaveLength(1);
+  expect(projection.warnings[0]).toContain("reserved by a configured Codex account namespace");
+});
+
+test("a namespace-blocked migration remains valid across reload", () => {
+  const projection = projectAlibabaRegionMigration(namespaceCollidingConfig());
+  expect(projection.changed).toBe(false);
+
+  const home = mkdtempSync(join(tmpdir(), "ocx-alibaba-namespace-"));
+  const prev = process.env.OPENCODEX_HOME;
+  process.env.OPENCODEX_HOME = home;
+  try {
+    saveConfig(projection.config);
+    const reloaded = loadConfig();
+    expect(reloaded.providers["alibaba-token-plan"]).toBeDefined();
+    expect(reloaded.providers["alibaba-token-plan-intl"]).toBeUndefined();
+    expect(reloaded.codexAccountNamespaces).toEqual({ "alibaba-token-plan-intl": "pool-a" });
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = prev;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("aborts without changing anything when a destination key is occupied", () => {
   const config = migratableConfig();
   config.providerContextCaps = { "alibaba-token-plan": 500_000, "alibaba-token-plan-intl": 900_000 };
@@ -113,12 +165,14 @@ test("is idempotent across repeated startups", () => {
   expect(second.config).toEqual(first.config);
 });
 
-test("carries liveModels and a user-authored note, but not the Beijing catalog", () => {
+test("carries liveModels, modelCosts, and a user-authored note, but not the Beijing catalog", () => {
   const config = migratableConfig();
-  Object.assign(config.providers["alibaba-token-plan"]!, { liveModels: true, note: "my own note" });
+  const costs = { "kimi-k3": { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 } };
+  Object.assign(config.providers["alibaba-token-plan"]!, { liveModels: true, note: "my own note", modelCosts: costs });
 
   const moved = projectAlibabaRegionMigration(config).config.providers["alibaba-token-plan-intl"]!;
   expect(moved.liveModels).toBe(true);
+  expect(moved.modelCosts).toEqual(costs);
   expect(moved.note).toBe("my own note");
   expect(moved.models).toContain("kimi-k2.7-code");
 });

@@ -1,0 +1,17 @@
+You are a senior TypeScript engineer reviewing a local coding-agent runner.
+
+The runner receives a task, reads repository files, proposes a patch, runs focused
+tests, and inspects the final diff. Under cancellation, two asynchronous branches
+can both enter the retry path. This occasionally applies the same patch twice,
+emits two completion events, and leaves a timer alive after the task is reported
+as cancelled.
+
+Produce a detailed engineering response. Reconstruct the likely race, state the
+invariants that must hold, and design the smallest maintainable refactor. Include
+representative TypeScript for the state machine, cancellation path, retry
+scheduling, and idempotent completion. Then design deterministic unit tests with
+a fake clock and controlled promises, integration tests for the tool loop, and a
+final diff-review checklist. Discuss error propagation, cleanup ordering,
+observability, compatibility, and why plausible alternative fixes are unsafe.
+Keep the response self-contained and technically specific. Do not use a network
+or claim that any command was actually executed.

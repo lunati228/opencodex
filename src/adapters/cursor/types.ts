@@ -1,9 +1,17 @@
 import type { OcxUsage } from "../../types";
 import type { OcxMessage, OcxRequestOptions, OcxTool } from "../../types";
 import type { CursorRoutingLevel } from "./discovery";
+import type { CursorCheckpointInvalidationReason } from "./checkpoint-store";
+
+export interface CursorRequestedModelParameter {
+  id: string;
+  value: string;
+}
 
 export interface CursorRunRequest {
   modelId: string;
+  /** Cursor model-picker parameters encoded through AgentRunRequest.requested_model. */
+  requestedModelParameters?: readonly CursorRequestedModelParameter[];
   /** Cursor Router optimization parameter; valid only while modelId is the `default` wire model. */
   routingLevel?: CursorRoutingLevel;
   conversationId: string;
@@ -24,6 +32,18 @@ export interface CursorRunRequest {
    * pre-compaction history being summarized and must not become the next turn's carry-forward total.
    */
   contextUsageStoreCheckpoints?: boolean;
+  /**
+   * Reuse a previously captured ConversationStateStructure instead of rebuilding historical
+   * root/turn blobs. Absent means the existing full-replay path.
+   */
+  checkpointBytes?: Uint8Array;
+  continuationMode?: "full-replay" | "checkpoint";
+  checkpointInvalidationReason?: CursorCheckpointInvalidationReason;
+  /**
+   * When set with checkpointBytes, only this suffix of rawMessages is replayed onto the
+   * decoded ConversationStateStructure. Used for tool-result continuations.
+   */
+  checkpointSuffixStart?: number;
 }
 
 export interface CursorRequestMessage {

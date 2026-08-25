@@ -14,7 +14,7 @@ No runtime source changes are planned.
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/e2e-style/phase100-native-parity.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/e2e-style/phase100-native-parity.test.ts
 ```
 
 Complete content:

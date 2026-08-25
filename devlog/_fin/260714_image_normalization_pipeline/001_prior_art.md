@@ -1,6 +1,6 @@
 # 001 — Prior art: how Claude Code and open-source proxies handle Anthropic image limits
 
-Research record, 2026-07-14. Sources: local corpus `/Users/jun/Developer/codex/150_claude_code`
+Research record, 2026-07-14. Sources: local corpus `<private-user-home>/Developer/codex/150_claude_code`
 (reconstructed official Claude Code source), gh code/issue search, hosted web search.
 Tier legend per cxc-search: Tier 2 = source opened/verified, Tier 1 = candidate, unopened.
 

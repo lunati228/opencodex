@@ -1,5 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
+  chmodSync,
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  truncateSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
   atomicWriteFile,
   AtomicWriteResidualTempError,
   AtomicWriteSecretResidualError,
@@ -9,11 +23,15 @@ import {
   OpenAiTierBackupCollisionError,
   OpenAiTierBackupRollbackError,
   OpenAiTierBackupSecretResidualError,
+  OpenAiTierRollbackPreserveError,
+  preserveOpenAiTierRollbackSnapshot,
   type OpenAiTierBackupIO,
+  type OpenAiTierRollbackPreserveIO,
 } from "../src/config";
 import { runOpenAiTierStartupMigration } from "../src/providers/openai-tier-startup";
 import { OpenAiTierMigrationCollisionError, projectOpenAiTierMigration } from "../src/providers/openai-tiers";
 import type { OcxConfig } from "../src/types";
+import * as windowsAcl from "../src/lib/windows-secret-acl";
 
 const config: OcxConfig = {
   port: 10100,
@@ -109,6 +127,32 @@ function virtualBackupIO(initial: Record<string, string>, fail: {
   return { io, files, calls };
 }
 
+function aclBackupIO(options: {
+  failTempUnlink?: () => boolean;
+  hideTempFromExists?: boolean;
+  vanishAfterHarden?: boolean;
+} = {}): OpenAiTierBackupIO {
+  return {
+    exists: path => options.hideTempFromExists && path.endsWith(".tmp") ? false : existsSync(path),
+    read: path => readFileSync(path),
+    createExclusive: path => { writeFileSync(path, new Uint8Array(), { flag: "wx", mode: 0o600 }); },
+    write: (path, bytes) => writeFileSync(path, bytes),
+    harden: path => {
+      chmodSync(path, 0o600);
+      windowsAcl.hardenSecretPath(path, { required: true });
+      if (options.vanishAfterHarden) unlinkSync(path);
+    },
+    publishNoReplace: (temp, backup) => linkSync(temp, backup),
+    truncate: path => truncateSync(path, 0),
+    unlink: path => {
+      if (path.endsWith(".tmp") && options.failTempUnlink?.()) {
+        throw Object.assign(new Error("injected temp unlink failure"), { code: "EPERM" });
+      }
+      unlinkSync(path);
+    },
+  };
+}
+
 describe("OpenAI provider option startup coordinator", () => {
   test("fresh default config is already marked with the current OpenAI tier schema", () => {
     expect(getDefaultConfig().openaiProviderTierVersion).toBe(2);
@@ -189,6 +233,57 @@ describe("OpenAI provider option startup coordinator", () => {
     })).toThrow("disk full");
   });
 
+  test("rollback collision preserves the snapshot then retries backup once before save (#1599)", () => {
+    const calls: string[] = [];
+    let backups = 0;
+    const projected = { ...config, openaiProviderTierVersion: 2 as const };
+    const result = runOpenAiTierStartupMigration(config, {
+      project: () => ({ config: projected, changed: true, resolvedMode: "pool", warnings: [] }),
+      backup: () => {
+        calls.push("backup");
+        backups += 1;
+        if (backups === 1) throw new OpenAiTierBackupCollisionError();
+      },
+      preserveRollback: () => { calls.push("preserve"); },
+      save: () => { calls.push("save"); },
+    });
+    expect(calls).toEqual(["backup", "preserve", "backup", "save"]);
+    expect(result).toBe(projected);
+  });
+
+  test("rollback preserve failure leaves the original backup and does not save (#1599)", () => {
+    const calls: string[] = [];
+    expect(() => runOpenAiTierStartupMigration(config, {
+      project: () => ({ config: { ...config, openaiProviderTierVersion: 2 }, changed: true, resolvedMode: "pool", warnings: [] }),
+      backup: () => { calls.push("backup"); throw new OpenAiTierBackupCollisionError(); },
+      preserveRollback: () => { calls.push("preserve"); throw new Error("preserve failed"); },
+      save: () => { calls.push("save"); },
+    })).toThrow("preserve failed");
+    expect(calls).toEqual(["backup", "preserve"]);
+  });
+
+  test("non-collision backup errors are not retried (#1599)", () => {
+    const calls: string[] = [];
+    expect(() => runOpenAiTierStartupMigration(config, {
+      project: () => ({ config: { ...config }, changed: true, resolvedMode: "pool", warnings: [] }),
+      backup: () => { calls.push("backup"); throw new OpenAiTierBackupCleanupError(); },
+      preserveRollback: () => { calls.push("preserve"); },
+      save: () => { calls.push("save"); },
+    })).toThrow(OpenAiTierBackupCleanupError);
+    expect(calls).toEqual(["backup"]);
+  });
+
+  test("rollback collision retries backup only once (#1599)", () => {
+    const calls: string[] = [];
+    expect(() => runOpenAiTierStartupMigration(config, {
+      project: () => ({ config: { ...config, openaiProviderTierVersion: 2 }, changed: true, resolvedMode: "pool", warnings: [] }),
+      backup: () => { calls.push("backup"); throw new OpenAiTierBackupCollisionError(); },
+      preserveRollback: () => { calls.push("preserve"); },
+      save: () => { calls.push("save"); },
+    })).toThrow(OpenAiTierBackupCollisionError);
+    expect(calls).toEqual(["backup", "preserve", "backup"]);
+  });
+
   test("absent original file produces a no-op backup", () => {
     const state = virtualBackupIO({});
     expect(backupConfigBeforeOpenAiTierMigration("/virtual/nonexistent.json", state.io)).toBe("absent");
@@ -248,6 +343,92 @@ describe("OpenAI provider option startup coordinator", () => {
     expect(new TextDecoder().decode(backup?.bytes)).toBe("original-secret");
     expect(backup?.hardened).toBe(true);
     expect([...state.files.keys()].filter(path => path.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("backup temp cleanup forgets successful ACL memos and retains failed removals", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-backup-acl-"));
+    const source = join(root, "config.json");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    windowsAcl.setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      writeFileSync(source, "original-secret");
+      expect(backupConfigBeforeOpenAiTierMigration(source, aclBackupIO())).toBe("created");
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(0);
+
+      unlinkSync(`${source}.pre-openai-tiers-v2.bak`);
+      let failRemoval = true;
+      expect(() => backupConfigBeforeOpenAiTierMigration(source, aclBackupIO({
+        failTempUnlink: () => failRemoval,
+      }))).toThrow(OpenAiTierBackupCleanupError);
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(1);
+      failRemoval = false;
+      for (const name of readdirSync(root)) {
+        if (name.endsWith(".tmp")) unlinkSync(join(root, name));
+      }
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("backup unlink EPERM retains its ACL memo when exists falsely reports the temp absent", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-backup-hidden-acl-"));
+    const source = join(root, "config.json");
+    const backup = `${source}.pre-openai-tiers-v2.bak`;
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    windowsAcl.setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      writeFileSync(source, "original-secret");
+      expect(() => backupConfigBeforeOpenAiTierMigration(source, aclBackupIO({
+        failTempUnlink: () => true,
+        hideTempFromExists: true,
+      }))).toThrow(OpenAiTierBackupCleanupError);
+      expect(existsSync(backup)).toBe(false);
+      const residuals = readdirSync(root).filter(name => name.endsWith(".tmp"));
+      expect(residuals).toHaveLength(1);
+      expect(existsSync(join(root, residuals[0]!))).toBe(true);
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(1);
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("backup confirmed-absent cleanup forgets a memo created before the temp vanished", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-backup-absent-acl-"));
+    const source = join(root, "config.json");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    windowsAcl.resetHardenedStateForTests();
+    windowsAcl.setPlatformForTests("win32");
+    windowsAcl.setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      writeFileSync(source, "original-secret");
+      expect(() => backupConfigBeforeOpenAiTierMigration(source, aclBackupIO({ vanishAfterHarden: true })))
+        .toThrow();
+      expect(windowsAcl.hardenedSecretPathCountForTests()).toBe(0);
+    } finally {
+      windowsAcl.setIcaclsRunnerForTests(null);
+      windowsAcl.setPlatformForTests(null);
+      windowsAcl.resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("v2 backup creation never overwrites the historical v1 snapshot", () => {
@@ -373,6 +554,160 @@ describe("OpenAI provider option startup coordinator", () => {
       expect([...state.files.keys()].filter(path => path.endsWith(".tmp"))).toEqual([]);
       const expectedPrefix = stage === "read" ? ["read:/virtual/config.json"] : ["read:/virtual/config.json", expect.stringContaining("create:")];
       expect(state.calls.slice(0, expectedPrefix.length)).toEqual(expectedPrefix);
+    }
+  });
+
+  test("startup migration preserves a rollback-classified v2 backup then continues (#1599)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-1599-startup-"));
+    try {
+      const configPath = join(dir, "config.json");
+      const v2Backup = `${configPath}.pre-openai-tiers-v2.bak`;
+      const currentConfig: OcxConfig = {
+        port: 10100,
+        defaultProvider: "kimi",
+        providers: { kimi: { adapter: "openai-chat", baseUrl: "https://api.moonshot.cn/v1" } },
+      };
+      const currentBytes = `${JSON.stringify(currentConfig, null, 2)}\n`;
+      const rollbackBytes = `${JSON.stringify({
+        openaiProviderTierVersion: 1,
+        defaultProvider: "openai-multi",
+        providers: { "openai-multi": { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" } },
+      }, null, 2)}\n`;
+      writeFileSync(configPath, currentBytes);
+      writeFileSync(v2Backup, rollbackBytes);
+
+      expect(projectOpenAiTierMigration(currentConfig).changed).toBe(true);
+      expect(currentConfig).not.toHaveProperty("openaiProviderTierVersion");
+
+      const result = runOpenAiTierStartupMigration(currentConfig, {
+        project: projectOpenAiTierMigration,
+        backup: () => backupConfigBeforeOpenAiTierMigration(configPath),
+        save: value => { writeFileSync(configPath, `${JSON.stringify(value, null, 2)}\n`); },
+      });
+
+      expect(result.openaiProviderTierVersion).toBe(2);
+      expect(result.defaultProvider).toBe("kimi");
+      expect(readFileSync(configPath, "utf8")).toContain('"openaiProviderTierVersion": 2');
+      expect(readFileSync(v2Backup, "utf8")).toBe(currentBytes);
+      const preserved = readdirSync(dir).filter(name => name.includes("pre-openai-tiers-v1-rollback"));
+      expect(preserved).toHaveLength(1);
+      expect(readFileSync(join(dir, preserved[0]!), "utf8")).toBe(rollbackBytes);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("startup migration does not overwrite an occupied rollback destination (#1599)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-1599-collide-"));
+    const now = Date.now();
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      const configPath = join(dir, "config.json");
+      const v2Backup = `${configPath}.pre-openai-tiers-v2.bak`;
+      const occupied = `${configPath}.pre-openai-tiers-v1-rollback.${now}.bak`;
+      const currentConfig: OcxConfig = {
+        port: 10100,
+        defaultProvider: "kimi",
+        providers: { kimi: { adapter: "openai-chat", baseUrl: "https://api.moonshot.cn/v1" } },
+      };
+      const currentBytes = `${JSON.stringify(currentConfig, null, 2)}\n`;
+      const rollbackBytes = JSON.stringify({ openaiProviderTierVersion: 1, defaultProvider: "openai-multi", providers: {} });
+      writeFileSync(configPath, currentBytes);
+      writeFileSync(v2Backup, rollbackBytes);
+      writeFileSync(occupied, "existing rollback");
+
+      runOpenAiTierStartupMigration(currentConfig, {
+        project: projectOpenAiTierMigration,
+        backup: () => backupConfigBeforeOpenAiTierMigration(configPath),
+        save: value => { writeFileSync(configPath, `${JSON.stringify(value, null, 2)}\n`); },
+      });
+
+      expect(readFileSync(occupied, "utf8")).toBe("existing rollback");
+      expect(readFileSync(v2Backup, "utf8")).toBe(currentBytes);
+      const preserved = readdirSync(dir)
+        .filter(name => name.includes("pre-openai-tiers-v1-rollback") && join(dir, name) !== occupied);
+      expect(preserved).toHaveLength(1);
+      expect(readFileSync(join(dir, preserved[0]!), "utf8")).toBe(rollbackBytes);
+    } finally {
+      Date.now = realNow;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unchanged projection does not touch rollback or v2 backups (#1599)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-1599-unchanged-"));
+    try {
+      const configPath = join(dir, "config.json");
+      const v2Backup = `${configPath}.pre-openai-tiers-v2.bak`;
+      const rollbackName = `${configPath}.pre-openai-tiers-v1-rollback.keep.bak`;
+      writeFileSync(configPath, "current");
+      writeFileSync(v2Backup, "v2-backup");
+      writeFileSync(rollbackName, "rollback");
+      const marked = { ...config, openaiProviderTierVersion: 2 as const };
+      const result = runOpenAiTierStartupMigration(marked, {
+        project: () => ({ config: marked, changed: false, resolvedMode: "pool", warnings: [] }),
+        backup: () => backupConfigBeforeOpenAiTierMigration(configPath),
+        save: () => { writeFileSync(configPath, "migrated"); },
+      });
+      expect(result).toBe(marked);
+      expect(readFileSync(configPath, "utf8")).toBe("current");
+      expect(readFileSync(v2Backup, "utf8")).toBe("v2-backup");
+      expect(readFileSync(rollbackName, "utf8")).toBe("rollback");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("startup leaves the v2 backup and does not save when rollback copy fails (#1599)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-1599-copyfail-"));
+    try {
+      const configPath = join(dir, "config.json");
+      const v2Backup = `${configPath}.pre-openai-tiers-v2.bak`;
+      const currentConfig: OcxConfig = {
+        port: 10100,
+        defaultProvider: "kimi",
+        providers: { kimi: { adapter: "openai-chat", baseUrl: "https://api.moonshot.cn/v1" } },
+      };
+      const currentBytes = `${JSON.stringify(currentConfig, null, 2)}\n`;
+      const rollbackBytes = JSON.stringify({ openaiProviderTierVersion: 1, defaultProvider: "openai-multi", providers: {} });
+      writeFileSync(configPath, currentBytes);
+      writeFileSync(v2Backup, rollbackBytes);
+      const failingIo: OpenAiTierRollbackPreserveIO = {
+        exists: existsSync,
+        read: path => readFileSync(path),
+        copyExclusive: () => { throw new Error("copy failed"); },
+        unlink: unlinkSync,
+      };
+
+      expect(() => runOpenAiTierStartupMigration(currentConfig, {
+        project: projectOpenAiTierMigration,
+        backup: () => backupConfigBeforeOpenAiTierMigration(configPath),
+        preserveRollback: () => { preserveOpenAiTierRollbackSnapshot(configPath, failingIo); },
+        save: () => { throw new Error("save must not run"); },
+      })).toThrow("copy failed");
+
+      expect(readFileSync(v2Backup, "utf8")).toBe(rollbackBytes);
+      expect(readFileSync(configPath, "utf8")).toBe(currentBytes);
+      expect(readdirSync(dir).filter(name => name.includes("pre-openai-tiers-v1-rollback"))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("preserveOpenAiTierRollbackSnapshot rejects stale backups without deleting them (#1599)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-1599-stale-"));
+    try {
+      const configPath = join(dir, "config.json");
+      const v2Backup = `${configPath}.pre-openai-tiers-v2.bak`;
+      const stale = JSON.stringify({ openaiProviderTierVersion: 2, providers: {} });
+      writeFileSync(configPath, "current");
+      writeFileSync(v2Backup, stale);
+      expect(() => preserveOpenAiTierRollbackSnapshot(configPath)).toThrow(OpenAiTierRollbackPreserveError);
+      expect(readFileSync(v2Backup, "utf8")).toBe(stale);
+      expect(readdirSync(dir).filter(name => name.includes("pre-openai-tiers-v1-rollback"))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

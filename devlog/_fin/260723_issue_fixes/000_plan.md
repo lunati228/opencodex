@@ -1,6 +1,6 @@
 # 260723 Issue Fixes — #315 / #311 / #252
 
-- Worktree: `/Users/jun/.codex/worktrees/08c8/opencodex`, branch `codex/260723-issue-triage-r2`
+- Worktree: `<private-user-home>/.codex/worktrees/08c8/opencodex`, branch `codex/260723-issue-triage-r2`
 - Base: `origin/dev` @ af973e54
 - Session: 019f8da7-0b41-7573-b119-1062cf8e4835 (HOTL goal loop, goalplan slug
   `fix-three-triaged-opencodex-issues-315-quota-mon`)

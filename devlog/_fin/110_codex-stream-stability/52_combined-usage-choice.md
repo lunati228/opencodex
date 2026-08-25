@@ -23,16 +23,16 @@ inline at `:164-169` (when `finishReason && usageMeta`) **and** unconditionally 
 ## Evidence
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:196-199  if (chunk.usage) { pendingUsage = …; continue; }  ← F2a
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:239      yield { type: "done" };  (post-loop, no usage)        ← F2b
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts:163-169       inline done with usage when finishReason && usageMeta  ← double-done
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts:172           yield { type: "done" };  (post-loop, no usage)          ← F2b
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:196-199  if (chunk.usage) { pendingUsage = …; continue; }  ← F2a
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:239      yield { type: "done" };  (post-loop, no usage)        ← F2b
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts:163-169       inline done with usage when finishReason && usageMeta  ← double-done
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts:172           yield { type: "done" };  (post-loop, no usage)          ← F2b
 ```
 
 Bridge usage projection that receives `done.usage` (unchanged):
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:311-321  case "done" → response.completed { usage: responsesUsage(event.usage) }
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:311-321  case "done" → response.completed { usage: responsesUsage(event.usage) }
 ```
 
 ## Files
@@ -40,7 +40,7 @@ Bridge usage projection that receives `done.usage` (unchanged):
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
 ```
 
 F2a — record usage but do **not** `continue`; fall through to choices parsing (current 196-199):
@@ -76,7 +76,7 @@ F2b — carry `pendingUsage` on the post-loop terminal (current line 239):
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts
 ```
 
 Replace the inline `done` with a `pendingUsage` accumulator and emit a single post-loop `done`.

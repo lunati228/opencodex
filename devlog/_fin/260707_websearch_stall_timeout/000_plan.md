@@ -45,7 +45,7 @@ The user-visible kill is opencodex's OWN bridge stall deadline, not codex-rs:
     events until the full response parses (`runIteration`);
   - multi-query batches run queries SEQUENTIALLY (runSearchCall for-loop), stacking latencies.
 - codex-rs side is NOT the killer: `DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000`
-  (`/Users/jun/Developer/codex/120_codex-cli/codex-rs/model-provider-info/src/lib.rs:26`), and the
+  (`<private-user-home>/Developer/codex/120_codex-cli/codex-rs/model-provider-info/src/lib.rs:26`), and the
   idle timer is re-armed by ANY SSE event incl. parser-ignored `response.heartbeat` (2s cadence
   from bridge). gpt-5.5 explorer verification report: `001_codexrs_timeout_report.md`.
 - Stale doc: `structure/04_transports-and-sidecars.md` claims "150 ticks = 5 minutes" stall

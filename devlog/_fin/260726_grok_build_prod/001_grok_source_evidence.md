@@ -6,7 +6,7 @@ tags: [grok-build, upstream-source, evidence]
 
 # 001 — grok-build 원본 근거 (설계 결정의 기준)
 
-참조 트리: `/Users/jun/Developer/codex/180_grok-build`.
+참조 트리: `<private-user-home>/Developer/codex/180_grok-build`.
 **실측 HEAD `a5727c5960452e7527a154b25cb5bf00cda0545e`** ("Synced from monorepo", 2026-07-22),
 `SOURCE_REV` = `30192d2eef5d91a8fff0e53957de5bd05b43398c`.
 (이전 devlog가 인용한 `b189869`는 이 클론 히스토리에 없다 — 인용 갱신.)

@@ -9,7 +9,7 @@ Source: read-only survey by sol explorer subagent (id 019f6516-fd7b-72f3-b60e-06
 
 - `src/claude/inbound.ts:183`: `const base = dir.split("/").filter(Boolean).pop()?.toLowerCase() ?? "";`
 - Input: first line of the skill text block, `Base directory for this skill: <dir>` —
-  a Claude Code client path. On Windows: `C:\Users\...\claude-api`.
+  a Claude Code client path. On Windows: `<private-user-home>\claude-api`.
 - Effect: basename extraction returns the whole lowercased path, never matches
   `DEFAULT_BLOCKED_SKILLS`, so the ~790K-char bundle rides through to routed models on
   every turn. Live incident: user's session JSONL row 14 = 789,683 chars; usage.jsonl
@@ -45,8 +45,8 @@ Source: read-only survey by sol explorer subagent (id 019f6516-fd7b-72f3-b60e-06
 
 - `src/codex/project-config-warnings.ts:225-230`: 
   `abs.toLowerCase().startsWith(home.toLowerCase())` then `abs.slice(home.length)`.
-- Two flaws: no component boundary (`C:\Users\bob2\x` renders as inside `~` for home
-  `C:\Users\bob`), and case-insensitive comparison on case-sensitive POSIX filesystems.
+- Two flaws: no component boundary (`<private-user-home>\x` renders as inside `~` for home
+  `<private-user-home>`), and case-insensitive comparison on case-sensitive POSIX filesystems.
 - Display-only (warning path rendering); low severity.
 
 ## Rebutted survey findings (recorded, not dropped)

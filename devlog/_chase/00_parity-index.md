@@ -27,7 +27,7 @@ opencodex baseline (분석 시): registry provider **48개**, adapter 종류 6
 
 ## 분석 방법
 
-- jawcode: 로컬 `/Users/jun/Developer/new/700_projects/jawcode` (clone 불필요)
+- jawcode: 로컬 `<private-user-home>/Developer/new/700_projects/jawcode` (clone 불필요)
 - cca: `devlog/_chase/_cca/` (shallow clone, gitignored)
 - litellm: `devlog/_chase/_litellm/` (shallow clone, gitignored)
 

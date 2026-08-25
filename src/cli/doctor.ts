@@ -10,14 +10,31 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, readRuntimePort, resolveEnvValue } from "../config";
-import { gracefulStopHost } from "../lib/process-control";
+import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, resolveEnvValue } from "../config";
+import { findLiveProxy, type LiveProxy } from "../server/proxy-liveness";
+import { BUN_RUNTIME_SOURCES } from "../lib/bun-runtime";
+import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { maskAccountId } from "../lib/privacy";
-import { loadServiceTokenFromFile } from "../lib/service-secrets";
+import { PROXY_ENV_KEYS, proxyEnvPresent } from "../lib/proxy-env";
+import { LOCAL_MANAGEMENT_READ_PATHS } from "../lib/local-management-capability";
 import { readCodexTokens } from "../codex/auth-collision";
+import { withNativeMainSharedClaim } from "../codex/native-main-claim";
+import { probeNativeProfileRecoveryState, resolveNativeProfileContext } from "../codex/native-profile-store";
+import { NativeProfileError } from "../codex/native-profile-types";
 import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
+import { scanCodexAgentRolesWithTomlModelFallback } from "../codex/subagent-model-fallback";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
+import {
+  inspectAbandonedResponseStateTemps,
+  reclaimAbandonedResponseStateTemps,
+  type ResponseStateTempRecoveryResult,
+} from "../responses/state";
+import {
+  CodexUserIdentityRefusal,
+  probeCodexCoordinatorNamespace,
+  resolveEffectiveUserIdentity,
+} from "../codex/user-identity";
 import { collectProjectCodexConfigWarnings, formatProjectCodexConfigWarningsForDoctor } from "../codex/project-config-warnings";
 import { collectStartupHealth, startupHealthSummary } from "../codex/autostart-health";
 import {
@@ -29,6 +46,10 @@ import {
 } from "../codex/runtime";
 import { CODEX_REAUTH_ACTION, collectOAuthHealthEntriesForCli, MASKED_ACCOUNT_FALLBACK, type OAuthHealthEntry } from "../oauth/health";
 import { getAuthRefreshIntentLockPath, getAuthStorePath } from "../oauth/store";
+import {
+  fetchBoundLocalManagementRead,
+  type LocalManagementReadDeps,
+} from "../server/local-management-read-client";
 export { resolveCodexHomeDir } from "../codex/home";
 
 export type OAuthDoctorCheck = { level: "OK" | "WARN"; message: string };
@@ -146,6 +167,18 @@ export async function collectOAuthDoctorChecks(
       level: "WARN",
       message:
         "Codex account health unavailable (proxy not running). Action: start the proxy and re-run `ocx doctor` to inspect live cooldown/reauth",
+    });
+  } else if (report.codexHealthSource === "management-auth-failed") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy running; management authentication failed). Action: verify the admin token configuration, restart the proxy, and re-run `ocx doctor`",
+    });
+  } else if (report.codexHealthSource === "management-api-unavailable") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy running; management API response failed). Action: inspect the proxy service log, restart the proxy if needed, and re-run `ocx doctor`",
     });
   }
   for (const entry of report.entries) {
@@ -285,17 +318,15 @@ export function collectWslDualInstall(deps: WslDualInstallDeps = {}): WslDualIns
   };
 }
 
-const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] as const;
-
 export type ProxyEnvRow = { key: string; present: boolean };
 export type EnvMap = Record<string, string | undefined>;
 
 /** Report only presence/absence of proxy env vars - never the value (it may
  * embed credentials). Checks both upper- and lower-case forms. */
 export function collectProxyEnv(env: EnvMap = process.env): ProxyEnvRow[] {
-  return PROXY_KEYS.map(key => ({
+  return PROXY_ENV_KEYS.map(key => ({
     key,
-    present: !!(env[key]?.trim() || env[key.toLowerCase()]?.trim()),
+    present: proxyEnvPresent(key, env),
   }));
 }
 
@@ -307,11 +338,45 @@ export type ConfiguredProxyDiagnostic = {
   detail: string;
 };
 
-function envReferenceName(value: string): string | null {
+export function envReferenceName(value: string): string | null {
   const braced = value.match(/^\$\{(\w+)\}$/);
   if (braced) return braced[1]!;
   const bare = value.match(/^\$(\w+)$/);
   return bare ? bare[1]! : null;
+}
+
+export type ProviderApiKeyDiagnostic = {
+  provider: string;
+  envName: string;
+  detail: string;
+};
+
+/** Warn when a key-auth provider's apiKey env reference resolves empty in this process. */
+export function collectProviderApiKeyDiagnostics(
+  providers: Record<string, { authMode?: string; apiKey?: string }> = readConfigDiagnostics().config.providers ?? {},
+  env: EnvMap = process.env,
+): ProviderApiKeyDiagnostic[] {
+  const resolveInEnv = (value: string): string | undefined => {
+    const name = envReferenceName(value);
+    if (!name) return value;
+    return env[name];
+  };
+  const rows: ProviderApiKeyDiagnostic[] = [];
+  for (const [provider, config] of Object.entries(providers)) {
+    if (config.authMode !== "key") continue;
+    const raw = typeof config.apiKey === "string" ? config.apiKey.trim() : "";
+    if (!raw) continue;
+    const envName = envReferenceName(raw);
+    if (!envName) continue;
+    const resolved = resolveInEnv(raw);
+    if (resolved?.trim()) continue;
+    rows.push({
+      provider,
+      envName,
+      detail: `provider ${provider}: env reference ${envName} is unset or empty in this process`,
+    });
+  }
+  return rows;
 }
 
 export function collectConfiguredProxy(): ConfiguredProxyDiagnostic {
@@ -433,36 +498,75 @@ export type WhamProbeResult = {
   authenticated: boolean;
 };
 
+type NativeMainDoctorClaim = <T>(operation: () => Promise<T>) => Promise<T>;
+
+export interface WhamProbeDeps {
+  withNativeMainClaim?: NativeMainDoctorClaim;
+  probeNativeMainRecoveryState?: typeof probeNativeProfileRecoveryState;
+}
+
 /**
  * Replicate the runtime WHAM fetch shape (same URL, 8s timeout, main-token
  * headers when present) so the probe fails exactly where the real path fails.
  * `fetchImpl` is injectable for testing.
  */
-export async function probeWham(fetchImpl: typeof fetch = fetch): Promise<WhamProbeResult> {
-  const tokens = readCodexTokens();
-  const headers: Record<string, string> = {};
-  if (tokens) {
-    headers.Authorization = `Bearer ${tokens.access_token}`;
-    headers["ChatGPT-Account-Id"] = tokens.account_id;
-  }
+export async function probeWham(
+  fetchImpl: typeof fetch = fetch,
+  deps: WhamProbeDeps = {},
+): Promise<WhamProbeResult> {
   const start = performance.now();
+  let authenticated = false;
   try {
-    const resp = await fetchImpl(WHAM_USAGE_URL, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-    const durationMs = Math.round(performance.now() - start);
-    return {
-      ok: resp.ok,
-      status: resp.status,
-      durationMs,
-      classification: resp.ok ? "ok" : `http_${resp.status}`,
-      authenticated: !!tokens,
-    };
+    const context = resolveNativeProfileContext();
+    const withClaim = deps.withNativeMainClaim
+      ?? (<T>(operation: () => Promise<T>) => withNativeMainSharedClaim(context, operation));
+    return await withClaim(async () => {
+      const recoveryState = (deps.probeNativeMainRecoveryState ?? probeNativeProfileRecoveryState)(context);
+      if (recoveryState !== "none") {
+        return {
+          ok: false,
+          status: null,
+          durationMs: Math.round(performance.now() - start),
+          classification: `native_main_recovery_${recoveryState}`,
+          authenticated: false,
+        };
+      }
+      const tokens = readCodexTokens();
+      const headers: Record<string, string> = {};
+      if (tokens) {
+        headers.Authorization = `Bearer ${tokens.access_token}`;
+        headers["ChatGPT-Account-Id"] = tokens.account_id;
+      }
+      authenticated = !!tokens;
+      const resp = await fetchImpl(WHAM_USAGE_URL, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+      const durationMs = Math.round(performance.now() - start);
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        durationMs,
+        classification: resp.ok ? "ok" : `http_${resp.status}`,
+        authenticated,
+      };
+    });
   } catch (err) {
     const durationMs = Math.round(performance.now() - start);
+    if (
+      err instanceof NativeProfileError
+      && (err.code === "NATIVE_MAIN_CLAIM_BUSY" || err.code === "NATIVE_MAIN_CLAIM_UNAVAILABLE")
+    ) {
+      return {
+        ok: false,
+        status: null,
+        durationMs,
+        classification: err.code.toLowerCase(),
+        authenticated: false,
+      };
+    }
     const name = err instanceof Error ? err.name : String(err);
     const classification = name === "TimeoutError" || name === "AbortError"
       ? "timeout"
       : "connect_error";
-    return { ok: false, status: null, durationMs, classification, authenticated: !!tokens };
+    return { ok: false, status: null, durationMs, classification, authenticated };
   }
 }
 
@@ -477,13 +581,19 @@ export async function probeWham(fetchImpl: typeof fetch = fetch): Promise<WhamPr
 export type ServiceMemoryData = {
   pid: number;
   bunVersion: string;
+  /** Launch-time provenance; absent for services installed before the marker existed. */
+  bunRuntimeSource?: BunRuntimeSource;
   platform: string;
   rss: number;
   heapUsed: number;
+  external: number;
+  arrayBuffers: number;
+  observedBytes?: number;
+  observedMetric?: MemoryMetric;
   jscHeap: { heapSize: number } | null;
   streamMode: string;
   eagerRelay: { useEagerRelay: boolean; reason: string } | null;
-  watchdog: { warnThresholdBytes: number; lastWarnAt: number | null } | null;
+  watchdog: { warnThresholdBytes: number; lastWarnAt: number | null; observedBytes?: number; observedMetric?: MemoryMetric } | null;
 };
 
 export type ServiceMemoryReport =
@@ -493,22 +603,43 @@ export type ServiceMemoryReport =
 
 const SERVICE_MEMORY_TIMEOUT_MS = 2000;
 const DEFAULT_MEMORY_THRESHOLD_BYTES = 4 * 1024 ** 3;
+type MemoryMetric = "rss" | "external" | "arrayBuffers";
+
+function observedMemory(data: { rss: number; external?: number; arrayBuffers?: number }): {
+  bytes: number;
+  metric: MemoryMetric;
+} {
+  const values: Array<{ metric: MemoryMetric; bytes: number }> = [
+    { metric: "rss", bytes: data.rss },
+    { metric: "external", bytes: data.external ?? 0 },
+    { metric: "arrayBuffers", bytes: data.arrayBuffers ?? 0 },
+  ];
+  return values.reduce((best, next) => next.bytes > best.bytes ? next : best, values[0]);
+}
 
 export async function fetchServiceMemory(
-  host: string,
-  port: number,
-  token: string | null,
-  fetchImpl: typeof fetch = fetch,
+  target: LiveProxy,
+  deps: LocalManagementReadDeps = {},
 ): Promise<ServiceMemoryReport> {
   try {
-    const res = await fetchImpl(`http://${host}:${port}/api/system/memory`, {
-      headers: token ? { "x-opencodex-api-key": token } : {},
-      signal: AbortSignal.timeout(SERVICE_MEMORY_TIMEOUT_MS),
+    const read = await fetchBoundLocalManagementRead(target, LOCAL_MANAGEMENT_READ_PATHS.systemMemory, {
+      ...deps,
+      timeoutMs: SERVICE_MEMORY_TIMEOUT_MS,
     });
+    if (read.kind === "unavailable") {
+      return read.reason === "transport"
+        ? { status: "unreachable", error: "fetch failed" }
+        : { status: "unauthorized" };
+    }
+    const { response: res, targetPid } = read;
     if (res.status === 401 || res.status === 403) return { status: "unauthorized" };
     if (!res.ok) return { status: "unreachable", error: `http ${res.status}` };
     const body = await res.json() as Partial<ServiceMemoryData>;
-    if (typeof body.pid !== "number" || typeof body.bunVersion !== "string" || typeof body.rss !== "number") {
+    if (
+      body.pid !== targetPid
+      || typeof body.bunVersion !== "string"
+      || typeof body.rss !== "number"
+    ) {
       return { status: "unreachable", error: "malformed response" };
     }
     return {
@@ -516,16 +647,32 @@ export async function fetchServiceMemory(
       data: {
         pid: body.pid,
         bunVersion: body.bunVersion,
+        // Allowlisted independently of the server: an unrecognized wire value is
+        // treated as absent rather than echoed into user-facing guidance.
+        bunRuntimeSource: BUN_RUNTIME_SOURCES.find(source => source === body.bunRuntimeSource),
         platform: typeof body.platform === "string" ? body.platform : "unknown",
         rss: body.rss,
         heapUsed: typeof body.heapUsed === "number" ? body.heapUsed : 0,
+        external: typeof body.external === "number" ? body.external : 0,
+        arrayBuffers: typeof body.arrayBuffers === "number" ? body.arrayBuffers : 0,
+        observedBytes: typeof body.observedBytes === "number" ? body.observedBytes : undefined,
+        observedMetric: body.observedMetric === "rss" || body.observedMetric === "external" || body.observedMetric === "arrayBuffers"
+          ? body.observedMetric
+          : undefined,
         jscHeap: body.jscHeap && typeof body.jscHeap.heapSize === "number" ? { heapSize: body.jscHeap.heapSize } : null,
         streamMode: typeof body.streamMode === "string" ? body.streamMode : "auto",
         eagerRelay: body.eagerRelay && typeof body.eagerRelay.reason === "string"
           ? { useEagerRelay: body.eagerRelay.useEagerRelay === true, reason: body.eagerRelay.reason }
           : null,
         watchdog: body.watchdog && typeof body.watchdog.warnThresholdBytes === "number"
-          ? { warnThresholdBytes: body.watchdog.warnThresholdBytes, lastWarnAt: body.watchdog.lastWarnAt ?? null }
+          ? {
+            warnThresholdBytes: body.watchdog.warnThresholdBytes,
+            lastWarnAt: body.watchdog.lastWarnAt ?? null,
+            observedBytes: typeof body.watchdog.observedBytes === "number" ? body.watchdog.observedBytes : undefined,
+            observedMetric: body.watchdog.observedMetric === "rss" || body.watchdog.observedMetric === "external" || body.watchdog.observedMetric === "arrayBuffers"
+              ? body.watchdog.observedMetric
+              : undefined,
+          }
           : null,
       },
     };
@@ -536,12 +683,63 @@ export async function fetchServiceMemory(
 
 const mb = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))}MB`;
 
+export const RECLAIM_RESPONSE_TEMPS_FLAG = "--reclaim-response-temps";
+/** Matches the dry run's entry bound so report and reclaim agree on a large backlog. */
+const RESPONSE_TEMP_RECLAIM_MAX_CLEANUPS = 4_096;
+/** Names the subsystem: other components mint temps with the same shape and are not covered. */
+const CLEAN_RESPONSE_TEMP_LINE = "  ok  No abandoned response-state temp files.";
+
+/**
+ * Render the abandoned-temp section (testable without console capture).
+ *
+ * Report is the DEFAULT and reclaim is opt-in: `doctor` is a diagnostic an operator runs
+ * to understand a machine, so deleting files as a side effect of asking a question is the
+ * wrong default even for cache files.
+ *
+ * Counts come from `eligible`/`eligibleBytes`, never `matched`: `matched` is incremented
+ * before the file-type, age, boot-floor, and liveness gates, so reporting it would tell an
+ * operator that live-pid temps and young temps are "abandoned".
+ */
+export function formatResponseTempLines(
+  result: ResponseStateTempRecoveryResult,
+  reclaimed: boolean,
+): string[] {
+  if (reclaimed) {
+    if (result.removed === 0 && result.failed === 0) return [CLEAN_RESPONSE_TEMP_LINE];
+    const lines = [`  ok  Reclaimed ${result.removed} abandoned response-state temp file(s), ${mb(result.bytesRemoved)} freed.`];
+    if (result.failed > 0) {
+      // Never "retried automatically": this command exists for the operator whose proxy will
+      // NOT start, and in that state nothing retries anything.
+      lines.push(`  !!  ${result.failed} file(s) could not be removed (in use or locked). Retried on the next reclaim — automatically while the proxy runs, otherwise re-run this command.`);
+    }
+    // `truncated`, not `eligible > removed + failed`: outside a dry run every eligible entry
+    // is unlinked or failed on the same iteration it is counted, so those two are always
+    // equal and the comparison never fired. An operator with a backlog past the budget was
+    // told the reclaim had finished.
+    if (result.truncated) {
+      lines.push("  !!  Cleanup budget reached; files remain. Run the command again to continue.");
+    }
+    return lines;
+  }
+  if (result.eligible === 0) return [CLEAN_RESPONSE_TEMP_LINE];
+  const lines = [
+    `  !!  ${result.eligible} abandoned response-state temp file(s), ${mb(result.eligibleBytes)} reclaimable.`,
+    "      These are interrupted snapshot writes (continuation cache only) and are safe to remove.",
+    "      Reclaim them with: ocx doctor --reclaim-response-temps",
+  ];
+  // The dry run skips the cleanup budget but is still bounded by the entry cap, so a large
+  // enough backlog makes this a floor rather than a total. Say so instead of letting an
+  // operator size the problem from a truncated count.
+  if (result.truncated) lines.push("      Scan stopped at its entry budget; the real total is higher.");
+  return lines;
+}
+
 /** Render the doctor "Memory / runtime" section lines (testable without console capture). */
 export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] {
   const lines: string[] = [];
   lines.push(`  --     doctor process Bun ${Bun.version} (this is NOT the service process)`);
   if (report.status === "unauthorized") {
-    lines.push("  --     proxy reachable but rejected the request — set OPENCODEX_API_AUTH_TOKEN to match the service");
+    lines.push("  --     local diagnostic capability unavailable — restart the running proxy with this OpenCodex version");
     return lines;
   }
   if (report.status === "unreachable") {
@@ -550,31 +748,48 @@ export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] 
   }
   const d = report.data;
   lines.push(`  ok     service pid ${d.pid}: Bun ${d.bunVersion} on ${d.platform}`);
-  lines.push(`         rss=${mb(d.rss)}, heapUsed=${mb(d.heapUsed)}${d.jscHeap ? `, jscHeap=${mb(d.jscHeap.heapSize)}` : ""}`);
+  const observed = observedMemory(d);
+  const observedBytes = d.observedBytes ?? d.watchdog?.observedBytes ?? observed.bytes;
+  const observedMetric = d.observedMetric ?? d.watchdog?.observedMetric ?? observed.metric;
+  lines.push(`         rss=${mb(d.rss)}, external=${mb(d.external)}, arrayBuffers=${mb(d.arrayBuffers)}, heapUsed=${mb(d.heapUsed)}${d.jscHeap ? `, jscHeap=${mb(d.jscHeap.heapSize)}` : ""}`);
+  lines.push(`         observed=${mb(observedBytes)} (${observedMetric})`);
   lines.push(`         streamMode=${d.streamMode}${d.eagerRelay ? ` (eager relay: ${d.eagerRelay.useEagerRelay ? "on" : "off"}, ${d.eagerRelay.reason})` : ""}`);
   if (d.watchdog) {
     lines.push(`         watchdog threshold=${mb(d.watchdog.warnThresholdBytes)}${d.watchdog.lastWarnAt ? `, last warn ${new Date(d.watchdog.lastWarnAt).toISOString()}` : ", no warnings"}`);
   }
-  // Interpretation rule (devlog 040): reuse the watchdog's own threshold so
-  // doctor and watchdog never disagree about "high"; jsShare discriminates
-  // JS-heap growth from native runtime growth (the #314 shape).
+  // Interpretation rule: reuse the watchdog threshold and the same max-of
+  // observed memory counters, so doctor and watchdog never disagree about
+  // "high". RSS/working-set can under-report committed retention on Windows, and
+  // Bun 1.3.14 heap counters are not standalone leak proof.
   const threshold = d.watchdog?.warnThresholdBytes ?? DEFAULT_MEMORY_THRESHOLD_BYTES;
   const jsShare = d.rss > 0 ? Math.max(d.heapUsed, d.jscHeap?.heapSize ?? 0) / d.rss : 0;
-  if (d.rss < threshold) {
+  if (observedBytes < threshold) {
     lines.push("         memory usage looks normal");
+  } else if (observedMetric !== "rss") {
+    lines.push(`  !!     high observed memory via ${observedMetric}; Windows RSS/working-set counters may be blind. See docs: troubleshooting/windows-memory`);
   } else if (jsShare < 0.25) {
     lines.push("  !!     high RSS with a small JS heap — native-side growth (Bun runtime buffers/handles). See docs: troubleshooting/windows-memory");
   } else if (jsShare >= 0.5) {
-    lines.push("  !!     high RSS dominated by the JS heap — likely an opencodex bug; please report it");
+    lines.push("  !!     high RSS with large JS/JSC counters — possible JS-side retention; compare responseState/external samples before filing an app leak");
   } else {
     lines.push("  !!     high RSS, indeterminate split — capture two doctor runs over time to see the trend");
   }
-  // Version-claiming (never binary-claiming): the endpoint cannot distinguish
-  // the bundled binary from an OPENCODEX_BUN_PATH override of the same version.
   if (d.platform === "win32" && d.eagerRelay?.reason === "auto-known-bad") {
     lines.push(`         service is running Bun ${d.bunVersion} on Windows — a version affected by the upstream Bun memory issue.`);
-    lines.push("         Options: wait for a bundled runtime update, or set OPENCODEX_BUN_PATH to a runtime you trust (unvalidated — own risk),");
-    lines.push("         or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    // The remediation depends on how the SERVICE was launched, which only the
+    // launch-time marker can answer. Telling someone to set OPENCODEX_BUN_PATH
+    // when it is already set is the bug this branch exists to avoid (#848).
+    if (d.bunRuntimeSource === "override") {
+      lines.push(`         OPENCODEX_BUN_PATH is already active for this service — the override runtime is itself an affected version (unvalidated — own risk).`);
+      lines.push("         Options: point the override at a different runtime, or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    } else if (d.bunRuntimeSource === undefined) {
+      lines.push("         this service records no runtime origin (installed before provenance tracking), so OpenCodex cannot tell whether an override is already active.");
+      lines.push("         Reinstall the service to record it, or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    } else {
+      const origin = d.bunRuntimeSource === "process" ? "the runtime that launched it" : "the bundled runtime";
+      lines.push(`         the service is using ${origin}. Options: wait for a bundled runtime update, or set OPENCODEX_BUN_PATH to a runtime you trust (unvalidated — own risk),`);
+      lines.push("         or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    }
   }
   return lines;
 }
@@ -588,11 +803,21 @@ export function proxyDownRestartHint(input: {
   proxyRunning: boolean;
   port: number;
   serviceViable: boolean;
+  /** Absent means "unknown"; the hint then keeps its pre-repair wording. */
+  serviceInstalled?: boolean;
+  serviceConflict?: boolean;
 }): string | null {
   if (input.proxyRunning) return null;
+  // `serviceViable` alone conflates "no service at all" with "registered but stale or
+  // stopped". Only the first wants `install`: re-registering an existing service costs a
+  // UAC prompt on Windows and can switch a WinSW backend to Task Scheduler. A conflict
+  // still needs uninstall-then-install, which repairService() refuses outright.
+  const installedButBroken = input.serviceInstalled === true && input.serviceConflict !== true;
   const restart = input.serviceViable
     ? "Restart it with 'ocx service start' (service installed) or 'ocx start'."
-    : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
+    : installedButBroken
+      ? "Restart it with 'ocx start', or refresh the installed service: 'ocx service repair'."
+      : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
   return `The ocx proxy is not running. Codex/Claude clients pinned to 127.0.0.1:${input.port} fail with errors like "error sending request for url (http://127.0.0.1:${input.port}/v1/responses)". ${restart}`;
 }
 
@@ -635,6 +860,26 @@ export async function runDoctor(args: string[] = []): Promise<void> {
       .filter(Boolean).join(", ");
     console.log(`  ${row.exists ? "ok " : "-- "} ${row.label}: ${row.path}${flags ? `  (${flags})` : ""}`);
   }
+
+  // Runs without the proxy on purpose: the worst accumulation happens when the proxy will
+  // not start, which is exactly when the in-process periodic reclaim never ticks.
+  const reclaimTemps = args.includes(RECLAIM_RESPONSE_TEMPS_FLAG);
+  console.log("\nResponse-state temp files");
+  // A typo must not silently degrade into "nothing to reclaim" — the operator would read the
+  // report as an answer to a question they never actually asked.
+  for (const arg of args) {
+    if (arg !== RECLAIM_RESPONSE_TEMPS_FLAG && /^--reclaim/.test(arg)) {
+      console.log(`  !!  Unrecognized flag ${arg}; did you mean ${RECLAIM_RESPONSE_TEMPS_FLAG}? Reporting only.`);
+    }
+  }
+  for (const line of formatResponseTempLines(
+    // The reclaim budget matches the report budget: a report bounded by entries and a removal
+    // bounded by a smaller cleanup cap would tell an operator 816 and then silently free 512.
+    reclaimTemps
+      ? reclaimAbandonedResponseStateTemps({ maxCleanups: RESPONSE_TEMP_RECLAIM_MAX_CLEANUPS })
+      : inspectAbandonedResponseStateTemps(),
+    reclaimTemps,
+  )) console.log(line);
 
   const orcaHome = collectOrcaCodexHomeDiagnostic();
   console.log("\nCodex app home targeting");
@@ -681,9 +926,17 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     }
   }
 
+  // #618: identity-verified liveness first so pid-file absence does not hide a live service.
+  // Reuse the diagnostics config already loaded above so doctor stays read-only on malformed JSON.
+  const live = await findLiveProxy({
+    configFn: () => ({ port: doctorConfig.port, hostname: doctorConfig.hostname }),
+  });
+
   const currentProxyEnv = collectProxyEnv();
   const configuredProxy = collectConfiguredProxy();
-  const runningProxyEnv = collectRunningProxyEnv();
+  const runningProxyEnv = collectRunningProxyEnv({
+    readPidFn: () => (live ? live.pid : readPid()),
+  });
 
   console.log("\nCurrent doctor process proxy env (presence only)");
   for (const row of currentProxyEnv) {
@@ -692,6 +945,16 @@ export async function runDoctor(args: string[] = []): Promise<void> {
 
   console.log("\nConfigured proxy (value hidden)");
   console.log(`  ${configuredProxy.present ? "set    " : "unset  "} ${configuredProxy.key} (${configuredProxy.source}; ${configuredProxy.detail})`);
+
+  const providerApiKeys = collectProviderApiKeyDiagnostics(doctorConfig.providers);
+  console.log("\nProvider API keys (value hidden)");
+  if (providerApiKeys.length === 0) {
+    console.log("  ok     no empty env-referenced provider keys detected in this process");
+  } else {
+    for (const row of providerApiKeys) {
+      console.log(`  !!     ${row.detail}`);
+    }
+  }
 
   console.log("\nRunning proxy process proxy env (presence only)");
   if (runningProxyEnv.status === "not_running") {
@@ -705,22 +968,13 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     }
   }
 
-  // #314: service-process memory/runtime identity via the authed management
-  // endpoint. readPid() FIRST (liveness), then the pid-scoped runtime record —
-  // readRuntimePort alone can serve a stale file pointing at a foreign port.
-  // Hoisted out of the block below: the Hints section reuses the same liveness pair
-  // for the proxy-down restart hint.
-  const livePid = readPid();
-  const liveRuntime = livePid ? readRuntimePort(livePid) : null;
   console.log("\nMemory / runtime");
   {
-    const runtime = liveRuntime;
-    if (!runtime) {
+    if (!live) {
       console.log(`  --     doctor process Bun ${Bun.version} (this is NOT the service process)`);
       console.log("  --     no running ocx proxy found (no live pid/runtime record)");
     } else {
-      const token = process.env.OPENCODEX_API_AUTH_TOKEN ?? loadServiceTokenFromFile(process.env);
-      const report = await fetchServiceMemory(gracefulStopHost(runtime.hostname), runtime.port, token);
+      const report = await fetchServiceMemory(live);
       for (const line of formatServiceMemoryLines(report)) console.log(line);
     }
   }
@@ -735,6 +989,22 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   // Codex app until the one-time migration lands. Read-only probe (readonly sqlite, 100ms
   // busy timeout) — reports state, never mutates.
   console.log("\nCodex history migration");
+  // The history failure messages point here; make the visit worthwhile by
+  // probing the coordinator namespace the locks live in. The probe exercises
+  // identity, runtime-root, and permission checks without taking any lock or
+  // creating anything (a doctor run must observe, not initialize).
+  try {
+    const identity = resolveEffectiveUserIdentity();
+    const probe = probeCodexCoordinatorNamespace(identity);
+    if (probe.status === "missing") {
+      console.log("  ok     history coordinator namespace not created yet (no history operation has run)");
+    } else {
+      console.log("  ok     history coordinator namespace resolves");
+    }
+  } catch (cause) {
+    const reason = cause instanceof CodexUserIdentityRefusal ? cause.message : String(cause);
+    console.log(`  --     history coordinator namespace refused: ${reason}`);
+  }
   const pending = countPendingOpencodexHistory();
   if (pending.failed) {
     console.log("  --     state DB locked or unreadable (Codex app open?) — migration state unknown");
@@ -752,6 +1022,15 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     for (const line of formatProjectCodexConfigWarningsForDoctor(projectWarnings)) {
       console.log(line);
     }
+  }
+
+  console.log("\nCodex agent role files");
+  const tomlFallbackRoles = scanCodexAgentRolesWithTomlModelFallback(resolveCodexHomeDirImpl());
+  if (tomlFallbackRoles.length === 0) {
+    console.log("  ok     no per-role model_fallback fields in $CODEX_HOME/agents/*.toml");
+  } else {
+    console.log(`  [WARN] ${tomlFallbackRoles.length} agent role file${tomlFallbackRoles.length === 1 ? "" : "s"} contain${tomlFallbackRoles.length === 1 ? "s" : ""} \`model_fallback\`: ${tomlFallbackRoles.join(", ")}`);
+    console.log("        Codex >= 0.146 rejects that field as unknown and skips the whole role. Move the chains to opencodex config `subagentModelFallbackByModel` (keyed by primary model) and remove the field from the TOML files.");
   }
 
   const dual = collectWslDualInstall();
@@ -775,14 +1054,31 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     console.log(`  [${check.level}] ${check.message}`);
   }
 
+  // #857: a running Codex app-server can keep an older in-memory catalog than
+  // the one on disk — surface it outside sync time.
+  const { collectCodexAppServerCatalogState } = await import("../codex/app-server-processes");
+  const catalogState = collectCodexAppServerCatalogState();
+  if (catalogState.state === "stale") {
+    console.log(`  [WARN] Codex app-server (PID(s): ${catalogState.processes.map(p => p.pid).join(", ")}) started before the on-disk catalog changed; its in-memory model list disagrees with ocx. Action: restart Codex (or run \`ocx sync --restart-codex\`)`);
+  } else if (catalogState.state === "unknown") {
+    console.log("  [WARN] Could not verify whether the running Codex app-server's model catalog is current (start time or catalog unreadable). Action: if the model list looks stale, restart Codex");
+  } else if (catalogState.state === "fresh") {
+    console.log("  [OK] Codex app-server model catalog is current with the on-disk catalog.");
+  }
+
   // Hints, not fixes.
   const hints: string[] = [];
   const proxyDown = proxyDownRestartHint({
-    proxyRunning: Boolean(livePid && liveRuntime),
-    port: doctorConfig.port ?? 10100,
+    proxyRunning: Boolean(live),
+    port: live?.port ?? doctorConfig.port ?? 10100,
     serviceViable: startup.serviceViable,
+    serviceInstalled: startup.serviceInstalled,
+    serviceConflict: startup.serviceConflict,
   });
   if (proxyDown) hints.push(proxyDown);
+  for (const row of providerApiKeys) {
+    hints.push(`${row.detail}. Set ${row.envName} in the shell that starts the proxy, or store a literal key in config (value hidden here).`);
+  }
   const anyDrvfs = paths.some(p => detectFsType(p.path, mounts).isDrvfs || detectFsType(p.path, mounts).isMntDrive);
   const noProxy = currentProxyEnv.every(p => !p.present) && !configuredProxy.present;
   if (!startup.rebootSafe) {

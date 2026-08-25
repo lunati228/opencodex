@@ -20,7 +20,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | プロキシに API キーが必要なときのみ設定します。それ以外は設定せず、claude.ai ログイン(サブスクリプション + コネクター)を維持します |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (デフォルトの `/model` ピッカーのモデル検索) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 自動コンテキスト圧縮のしきい値(デフォルト `350000`)。自動コンテキストがオンのときのみ注入します |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 自動コンテキスト圧縮のしきい値(デフォルト `829800`)。自動コンテキストがオンのときのみ注入します |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (任意) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (任意、従来の `ANTHROPIC_SMALL_FAST_MODEL` もサポート) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (任意) |
@@ -37,7 +37,9 @@ ocx claude
 
 `ocx stop` とプロキシ終了は**注入されたキーを解除します**。以前の値を復元せず、opencodex が
 注入したキーのみ削除します。プロキシは `~/.opencodex/claude-env.sh` も書き出し、`ocx start` はこのファイルを
-自動で読み込む `.zshrc` source hook をインストールします。
+自動で読み込む `.zshrc` source hook を、実行可能な Claude Code CLI が `PATH` にある場合にのみインストールします。
+Claude Code が存在しない場合、またはシステム環境連携が無効な場合、起動処理と `ocx ensure` は OpenCodex が追加した
+hook を削除します。Claude Desktop は独立した profile を使用し、shell hook のインストールを引き起こしません。
 
 設定で `claudeCode.systemEnv: false` に指定するか GUI トグルでオフにできます。この機能は macOS
 専用で、他のプラットフォームでは `ocx claude` を使ってください。
@@ -50,12 +52,16 @@ ocx claude
 ネイティブ状態で維持され、同じセッションでピッカーエイリアスを使ってルーティングモデルも引き続き使えます。
 
 **ヘッダー処理:** hop-by-hop ヘッダーと `host`、`content-length`、`accept-encoding`、
-`x-opencodex-api-key`、`origin` は転送前に削除します。それ以外のヘッダー(`anthropic-beta`、
-`anthropic-version` を含む)はそのまま転送します。
+`x-opencodex-api-key`、`origin` は常に転送前に削除します。非ループバック bind のネイティブ
+パススルーでは、有効なプロキシ認証情報を `x-opencodex-api-key` でも要求し、
+`Authorization` と `x-api-key` は Anthropic 専用になります。いずれかの provider ヘッダーに
+プロキシ admission secret があれば削除し、もう一方の実際の provider 認証情報は維持します。
+カンマで結合された曖昧な認証ヘッダーは転送しません。
 
-次の 4 つの条件を**すべて**満たすとパススルーが動作します。`nativePassthrough` が `false` でなく、
-モデル名が `claude` または `anthropic` で始まり、bearer または `x-api-key` が `sk-ant-` で
-始まり、エイリアス/モデルマップ解決結果が変更されていない同じモデルであること。そのため `ocx claude` を
+次の条件を**すべて**満たすとパススルーが動作します。`nativePassthrough` が `false` でなく、
+モデル名が `claude` または `anthropic` で始まり、bearer トークンまたは `x-api-key` が `sk-ant-` で
+始まり、エイリアス/モデルマップ解決結果が変更されていない同じモデルであり、非ループバック bind
+では専用プロキシ admission ヘッダーも有効であること。そのため `ocx claude` を
 使うとき "claude.ai connectors are disabled" 警告ももう表示されません。
 
 `claudeCode.nativePassthrough: false` でオフにでき、`claudeCode.anthropicBaseUrl` で別のアドレスを
@@ -68,8 +74,8 @@ Claude Code 2.1.129 以降は `GET /v1/models?limit=1000` でゲートウェイ�
 受け付けるため、opencodex はルーティングモデルを安定で元に戻せるエイリアスとして公開します。
 
 | 画面 | 形式 | 例 |
- --- | --- | --- |
-| Claude Code CLI | `claude-ocx-<provider>--<model>` | `claude-ocx-native--gpt-5.6-sol` |
+| --- | --- | --- |
+| Claude Code CLI | `claude-ocx-<provider>--<model>` (plain) または `claude-ocx2-…` (escaped) | `claude-ocx-native--gpt-5.6-sol` |
 | Claude Desktop 3P | `claude-opus-4-8-<code>` (3 桁の base36 ハッシュ) | `claude-opus-4-8-ncb` |
 
 プロキシはリクエストごとに系列を選びます。`?ids=cli` または `?ids=desktop` が優先し、指定しないと
@@ -77,10 +83,18 @@ Claude Code 2.1.129 以降は `GET /v1/models?limit=1000` でゲートウェイ�
 提供します。両系列は継続してデコードできるため、どちらの形式でも `settings.json` に保存したモデルは
 引き続き動作します。
 
-**エイリアス構文ルール:** provider には `/` や `--` を含められず `native` と同じでもいけません。model には
-`/` を含められません。読みやすい形式で表現できないルートはハッシュエイリアスに置き換えます。モデル
-ID には `--` を含め**られます**(解析時は最初の `--` だけを基準に分割します)。`--` を含む
-ネイティブスラッグはハッシュ形式に置き換えます。
+Claude Desktop のフッターピッカーで実行中の 3P 会話のモデルが切り替わらない場合は、その会話で
+`/model <id>` を使用してください。OpenCodex はピッカーの状態を直接参照できず、各リクエストに
+含まれるモデル ID をルーティングします。結果は **Logs → requestedModel** で確認できます。
+
+**エイリアス構文ルール:** provider には `/` や `--` を含められず `native` と同じでもいけません。
+`/` も `~` も含まない plain な model ID は v1 接頭辞 `claude-ocx-…` のままです。`/` または `~` を含む
+model ID は v2 接頭辞 `claude-ocx2-…` で発行し、エスケープします(`/` → `~s`、`~` → `~t`)。例:
+`openrouter/anthropic/claude-opus-4-8` → `claude-ocx2-openrouter--anthropic~sclaude-opus-4-8`。
+v1 エイリアスはリテラルにデコードします(歴史的に model ID に含まれていた 2 文字列 `~s` / `~t` も保持)。
+v2 エイリアスはエスケープを展開します。読みやすい形式で表現できないルートはハッシュエイリアスに
+置き換えます。モデル ID には `--` を含め**られます**(解析時は最初の `--` だけを基準に分割します)。
+`--` を含むネイティブスラッグはハッシュ形式に置き換えます。
 
 **モデル解決順序:** `[1m]` 標識の削除 → 読みやすいエイリアスのデコード → Desktop ハッシュエイリアスのデコード →
 `modelMap` の完全一致 → 日付を削除した値との一致(`-20250514` 削除) → パススルー順です。
@@ -102,7 +116,7 @@ Claude Code は未知モデルのコンテキストを 200k トークンとし�
 
 1. 実際のコンテキストウィンドウが 200k より大きく自動圧縮しきい値以上のモデルのピッカー行と環境スロットに
    `[1m]` 標識が付きます。
-2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(デフォルト `350000`、範囲 `100000`–`1000000`)を注入し、該当
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(デフォルト `829800`、範囲 `100000`–`1000000`)を注入し、該当
    地点で会話を自動要約します。
 
 設定状態は 3 つです。
@@ -115,7 +129,7 @@ Claude ページで圧縮値を調整できます。**警告:** モデルの実�
 要約を開始する前にチャットエラーが発生します。
 
 1M 未満のネイティブ Anthropic モデルには自動で標識を付けません。直接 export した値が常に優先し、プロキシは**ユーザーが指定した**値を基準にどのモデルに安全に標識を付けるか決定します。
-直接編集した設定値が不正な場合は 350k に戻ります。
+直接編集した設定値が不正な場合は 829,800 に戻ります。
 
 ### 実モデル環境
 
@@ -128,7 +142,7 @@ Claude ページで圧縮値を調整できます。**警告:** モデルの実�
 
 ## ロスターエージェント(injectAgents)
 
-`ocx claude` とシステム環境デーモンは推奨サブエージェントロスター(Subagents タブ、最大 5 モデル)と
+プロキシの起動/ensure、`ocx claude`、関連するダッシュボード保存は推奨サブエージェントロスター(Subagents タブ、最大 5 モデル)と
 `ocx-self` を `~/.claude/agents/ocx-*.md` に同期します。
 
 - **`ocx-self`** は `/model` ピッカーのデフォルトを固定し、値がない場合は `claudeCode.model` を使います。
@@ -242,7 +256,7 @@ Claude Code の `/effort` 設定はアダプターでも維持されます。
  --- | --- |
 | `thinking.type: "adaptive"` + `output_config.effort` | Effort をそのまま渡します(`minimal`\|`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`ultra`) |
 | `thinking.type: "enabled"` + `budget_tokens` | ≤4096→`low`、≤16384→`medium`、それより大→`high` |
-| `thinking.type: "disabled"` | 推論パラメータをすべて省略します |
+| `thinking.type: "disabled"` | `reasoning: { effort: "none" }` を明示し、`summary` は省略します |
 
 解釈された値はリクエストログの **Reasoning effort** 列に表示されます。
 
@@ -260,7 +274,7 @@ Claude Code の `/effort` 設定はアダプターでも維持されます。
 | ユーザー `tool_result` | `function_call_output`(`is_error` → `[tool error]` 接頭辞) |
 | `thinking` / `redacted_thinking` 再生 | 破棄 |
 | Function ツール | `{type: "function"}`(`web_search*` → `{type: "web_search"}`) |
-| `tool_choice` | `auto`→`auto`、`none`→`none`、`any`→`required`、名前指定→`{type:"function",name}` |
+| `tool_choice` | `auto`→`auto`、`none`→`none`、`any`→`required`、名前指定関数→`{type:"function",name}`、ホスト型 WebSearch/web_search→`{type:"web_search"}` |
 | `max_tokens` | `max_output_tokens` |
 | `stop_sequences` | `stop` |
 

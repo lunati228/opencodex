@@ -4,7 +4,7 @@ Status: implementation plan for the third GPT Pro hardening PABCD cycle.
 
 ## Source
 
-Parent plan: /Users/jun/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/40_gptpro_hardening_followup_plan.md
+Parent plan: <private-user-home>/Developer/new/700_projects/opencodex/devlog/370_cli-human-friendly/40_gptpro_hardening_followup_plan.md
 
 GPT Pro finding: `ocx start` can choose a transient fallback port when the configured/preferred port is busy. Existing persistence rules intentionally avoid writing that random fallback to config, but `ocx status` and `ocx gui` still read config port, so they can point at the wrong URL while the proxy is actually running.
 
@@ -37,18 +37,18 @@ If preferred port `10100` is busy and opencodex starts on `58195`, status/gui st
 Modify:
 
 ```path
-/Users/jun/Developer/new/700_projects/opencodex/src/config.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/cli-status.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/config.test.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/config.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/cli-status.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/config.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts
 ```
 
 ## Planned Changes
 
 ### 1. Add runtime port metadata helpers
 
-In `/Users/jun/Developer/new/700_projects/opencodex/src/config.ts` add:
+In `<private-user-home>/Developer/new/700_projects/opencodex/src/config.ts` add:
 
 ```ts
 export type RuntimePortState = { pid: number; port: number; hostname?: string };
@@ -68,7 +68,7 @@ Behavior:
 
 ### 2. Write and clear metadata from lifecycle paths
 
-In `/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts`:
+In `<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts`:
 
 - after `startServer(port)` and `writePid(process.pid)`, call `writeRuntimePort({ pid: process.pid, port, hostname: config.hostname })` using the selected runtime port;
 - in the start cleanup handler, remove runtime metadata for the current pid;
@@ -78,7 +78,7 @@ In `/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts`:
 
 ### 3. Use runtime metadata in status
 
-In `/Users/jun/Developer/new/700_projects/opencodex/src/cli-status.ts`:
+In `<private-user-home>/Developer/new/700_projects/opencodex/src/cli-status.ts`:
 
 - after `readPid()`, call `readRuntimePort(pid ?? undefined)`;
 - use `runtimePort.port`/`runtimePort.hostname` for health URL and dashboard URL when metadata exists;
@@ -97,7 +97,7 @@ Acceptance consequence: `proxy.health.url`, `dashboard.url`, and human labels re
 
 ### 4. Use runtime metadata in gui
 
-In `/Users/jun/Developer/new/700_projects/opencodex/src/cli.ts` `gui` case:
+In `<private-user-home>/Developer/new/700_projects/opencodex/src/cli.ts` `gui` case:
 
 - read PID and runtime metadata;
 - if PID/runtime metadata exists, open `http://localhost:<runtime port>`;
@@ -110,14 +110,14 @@ This keeps `gui` aligned with status without changing service or start behavior.
 
 ### 5. Regression tests
 
-In `/Users/jun/Developer/new/700_projects/opencodex/tests/config.test.ts`:
+In `<private-user-home>/Developer/new/700_projects/opencodex/tests/config.test.ts`:
 
 - runtime metadata round trip validates pid/port;
 - expected pid mismatch returns null;
 - remove with wrong pid preserves file, remove with matching pid deletes it;
 - invalid metadata returns null.
 
-In `/Users/jun/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts`:
+In `<private-user-home>/Developer/new/700_projects/opencodex/tests/cli-status-json.test.ts`:
 
 - add a pure helper seam in `cli-status.ts`, for example `selectListenTarget(config, pid, runtimePortState)`, so status port selection can be tested without faking an `ocx start` process command line;
 - unit-test the helper with config `port: 10100`, pid `123`, runtime-port metadata `{ pid: 123, port: 58195 }`;

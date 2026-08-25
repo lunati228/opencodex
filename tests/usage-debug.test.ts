@@ -112,8 +112,14 @@ describe("appendUsageDebug", () => {
     const parsed = JSON.parse(lines[0]) as { bodySample: string };
     expect(parsed.bodySample).not.toContain("usage-debug-token");
     expect(parsed.bodySample).not.toContain("refresh-debug-token");
-    expect(parsed.bodySample).toContain("Bearer [REDACTED]");
-    expect(parsed.bodySample).toContain("refreshToken");
+    // A credential value now masks to end of line, so the trailing fields of a
+    // serialized body go with it. That is deliberate: every attempt to stop
+    // early and keep the siblings readable turned out to be a way to smuggle a
+    // credential past the redactor. The first field name still identifies what
+    // the sample was, which is what a debug line actually needs.
+    expect(parsed.bodySample).not.toContain("Bearer usage-debug-token");
+    expect(parsed.bodySample).toContain("authorization");
+    expect(parsed.bodySample).toContain("[REDACTED]");
   });
 
   test("preserves estimated extracted usage while redacting surrounding secrets", () => {
@@ -152,6 +158,15 @@ describe("appendUsageDebug", () => {
   test("keeps file size bounded by MAX_LINES across long runs", () => {
     // Cross the rotate threshold twice — enough to prove the bound holds across
     // multiple rewrites without MAX*3 appends (that path times out under full-suite load).
+    //
+    // These 325 appends still cost ~1,950 synchronous fs calls: six per append
+    // (mkdir + chmod from ensureUsageDebugDir, then append, chmod, exists, read),
+    // plus a write/chmod pair on each of the two rotations. On windows-latest under
+    // full-suite load that measured 13.6s — past the 5s default — while ubuntu and
+    // macos stay well under it. The cost is per-open (Defender scans each handle),
+    // not per-byte, so shaving one of the six calls would not move it enough to
+    // matter. Give the test the time it needs instead of trading away coverage:
+    // 325 is already the minimum that crosses the rotate threshold twice.
     const total = USAGE_DEBUG_MAX_LINES + USAGE_DEBUG_KEEP_LINES + 25;
     for (let i = 0; i < total; i++) {
       appendUsageDebug(sample({ requestId: `ocx-${i}`, ts: i }));
@@ -160,5 +175,5 @@ describe("appendUsageDebug", () => {
     const lines = readFileSync(path, "utf-8").split(/\r?\n/).filter(Boolean);
     expect(lines.length).toBeLessThanOrEqual(USAGE_DEBUG_MAX_LINES);
     expect(lines.length).toBeGreaterThanOrEqual(USAGE_DEBUG_KEEP_LINES);
-  });
+  }, 15_000);
 });

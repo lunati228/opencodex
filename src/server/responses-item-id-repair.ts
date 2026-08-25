@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { ResponsesItemIdRepairConfig } from "../types";
+import { relaySseWithPayloadRewrite, type SsePayloadRewrite } from "./sse-payload-rewrite";
+import type { TranslatorBudget } from "../lib/translator-budget";
 
 type RepairableItemType = "message" | "reasoning";
 
 interface ResponsesItemIdRepairState {
   readonly repairMissingTerminalIds: boolean;
+  readonly repairInvalidIds: boolean;
   readonly placeholders: Record<RepairableItemType, ReadonlySet<string>>;
   readonly outputIds: Record<RepairableItemType, Map<number, string>>;
+  /** JSON [outputIndex, rawId] -> canonical id, for exact item_id rewrites on part/delta events. */
+  readonly rawIds: Map<string, string>;
   readonly scope: string;
+  readonly budget?: TranslatorBudget;
 }
 
 const REPAIRABLE_PREFIXES: Record<RepairableItemType, string> = {
@@ -35,44 +41,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function nextSseBlock(buffer: string): { block: string; delimiter: string; rest: string } | null {
-  const match = buffer.match(/\r?\n\r?\n/);
-  if (!match || match.index === undefined) return null;
-  return {
-    block: buffer.slice(0, match.index),
-    delimiter: match[0],
-    rest: buffer.slice(match.index + match[0].length),
-  };
-}
-
-function sseDataPayload(block: string): string | null {
-  const data: string[] = [];
-  for (const line of block.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) continue;
-    const value = line.slice(5);
-    data.push(value.startsWith(" ") ? value.slice(1) : value);
-  }
-  return data.length > 0 ? data.join("\n") : null;
-}
-
-function replaceSseDataPayload(block: string, payload: string): string {
-  const newline = block.includes("\r\n") ? "\r\n" : "\n";
-  const lines = block.split(/\r?\n/);
-  const rewritten: string[] = [];
-  let replaced = false;
-  for (const line of lines) {
-    if (!line.startsWith("data:")) {
-      rewritten.push(line);
-      continue;
-    }
-    if (!replaced) {
-      rewritten.push(`data: ${payload}`);
-      replaced = true;
-    }
-  }
-  return replaced ? rewritten.join(newline) : block;
-}
-
 function asOutputIndex(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
@@ -85,9 +53,10 @@ function mintCanonicalId(type: RepairableItemType, scope: string, outputIndex: n
   return `${REPAIRABLE_PREFIXES[type]}ocx_${scope}_${outputIndex}`;
 }
 
-function createRepairState(config: ResponsesItemIdRepairConfig): ResponsesItemIdRepairState {
-  return {
+function createRepairState(config: ResponsesItemIdRepairConfig, budget?: TranslatorBudget): ResponsesItemIdRepairState {
+  const state = {
     repairMissingTerminalIds: config.repairMissingTerminalIds === true,
+    repairInvalidIds: config.repairInvalidIds === true,
     placeholders: {
       message: new Set(config.message ?? []),
       reasoning: new Set(config.reasoning ?? []),
@@ -96,8 +65,16 @@ function createRepairState(config: ResponsesItemIdRepairConfig): ResponsesItemId
       message: new Map<number, string>(),
       reasoning: new Map<number, string>(),
     },
+    rawIds: new Map<string, string>(),
     scope: randomUUID().replace(/-/g, ""),
+    budget,
   };
+  budget?.chargeRetained(new TextEncoder().encode(JSON.stringify({
+    message: [...state.placeholders.message],
+    reasoning: [...state.placeholders.reasoning],
+    scope: state.scope,
+  })).byteLength, { kind: "item_ids" });
+  return state;
 }
 
 function rememberMappedId(
@@ -113,11 +90,19 @@ function rememberMappedId(
   if (!rawId) return null;
   const mapped = state.placeholders[type].has(rawId)
     ? mintCanonicalId(type, state.scope, outputIndex)
-    : state.repairMissingTerminalIds
-      ? rawId
-      : null;
+    : state.repairInvalidIds && !rawId.startsWith(REPAIRABLE_PREFIXES[type])
+      // An existing id without the canonical msg_/rs_ prefix (bare UUIDs from
+      // DeepSeek's Responses route) leaves Codex stuck on Thinking (#938).
+      ? mintCanonicalId(type, state.scope, outputIndex)
+      : state.repairMissingTerminalIds
+        ? rawId
+        : null;
   if (!mapped) return null;
+  state.budget?.chargeRetained(new TextEncoder().encode(JSON.stringify([outputIndex, rawId, mapped])).byteLength, { kind: "item_ids" });
   state.outputIds[type].set(outputIndex, mapped);
+  // Keyed by (index, rawId): an upstream that reuses one placeholder id across
+  // several items must not collapse them into the last item's canonical id.
+  if (rawId !== mapped) state.rawIds.set(JSON.stringify([outputIndex, rawId]), mapped);
   return mapped;
 }
 
@@ -141,11 +126,24 @@ function rewriteItemIdField(
 ): { event: Record<string, unknown>; changed: boolean } {
   const eventType = typeof event.type === "string" ? ITEM_ID_EVENT_TYPES[event.type] : undefined;
   if (!eventType) return { event, changed: false };
+  const currentId = typeof event.item_id === "string" ? event.item_id : undefined;
+  // content_part.* events are shared between message and reasoning items (DeepSeek's
+  // streamed reasoning wraps its text in content parts), so the static event-type map
+  // can point at the wrong id table. The rewrite is therefore exact-only when the
+  // event carries an item_id: it fires when (output_index, item_id) names an id the
+  // item stream already repaired, and otherwise leaves the event alone — an unknown
+  // id belongs to an item this repair never touched (function_call, already-canonical
+  // ids), and guessing by index could borrow a sibling item's identity. The index
+  // table serves only events with NO item_id, where repairMissingTerminalIds
+  // explicitly opts into the positional guess (the pre-existing contract).
+  if (currentId !== undefined) {
+    const mapped = state.rawIds.get(JSON.stringify([outputIndex, currentId]));
+    if (!mapped || currentId === mapped) return { event, changed: false };
+    return { event: { ...event, item_id: mapped }, changed: true };
+  }
+  if (!state.repairMissingTerminalIds) return { event, changed: false };
   const mapped = state.outputIds[eventType].get(outputIndex);
   if (!mapped) return { event, changed: false };
-  const currentId = typeof event.item_id === "string" ? event.item_id : undefined;
-  if (currentId === mapped) return { event, changed: false };
-  if (currentId === undefined && !state.repairMissingTerminalIds) return { event, changed: false };
   return { event: { ...event, item_id: mapped }, changed: true };
 }
 
@@ -200,7 +198,13 @@ function repairEventPayload(
       changed = true;
     }
   }
-  return changed ? JSON.stringify(nextEvent) : payload;
+  if (!changed) return payload;
+  const rewritten = JSON.stringify(nextEvent);
+  const bytes = new TextEncoder().encode(rewritten).byteLength;
+  const reservation = state.budget?.reserveTransient(bytes, { kind: "item_ids" });
+  reservation?.commitRetained();
+  if (state.budget) queueMicrotask(() => state.budget?.releaseRetained(bytes, { kind: "item_ids" }));
+  return rewritten;
 }
 
 /**
@@ -221,61 +225,48 @@ function repairEventPayload(
  *   type에 재사용해도 function_call id/call_id는 보존된다. opt-in 게이트웨이는 sequential streams에서도
  *   고유한 canonical id를 얻지만, 보정이 필요한 경우에만 JS stream 재작성 비용을 지불한다.
  */
+/** Stateful payload rewrite for composition with other client-facing SSE transforms. */
+export function createResponsesItemIdPayloadRewrite(
+  config: ResponsesItemIdRepairConfig,
+  budget?: TranslatorBudget,
+): SsePayloadRewrite {
+  const state = createRepairState(config, budget);
+  return (payload) => repairEventPayload(payload, state);
+}
+
 export function relaySseWithResponsesItemIdRepair(
   body: ReadableStream<Uint8Array>,
   config: ResponsesItemIdRepairConfig,
+  budget: TranslatorBudget,
 ): ReadableStream<Uint8Array> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  const state = createRepairState(config);
-  let buffer = "";
-
-  const emitProcessedBlocks = (
-    controller: ReadableStreamDefaultController<Uint8Array>,
-    flushFinal = false,
-  ): void => {
-    let next: { block: string; delimiter: string; rest: string } | null;
-    while ((next = nextSseBlock(buffer))) {
-      buffer = next.rest;
-      const payload = sseDataPayload(next.block);
-      const repairedPayload = payload ? repairEventPayload(payload, state) : undefined;
-      const block = payload && repairedPayload !== undefined && repairedPayload !== payload
-        ? replaceSseDataPayload(next.block, repairedPayload)
-        : next.block;
-      controller.enqueue(encoder.encode(block + next.delimiter));
-    }
-    if (flushFinal && buffer.length > 0) {
-      const payload = sseDataPayload(buffer);
-      const repairedPayload = payload ? repairEventPayload(payload, state) : undefined;
-      const block = payload && repairedPayload !== undefined && repairedPayload !== payload
-        ? replaceSseDataPayload(buffer, repairedPayload)
-        : buffer;
-      controller.enqueue(encoder.encode(block));
-      buffer = "";
-    }
-  };
-
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const { done, value } = await reader.read();
-      if (done) {
-        buffer += decoder.decode();
-        emitProcessedBlocks(controller, true);
-        controller.close();
-        return;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      emitProcessedBlocks(controller);
-    },
-    cancel(reason) {
-      reader.cancel(reason).catch(() => {});
-    },
-  });
+  return relaySseWithPayloadRewrite(body, createResponsesItemIdPayloadRewrite(config, budget), budget);
 }
 
 export function hasResponsesItemIdRepair(config: ResponsesItemIdRepairConfig | undefined): boolean {
   return config?.repairMissingTerminalIds === true
+    || config?.repairInvalidIds === true
     || (config?.message?.length ?? 0) > 0
     || (config?.reasoning?.length ?? 0) > 0;
+}
+
+/**
+ * Client-facing id normalization for a WHOLE bounded-JSON Responses object.
+ *
+ * The bounded-JSON policy (#875) answers a streaming client by synthesizing SSE
+ * from a completed JSON body, and reframes the same body into events for WS
+ * turns. Neither path goes through the SSE relay, so neither picks up the SSE
+ * item-id rewrite — a provider that needs id repair would get it on a streaming
+ * response and silently lose it the moment the reliability policy switched the
+ * upstream to bounded JSON. This applies the same rewrite to the object so all
+ * three paths agree. Raw recorded state is untouched: recording happens before
+ * any normalization.
+ */
+export function repairResponsesJsonItemIds(
+  response: Record<string, unknown>,
+  config: ResponsesItemIdRepairConfig,
+  budget?: TranslatorBudget,
+): Record<string, unknown> {
+  const state = createRepairState(config, budget);
+  const rewritten = rewriteResponseSnapshot(state, response);
+  return rewritten.changed ? rewritten.response : response;
 }

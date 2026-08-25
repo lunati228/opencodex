@@ -1,6 +1,6 @@
 # 010 — codex analysis upgrade (Grok custom models + OpenCodex inbound)
 
-## Deliverables under `/Users/jun/Developer/codex/180_grok-build/analysis/`
+## Deliverables under `<private-user-home>/Developer/codex/180_grok-build/analysis/`
 - 000 inventory, 001 install, 002 auth, 003 http (remote xAI)
 - 004 acp/headless
 - 005 models/tools

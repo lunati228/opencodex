@@ -11,7 +11,7 @@ Repository:
 
 Local reference clone:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_omp`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_omp`
 - Checked at `cc0c67beb chore: bump version to 16.1.13`
 - `git status --short --branch`: `## main...origin/main`
 
@@ -43,7 +43,7 @@ not the `openai-chat` adapter.
 Source:
 
 - https://github.com/can1357/oh-my-pi/blob/main/packages/ai/src/registry/umans.ts
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_omp/packages/ai/src/registry/umans.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_omp/packages/ai/src/registry/umans.ts`
 
 Observed implementation:
 
@@ -81,7 +81,7 @@ Interpretation:
 Source:
 
 - https://github.com/can1357/oh-my-pi/blob/main/packages/ai/test/umans-login.test.ts
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_omp/packages/ai/test/umans-login.test.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_omp/packages/ai/test/umans-login.test.ts`
 
 Observed assertions:
 

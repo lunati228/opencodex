@@ -149,20 +149,20 @@ Relevant upstream paths:
 opencodex derives routed entries by deep-copying a native template:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:82
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:118
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:128
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:82
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:118
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:128
 ```
 
 Live `/v1/models?client_version=...` and on-disk catalog sync both use the same derived entries:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:473
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:480
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:484
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:273
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:292
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:473
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:480
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:484
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:273
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:292
 ```
 
 The routed entries currently do not normalize:

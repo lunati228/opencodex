@@ -32,7 +32,7 @@ test("only src/grok/inject.ts writes a grok config.toml", () => {
     // service) match neither side of the grok-home pattern and must not trip this.
     const mentionsGrokToml = content.includes("config.toml")
       && (content.includes("grokHome") || content.includes("GROK_HOME"));
-    const writes = /atomicWriteFile|writeFileSync|writeFile\(/.test(content);
+    const writes = /atomicWrite(?:Secret)?File|writeFileSync|writeFile\(/.test(content);
     if (mentionsGrokToml && writes) writers.push(path);
   }
   expect(writers).toEqual([join(SRC, "grok/inject.ts")]);

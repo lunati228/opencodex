@@ -18,7 +18,7 @@ native `model_messages`, `tool_mode`, `multi_agent_version`, and `use_responses_
 Primary implementation path:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
 ```
 
 Current behavior:
@@ -39,7 +39,7 @@ for routed models.
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
 ```
 
 Add a dedicated helper:
@@ -67,7 +67,7 @@ Native bare GPT entries must not pass through this helper.
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
 ```
 
 Add Bun tests that:
@@ -86,7 +86,7 @@ Add Bun tests that:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/package.json
+<private-user-home>/Developer/new/700_projects/opencodex/package.json
 ```
 
 Add:

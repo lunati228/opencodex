@@ -17,11 +17,11 @@ Satisfies the minimum server obligations in `01_codex-ws-protocol-analysis.md §
 opencodex pipeline + integration point:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:87-223   handleResponses (parse→route→oauth→vision→web-search→adapter→bridge)
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:141-162  passthrough → Response(relayWithAbort(body))   (SSE bytes)
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:202-223  routed stream → bridgeToResponsesSSE(...) → SSE Response
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:508-510  Bun.serve({ fetch }) — add `websocket` handler here
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:547-559  POST /v1/responses — add WS upgrade beside it
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:87-223   handleResponses (parse→route→oauth→vision→web-search→adapter→bridge)
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:141-162  passthrough → Response(relayWithAbort(body))   (SSE bytes)
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:202-223  routed stream → bridgeToResponsesSSE(...) → SSE Response
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:508-510  Bun.serve({ fetch }) — add `websocket` handler here
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:547-559  POST /v1/responses — add WS upgrade beside it
 ```
 
 Codex WS contract this satisfies:
@@ -58,7 +58,7 @@ Codex WS contract this satisfies:
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/ws-bridge.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/ws-bridge.ts
 ```
 
 Complete content:
@@ -107,7 +107,7 @@ export async function pumpSseToWebSocket(
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts
 ```
 
 **(a) Extract `handleResponsesCore`.** Change `handleResponses` to obtain the body, then delegate.
@@ -205,7 +205,7 @@ async function handleResponses(req: Request, config: OcxConfig, logCtx: { model:
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts
 ```
 
 Integration test: start the server on an ephemeral port, open a `WebSocket` to

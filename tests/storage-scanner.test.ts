@@ -14,7 +14,7 @@ let previousCodexHome: string | undefined;
 
 /**
  * Builds a synthetic CODEX_HOME mirroring the layout documented in
- * devlog/_plan/500_storage-page-session-cleanup/20_codex-storage-structure.md:
+ * devlog/_fin/500_storage-page-session-cleanup/20_codex-storage-structure.md:
  * date-partitioned sessions/, flat archived_sessions/, versioned state / logs
  * sqlite files with WAL siblings, plus non-session dirs for the "other" bucket.
  */
@@ -253,5 +253,18 @@ describe("scanStorage", () => {
     for (const [path, stat] of before) {
       expect(after.get(path)).toEqual(stat);
     }
+  }, 15_000);
+
+  test("skips .trash quarantine directory (not counted in other or totals)", () => {
+    fixtureHome = buildFixtureHome();
+    const withoutTrash = scanStorage(fixtureHome);
+    mkdirSync(join(fixtureHome, ".trash", "123"), { recursive: true });
+    writeFileSync(join(fixtureHome, ".trash", "123", "rollout-quarantined.jsonl"), "q".repeat(5000));
+    const withTrash = scanStorage(fixtureHome);
+    expect(withTrash.total.bytes).toBe(withoutTrash.total.bytes);
+    expect(withTrash.total.fileCount).toBe(withoutTrash.total.fileCount);
+    expect(bucket(withTrash, "other").bytes).toBe(bucket(withoutTrash, "other").bytes);
+    const otherPaths = (bucket(withTrash, "other").largest ?? []).map(e => e.path);
+    expect(otherPaths.some(p => p.includes(".trash"))).toBe(false);
   }, 15_000);
 });

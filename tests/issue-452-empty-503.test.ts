@@ -13,6 +13,7 @@ import { startServer } from "../src/server";
 import { formatPassthroughUpstreamError } from "../src/server/responses/passthrough-error";
 import type { OcxConfig, OcxParsedRequest } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -82,11 +83,19 @@ describe("formatPassthroughUpstreamError (#452)", () => {
   });
 
   test("empty body drops invalid Retry-After values", async () => {
-    for (const bad of ["", "nope", "-1", "0", "1e6", "not-a-delay"]) {
+    // "0" is intentionally preserved as an instant-retry client directive
+    // (see resolveClientRetryAfter / #507 review hardening).
+    for (const bad of ["", "nope", "-1", "1e6", "not-a-delay"]) {
       const headers = new Headers({ "retry-after": bad });
       const response = formatPassthroughUpstreamError(503, "", { headers, now: Date.now() });
       expect(response.headers.get("retry-after")).toBeNull();
     }
+  });
+
+  test("empty body preserves Retry-After: 0", async () => {
+    const headers = new Headers({ "retry-after": "0" });
+    const response = formatPassthroughUpstreamError(503, "", { headers, now: Date.now() });
+    expect(response.headers.get("retry-after")).toBe("0");
   });
 
   test("JSON with error.message is preserved for Codex", async () => {
@@ -200,7 +209,10 @@ describe("passthrough empty 503 (#452)", () => {
         },
       );
     }
-  });
+    // Two full pool-passthrough cycles, each binding a real proxy and a real upstream,
+    // so the wait is the assertion rather than an accident: it measured ~6s here against
+    // Bun's 5s default.
+  }, SERVER_BUDGET_MS);
 
   test("direct /v1/responses drops invalid Retry-After on empty-body 503", async () => {
     await withPoolPassthrough(

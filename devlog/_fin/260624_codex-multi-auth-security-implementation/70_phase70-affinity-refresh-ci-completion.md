@@ -170,7 +170,7 @@ type CodexThreadResolution =
 
 ### MODIFY `tests/codex-inject.test.ts`
 
-- Replace the stale local-home fixture `"/Users/jun/.codex/opencodex-catalog.json"` with a non-home fixture such as `"/tmp/opencodex-catalog.json"` because the test only verifies that stale root `model_catalog_json` is stripped, not a user-home path.
+- Replace the stale local-home fixture `"<private-user-home>/.codex/opencodex-catalog.json"` with a non-home fixture such as `"/tmp/opencodex-catalog.json"` because the test only verifies that stale root `model_catalog_json` is stripped, not a user-home path.
 
 ### MODIFY `package.json`
 

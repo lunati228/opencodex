@@ -59,4 +59,4 @@ compacted history disappears from the routed model's context.
 
 ## Status: investigation complete, implementation NOT started (user asked for
 ## investigation). All file/line references verified 2026-07-06 against
-## /Users/jun/Developer/codex/121_openai-codex and current opencodex tree.
+## <private-user-home>/Developer/codex/121_openai-codex and current opencodex tree.

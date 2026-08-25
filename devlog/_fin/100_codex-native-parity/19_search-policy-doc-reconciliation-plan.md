@@ -22,7 +22,7 @@ That statement is now superseded because opencodex executes hosted search throug
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/devlog/100_codex-native-parity/11_search-defaults-and-inherited-state.md
+<private-user-home>/Developer/new/700_projects/opencodex/devlog/100_codex-native-parity/11_search-defaults-and-inherited-state.md
 ```
 
 Update the stale current-observation opening sentence so it no longer says routed entries are
@@ -49,8 +49,8 @@ that block:
 Update the source pointer:
 
 ```diff
--/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
-+/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:73-88
+-<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
++<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:73-88
 ```
 
 Update the decision preamble:
@@ -92,7 +92,7 @@ Update the implementation note:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/devlog/100_codex-native-parity/90_phase-plan.md
+<private-user-home>/Developer/new/700_projects/opencodex/devlog/100_codex-native-parity/90_phase-plan.md
 ```
 
 Mark the search-policy question as resolved while keeping deferred `tool_search` and hosted
@@ -109,8 +109,8 @@ Mark the search-policy question as resolved while keeping deferred `tool_search`
 ### NO SOURCE CHANGE
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
-/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
 ```
 
 No code patch is planned because the current source and tests already assert the corrected policy:

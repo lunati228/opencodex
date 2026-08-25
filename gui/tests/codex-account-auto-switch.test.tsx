@@ -11,6 +11,8 @@ import {
   type AutoSwitchFetch,
 } from "../src/codex-auto-switch";
 import { CodexAutoSwitchSetting as AutoSwitchSetting } from "../src/components/CodexAutoSwitchSetting";
+import AccountPoolStrategyControls from "../src/components/AccountPoolStrategyControls";
+import type { AccountPoolStrategy } from "../src/account-pool-strategy";
 import { LanguageProvider } from "../src/i18n/provider";
 
 let previousLanguage: unknown;
@@ -31,17 +33,19 @@ afterEach(() => {
 });
 
 function renderSetting(
-  threshold: number | null,
-  draft = threshold === null ? "" : String(threshold),
+  threshold: number,
+  draft = String(threshold > 0 ? threshold : 80),
   saving = false,
   loadError = false,
   feedback: { tone: "ok" | "err"; message: string } | null = null,
+  strategy: AccountPoolStrategy = "quota",
 ): string {
   return renderToStaticMarkup(
     <LanguageProvider>
       <AutoSwitchSetting
         threshold={threshold}
         draft={draft}
+        strategy={strategy}
         saving={saving}
         loadError={loadError}
         feedback={feedback}
@@ -113,8 +117,9 @@ describe("Codex account auto-switch threshold", () => {
     expect(html).toContain('value="95"');
     expect(html).toContain('min="1"');
     expect(html).toContain('max="100"');
-    expect(html).toContain('aria-label="Switch threshold, percent"');
+    expect(html).toContain('aria-label="Usage threshold, percent"');
     expect(html).toContain("95% usage or above");
+    expect(html).toContain("including an already-bound task");
     expect(html).toContain('aria-pressed="true"');
   });
 
@@ -128,22 +133,88 @@ describe("Codex account auto-switch threshold", () => {
 
   test("renders an explicit off state without an editable threshold", () => {
     const html = renderSetting(0, "80");
-    expect(html).toContain("Automatic account switching is off");
+    expect(html).toContain("Usage-based proactive switching is off");
     expect(html).toContain('aria-pressed="false"');
     expect(html).not.toContain('type="number"');
   });
 
-  test("does not expose an actionable placeholder before hydration", () => {
-    const loading = renderSetting(null);
-    expect(loading).toContain("Loading…");
-    expect(loading).toContain('aria-busy="true"');
-    expect(loading).not.toContain('type="number"');
-    expect(loading).not.toContain('aria-pressed=');
+  test("explains threshold semantics by strategy and separates recovery from cache continuity", () => {
+    const quota = renderSetting(80, "80", false, false, null, "quota");
+    const roundRobin = renderSetting(80, "80", false, false, null, "round-robin");
+    const fillFirst = renderSetting(80, "80", false, false, null, "fill-first");
 
-    const failed = renderSetting(null, "", false, true);
-    expect(failed).toContain("Automatic switching setting could not be loaded.");
+    expect(quota).toContain("including an already-bound task");
+    expect(roundRobin).toContain("does not use this threshold");
+    expect(fillFirst).toContain("drain point for new/unbound tasks");
+    for (const html of [quota, roundRobin, fillFirst]) {
+      expect(html).toContain("Failure recovery is separate");
+      expect(html).toContain("Prompt cache resets on account switch");
+    }
+  });
+
+  test("defines unbound assignment and describes each rotation strategy accurately", () => {
+    const renderStrategy = (strategy: AccountPoolStrategy) => renderToStaticMarkup(
+      <LanguageProvider>
+        <AccountPoolStrategyControls
+          strategy={strategy}
+          stickyDraft="2"
+          onStrategyChange={() => {}}
+          onStickyDraftChange={() => {}}
+          onStickyCommit={() => {}}
+        />
+      </LanguageProvider>,
+    );
+
+    expect(renderStrategy("quota")).toContain("can also rebind an existing task");
+    expect(renderStrategy("round-robin")).toContain("usage threshold does not change normal rotation");
+    const fillFirst = renderStrategy("fill-first");
+    expect(fillFirst).toContain("healthy bound tasks keep affinity");
+    expect(fillFirst).toContain("existing visible task can become unbound");
+
+    const roundRobin = renderStrategy("round-robin");
+    expect(roundRobin).toContain("New/unbound assignments before rotate");
+    expect(roundRobin).toContain("not after upstream success");
+  });
+
+  test("paints controls immediately with the default threshold (no loading placeholder)", () => {
+    const html = renderSetting(DEFAULT_AUTO_SWITCH_THRESHOLD);
+    expect(html).toContain('type="number"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).not.toContain("Loading…");
+    expect(html).not.toContain('aria-busy="true"');
+  });
+
+  test("blocks interaction until hydrated without hiding chrome", () => {
+    const html = renderToStaticMarkup(
+      <LanguageProvider>
+        <AutoSwitchSetting
+          threshold={DEFAULT_AUTO_SWITCH_THRESHOLD}
+          draft={String(DEFAULT_AUTO_SWITCH_THRESHOLD)}
+          hydrated={false}
+          saving={false}
+          loadError={false}
+          feedback={null}
+          onDraftChange={() => {}}
+          onEditingChange={() => {}}
+          onCommit={async () => true}
+          onCancel={() => {}}
+          onToggle={async () => true}
+          onRetry={() => {}}
+        />
+      </LanguageProvider>,
+    );
+    expect(html).toContain('type="number"');
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain('readOnly=""');
+    expect(html).toContain('disabled=""');
+    expect(html).not.toContain("Loading…");
+  });
+
+  test("surfaces load failure without hiding the toggle", () => {
+    const failed = renderSetting(DEFAULT_AUTO_SWITCH_THRESHOLD, String(DEFAULT_AUTO_SWITCH_THRESHOLD), false, true);
+    expect(failed).toContain("Usage-based switching setting could not be loaded.");
     expect(failed).toContain("Retry");
-    expect(failed).not.toContain('type="number"');
+    expect(failed).toContain('aria-pressed="true"');
   });
 
   test("keeps the focused input present but read-only while a write is pending", () => {

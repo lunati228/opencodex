@@ -13,9 +13,9 @@ This is a **foundation cycle** (research + decision). It produces three docs (00
 ## Why now — and why it is NOT a 110 bug
 
 Codex chooses the WS path purely on the provider capability flag
-`Provider.supports_websockets` (`/Users/jun/Developer/codex/codex-cli/codex-rs/core/src/client.rs:772`).
+`Provider.supports_websockets` (`<private-user-home>/Developer/codex/codex-cli/codex-rs/core/src/client.rs:772`).
 **The catalog opencodex serves advertises that flag on no entry today** — verified against the
-live served catalog `/Users/jun/.codex/opencodex-catalog.json` (zero `supports_websockets`
+live served catalog `<private-user-home>/.codex/opencodex-catalog.json` (zero `supports_websockets`
 occurrences, native or routed). The mechanism differs by entry class, which matters for the
 rollout in `12_`:
 

@@ -1,6 +1,6 @@
 # 10 — jawcode parity
 
-- repo: `lidge-jun/jawcode`  ·  로컬: `/Users/jun/Developer/new/700_projects/jawcode`
+- repo: `lidge-jun/jawcode`  ·  로컬: `<private-user-home>/Developer/new/700_projects/jawcode`
 - **분석 HEAD: `27311f6`** (2026-07-01 04:35, `fix(ai): type DeepInfra tokenizer test cases as TokenizerFamily (10.062)`)
 - 역할: opencodex 어댑터의 **직접 포팅 출처** (1차 SOT). provider 레이어가 여기 산다.
 

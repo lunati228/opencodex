@@ -30,18 +30,37 @@ interface ProviderAdapter {
 
 - 把内部消息转换成 OpenAI role；工具映射为 `{type:"function", function:{…}}` 和
   `tool_choice`（`auto`/`none`/`required` 或具名函数）。
+- **工具结果中的图片**会在工具轮次结束后，作为后续 user vision 消息（`image_url` 部分）发送，
+  因为 `role:"tool"` 的内容只能是文本；`[image]` 标记仍保留在工具消息中作为锚点。
 - **重写 Codex 的 GPT-5 身份提示词**，改成与模型无关的介绍，避免路由模型自称 OpenAI。
 - 精确层级不可用时，**把 `reasoning_effort` 限制到模型公布的子集**。除非 provider 显式配置
   alias，`xhigh` 与 `max` 保持为不同标签。对于 `provider.noReasoningModels` 中的 id，则**完全
   省略**该参数。
 - 流式输出 `delta.content`（文本）、`delta.reasoning_content`（thinking）和
   `delta.tool_calls[]`，并收集 `usage`。
+- ClinePass 使用经实时验证的网关格式 `reasoning: { enabled: true, effort }`；关闭 reasoning 时使用
+  `{ enabled: false }`。其公开 API 文档目前没有说明这一请求格式。adapter 会保留请求的 `low`、
+  `medium`、`high`、`xhigh` 或 `max` 档位，把 `delta.reasoning_content` 或 `delta.reasoning`
+  作为 reasoning delta，通过 `stream_options.include_usage` 请求流式 usage，并从非流式响应 envelope 中读取 usage。
 
 ## `openai-responses`
 
-**目标：** OpenAI **Responses API**。**`passthrough: true`** —— 转发原始请求 body，并把响应
-**不经转换**地流式传回。
-**认证：** `forward`（转发调用方 header）或 `key`。
+**目标：** OpenAI **Responses API**。**`passthrough: true`** —— 通常原样转发请求与响应，仅对
+路由网关应用范围有限的兼容性转换。
+**认证：** 规范 OpenAI `forward` 只转发安全的调用方 header allowlist；非规范 `forward` 不会
+转发调用方 authorization，只使用已配置的静态 header；`key` 使用已配置的 provider key。
+
+对于非规范 Responses 网关，Codex 的客户端执行型 `tool_search` 声明会作为公共 function tool
+以不与现有 function 名称冲突的方式发送；匹配的请求历史和 JSON/SSE function call 会恢复为
+客户端私有的 `tool_search` 生命周期。规范 OpenAI forward 路径仍保持原生私有类型不变。
+
+使用 `key` 认证时，[`retryOn429`](/zh-cn/reference/configuration/) 同样适用：流开始前的 429
+会等待并先于其他处理或故障转移，在相同 key 上重放完全相同请求，与翻译后的
+`openai-chat`/Anthropic 请求路径一致。自定义 `runTurn` 传输不在 HTTP 重试循环之内。
+
+- DeepSeek 的 stateless Responses parser 会收到按 provider 范围的历史归一化：hook 注入的上下文会移动到
+  明确的 tool-call/result 批次之后。并行调用保持在其对应输出之前分组，因此每个调用都留在承载
+  推理的 assistant 回合中。宽容的 provider 和歧义的（重复、缺失或乱序的）call ID 保留原始输入顺序。
 
 - `forward` URL → `{baseUrl}/responses`。`key` provider 默认保留原有的 `{baseUrl}/v1/responses` 构造。
 - `key` provider 可设置经过验证的相对 `responsesPath`；adapter 会移除 `baseUrl` 末尾的一个 `/`，并向 `{trimmedBaseUrl}{responsesPath}` 发送请求。Ark Agent Plan 使用 `baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3"` 和 `responsesPath: "/responses"`。
@@ -52,7 +71,7 @@ interface ProviderAdapter {
 ## `anthropic`
 
 **目标：** Anthropic **Messages**（`/v1/messages`）。
-**认证：** `key`（`x-api-key`）或 `oauth`（Bearer + `anthropic-beta`，用于 Claude Pro/Max）。
+**认证：** `key`（默认 `x-api-key`，或设置 `apiKeyTransport: "bearer"` 后使用 `Authorization: Bearer`）或 `oauth`（Bearer + `anthropic-beta`，用于 Claude Pro/Max）。
 
 - 把消息转换成 Anthropic content block（text、base64 image、`tool_use`、`thinking`）。
 - **Extended thinking 计算：** Anthropic 要求 `max_tokens > thinking.budget_tokens`。adapter 把
@@ -69,8 +88,9 @@ interface ProviderAdapter {
 
 - 系统提示词 → `systemInstruction`；消息 → `contents[]`（assistant → `model`）；工具 →
   `functionDeclarations`；data URL 图像 → `inline_data`。
-- Gemini 省略 tool-call id 时会合成 id。Antigravity 会保留并重放真实 `thoughtSignature`，使
-  reasoning continuity 延续到后续 turn。
+- Gemini 省略 tool-call id 时会合成 id。Vertex 与 Antigravity 会保留并重放不透明
+  `thoughtSignature`，使 tool-result 后续 turn 保持 reasoning continuity。签名缓存会快照到配置
+  目录，因此代理重启后后续 turn 仍可继续。
 
 ## `kiro`
 
@@ -87,16 +107,17 @@ token。
 ### 完成与原生 stop reason
 
 Kiro 的 assistant 文本本身没有可靠的回合结束标记，但终止的 `metadataEvent` 可能带有原生 `stopReason`。
-`END_TURN` 和 `STOP_SEQUENCE` 视为权威结束，其文本直接作为最终回答发出，不再额外往返模型。
+`END_TURN` 和 `STOP_SEQUENCE` 只能证明本次推理已停止；Kiro 也可能给进展文本加上该标记。因此在启用工具的
+回合中，普通文本仍作为 commentary，并通过私有完成工具做一次校验。
 
-只有在 stop reason **缺失**时才走兼容路径。任何显式原因都已在上游终止了本次推理，因此适配器直接报告而不是
+`END_TURN`、`STOP_SEQUENCE` 或缺失 stop reason 时可以走一次完成兼容路径。其他显式原因已在上游终止本次推理，因此适配器直接报告而不是
 再发一次请求：输出 token 上限表现为可继续的 incomplete，上下文窗口耗尽表现为不可重试的 context-length
 错误，内容过滤或 guardrail 停止表现为 filtered incomplete。没有真实工具调用却出现的 `TOOL_USE` 被视为
 矛盾而非进展。
 
-只有完全没有 stop reason 时，opencodex 才添加私有的 `codex_kiro_final_answer` 工具并做一次续写。
-重复抑制严格限定为空白归一化后的完全一致：改写过的状态更新可能改变本回合的结果（从"仍在进行"变成"已完成"），
-丢掉那句话比显示一次表面重复更糟糕。
+启用工具时，opencodex 会添加私有 `codex_kiro_final_answer`。重试不会制造空的 assistant/user 回合，
+而会保留原始 user/tool-result，并在发送前校验角色交替、非空结构消息以及 tool use/result 配对。
+完成工具的回答即使与先前 commentary 完全相同，也会作为 `final_answer` 发出。
 
 ### Reasoning effort
 
@@ -107,8 +128,10 @@ Kiro 的 assistant 文本本身没有可靠的回合结束标记，但终止的 
 
 ## `cursor`
 
-**目标：** `api2.cursor.sh` 上采用 HTTP/2 Connect streaming 的
-`agent.v1.AgentService/Run`。
+**目标：** 默认使用 `api2.cursor.sh` 上采用 HTTP/2 Connect streaming 的
+`agent.v1.AgentService/Run`。配置 `upstreamHttpVersion: "http1.1"`（或 `"h1"`）后，改用
+Cursor 的 HTTP/1.1 兼容传输：通过 `agent.v1.AgentService/RunSSE` 接收 server output，并通过
+`aiserver.v1.BidiService/BidiAppend` 发送 client message。
 **认证：** `provider.apiKey` 或转发 authorization header 中的 Cursor OAuth/access token。
 
 - 使用 `runTurn`，而不是常规 fetch/parse 路径。请求、server event、工具参数、usage checkpoint
@@ -116,6 +139,10 @@ Kiro 的 assistant 文本本身没有可靠的回合结束标记，但终止的 
   Connect message。
 - 经 content-addressed blob 重放对话状态，把 server tool call 映射回 Codex，用 protobuf
   `GetUsableModels` RPC 发现实时 Cursor 模型，并且只在 run request 尚未 commit 到 wire 前重试。
+- 模型实时发现和推理都会遵守 `upstreamHttpVersion`。`auto`、`http2` 与 `h2` 保持原有 HTTP/2
+  transport；只有 `http1.1` 与 `h1` 会选择兼容模式。
+- 保留 `cursor/grok-4.5-fast` 作为可选模型，但向 Cursor 发送规范的 `grok-4.5` 模型，并将独立的
+  `effort` 和 `fast=true` 值放入 `requested_model.parameters`。
 - Cursor 原生本地 filesystem/shell/network 执行默认被拒绝。显式 `mcpServers` 与
   `desktopExecutor` 集成分别需要 opt-in；`unsafeAllowNativeLocalExec` 会启用更广泛的内置
   executor，并绕过 Codex 审批和 sandbox 语义。

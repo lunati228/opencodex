@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import {
   atomicReplaceDesktopConfig,
   buildDesktop3pRegistry,
@@ -11,12 +11,53 @@ import {
   generateDesktop3pModels,
   legacyDesktop3pAlias,
   parseDesktop3pModeArgs,
+  resolveDesktop3pConfigLibraryPath,
   resolveDesktop3pAlias,
+  writeDesktop3pConfig,
 } from "../src/claude/desktop-3p";
 import { moveDesktopRoute, reconcileDesktopProfile, setDesktopFamilyDefault } from "../src/claude/desktop-profile";
 import { resolveInboundModel } from "../src/claude/inbound";
 
 describe("Claude Desktop 3P models", () => {
+  test("resolves the actual cross-platform Claude Desktop config library (#539)", () => {
+    // Claude Desktop appends "-3p" to its userData root (app.asar `GE()`), so the
+    // suffix-less path is one Desktop never reads. Branch-by-branch coverage lives in
+    // tests/claude-desktop-config-path.test.ts; this pins the public entry point.
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR: " /custom/library " },
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/custom/library");
+    // CLAUDE_USER_DATA_DIR is the one branch where Desktop drops the suffix entirely.
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { CLAUDE_USER_DATA_DIR: "/profiles/claude" },
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe(posix.join("/profiles/claude", "configLibrary"));
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: {},
+      platform: "darwin",
+      homeDir: "/Users/test",
+    })).toBe("/Users/test/Library/Application Support/Claude-3p/configLibrary");
+    // Windows reads LOCALAPPDATA first; APPDATA is only the Electron userData fallback.
+    // Asserted with `win32.join` because the separator follows the target platform, not the host.
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local" },
+      platform: "win32",
+      homeDir: "C:\\Users\\test",
+    })).toBe(win32.join("C:\\Users\\test\\AppData\\Local", "Claude-3p", "configLibrary"));
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: { XDG_CONFIG_HOME: "/xdg/config" },
+      platform: "linux",
+      homeDir: "/home/test",
+    })).toBe("/xdg/config/Claude-3p/configLibrary");
+    expect(resolveDesktop3pConfigLibraryPath({
+      env: {},
+      platform: "linux",
+      homeDir: "/home/test",
+    })).toBe("/home/test/.config/Claude-3p/configLibrary");
+  });
+
   test("derives stable golden codes", () => {
     expect(deriveDesktop3pCode("native/gpt-5.6-sol")).toBe("ncb");
     expect(deriveDesktop3pCode("opencode-go/glm-5.2")).toBe("yrf");
@@ -49,6 +90,18 @@ describe("Claude Desktop 3P models", () => {
         anthropicFamilyTier: "opus",
       },
     ]);
+  });
+
+  test("an openai context cap reaches the Desktop writer, not just the dashboard", () => {
+    // gpt-5.4 is the authoritative 1M native, so it earns supports1m. Capping the provider
+    // at 272k has to take that away here too, or the written Desktop config promises a
+    // window the proxy will not serve (#854's effective-window contract).
+    const uncapped = generateDesktop3pModels(["gpt-5.4"], []);
+    expect(uncapped[0]).toMatchObject({ supports1m: true, prefer1m: true });
+
+    const capped = generateDesktop3pModels(["gpt-5.4"], [], undefined, 272_000);
+    expect(capped[0]!.supports1m).toBeUndefined();
+    expect(capped[0]!.prefer1m).toBeUndefined();
   });
 
   test("passes Anthropic Claude model ids through without encoding", () => {
@@ -128,7 +181,10 @@ describe("Claude Desktop 3P models", () => {
       "claude-opus-4-6",
       desktop3pAlias("cursor", "gpt-5.6-luna"),
     ]);
-    // supports1m ONLY where an authoritative contextWindow >= 1M was provided.
+    // supports1m ONLY where an authoritative contextWindow >= 1M was provided. The routed
+    // cursor row declares 1M explicitly; the native gpt-5.6-sol row advertises 922,000 (a cap
+    // under its measured ceiling) so it must NOT claim the capability, and claude-opus-4-6
+    // was given no window at all.
     const byName = new Map(reparsed.inferenceModels.map((m: { name: string }) => [m.name, m]));
     expect((byName.get(desktop3pAlias("cursor", "gpt-5.6-luna")) as { supports1m?: boolean }).supports1m).toBe(true);
     expect((byName.get("claude-opus-4-8-ncb") as { supports1m?: boolean }).supports1m).toBeUndefined();
@@ -216,6 +272,46 @@ describe("Claude Desktop 3P models", () => {
       expect(readFileSync(`${path}.bak`, "utf8")).toBe("stable bytes\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("applied fingerprint excludes the gateway credential but tracks routing shape", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-desktop-fingerprint-"));
+    const previous = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+    process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = dir;
+    try {
+      const first = writeDesktop3pConfig(10100, ["gpt-5.6-sol"], [], "credential-a");
+      const second = writeDesktop3pConfig(10100, ["gpt-5.6-sol"], [], "credential-b");
+      const changedRoute = writeDesktop3pConfig(10101, ["gpt-5.6-sol"], [], "credential-b");
+      expect(first.written).toBe(true);
+      expect(first.fingerprint).toBe(second.fingerprint);
+      expect(changedRoute.fingerprint).not.toBe(second.fingerprint);
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+      else process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unsafe metadata ids fail closed before a config can escape the library", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-desktop-id-boundary-"));
+    const library = join(root, "library");
+    const previous = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+    process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = library;
+    try {
+      mkdirSync(library);
+      writeFileSync(
+        join(library, "_meta.json"),
+        JSON.stringify({ entries: [{ name: "opencodex", id: "..\\escaped" }] }),
+      );
+      const result = writeDesktop3pConfig(10100, ["gpt-5.6-sol"], [], "credential");
+      expect(result.written).toBe(false);
+      expect(result.reason).toContain("unsafe opencodex config id");
+      expect(existsSync(join(root, "escaped.json"))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+      else process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = previous;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

@@ -38,7 +38,7 @@ and `GET /v1/models?client_version=0.141.0`.
 
 Regenerating opencodex metadata from the patched jawcode worktree was tested with:
 
-`JAWCODE_MODELS_JSON=/Users/jun/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/models.json bun run generate:jawcode-metadata`
+`JAWCODE_MODELS_JSON=<private-user-home>/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/models.json bun run generate:jawcode-metadata`
 
 The relevant `opencode-go` context/output/modalities rows did not change compared with the
 existing committed snapshot. The retry's meaningful payload therefore lives in jawcode/GJC,

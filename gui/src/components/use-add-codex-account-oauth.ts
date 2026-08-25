@@ -7,6 +7,11 @@ import type {
 } from "./add-codex-account-reducer";
 import type { TFn } from "../i18n/shared";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
+import { startVisibilityPoll } from "../visibility-poll";
+import {
+  codexAccountMutationCompletion,
+  type CodexAccountMutationCompletion,
+} from "../codex-account-mutation";
 
 export function useAddCodexAccountOAuth({
   apiBase,
@@ -30,14 +35,14 @@ export function useAddCodexAccountOAuth({
   const aliveRef = useRef(true);
   const pollErrorStreakRef = useRef(0);
   const pollInFlightRef = useRef(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<(() => void) | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const flowRef = useRef<string | null>(null);
   const manualCodeStateRef = useRef(ui.manualCodeState);
   const loginAbortRef = useRef<AbortController | null>(null);
   const startedReauthRef = useRef<string | null>(null);
-  const onAddedRef = useRef<() => void>(() => {});
+  const onAddedRef = useRef<(completion: CodexAccountMutationCompletion) => void>(() => {});
   const onCloseRef = useRef<() => void>(() => {});
 
   const manualCodeBusy = ui.manualCodeState === "submitting";
@@ -51,7 +56,7 @@ export function useAddCodexAccountOAuth({
   }, [ui.flowId]);
 
   const stopPolling = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (pollRef.current) { pollRef.current(); pollRef.current = null; }
     if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
     pollAbortRef.current?.abort();
     pollAbortRef.current = null;
@@ -104,7 +109,10 @@ export function useAddCodexAccountOAuth({
     };
   }, [apiBase, clearManualCode, dispatch, stopPolling]);
 
-  const bindCallbacks = useCallback((onAdded: () => void, onClose: () => void) => {
+  const bindCallbacks = useCallback((
+    onAdded: (completion: CodexAccountMutationCompletion) => void,
+    onClose: () => void,
+  ) => {
     onAddedRef.current = onAdded;
     onCloseRef.current = onClose;
   }, []);
@@ -167,7 +175,9 @@ export function useAddCodexAccountOAuth({
           : `${apiBase}/api/codex-auth/login-status`;
         const pollSession = new AbortController();
         pollAbortRef.current = pollSession;
-        pollRef.current = setInterval(async () => {
+        // A hidden tab cannot complete OAuth; the visible make-up tick checks the
+        // login status the moment the user returns to the modal.
+        pollRef.current = startVisibilityPoll(async () => {
           if (pollInFlightRef.current || pollSession.signal.aborted) return;
           pollInFlightRef.current = true;
           // Bound each tick and abort it when stopPolling/cleanup cancels the session.
@@ -177,7 +187,11 @@ export function useAddCodexAccountOAuth({
           ]);
           try {
             const stRes = await fetch(statusUrl, { signal: tickSignal });
-            const st = await readJsonIfOk<{ status: string; error?: string }>(stRes);
+            const st = await readJsonIfOk<{
+              status: string;
+              error?: string;
+              catalogRefreshPending?: unknown;
+            }>(stRes);
             if (!aliveRef.current || pollSession.signal.aborted) return;
             if (!st) {
               pollErrorStreakRef.current += 1;
@@ -198,7 +212,7 @@ export function useAddCodexAccountOAuth({
               flowRef.current = null;
               dispatch({ type: "set-flow-id", flowId: null });
               if (!aliveRef.current) return;
-              onAddedRef.current();
+              onAddedRef.current(codexAccountMutationCompletion(st));
               onCloseRef.current();
             } else if (st.status === "error" || st.status === "expired") {
               stopPolling();
@@ -250,28 +264,6 @@ export function useAddCodexAccountOAuth({
     void startOAuth();
   }, [reauthAccountId, startOAuth]);
 
-  const copyLoginLink = async () => {
-    if (!ui.authUrl) return;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(ui.authUrl);
-      } else {
-        const input = document.createElement("textarea");
-        input.value = ui.authUrl;
-        input.style.opacity = "0";
-        input.style.position = "fixed";
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand("copy");
-        document.body.removeChild(input);
-      }
-      dispatch({ type: "set-copied", copied: true });
-      setTimeout(() => { if (aliveRef.current) dispatch({ type: "set-copied", copied: false }); }, 2500);
-    } catch {
-      dispatch({ type: "set-error", error: t("codexAuth.loginLinkCopyFailed") });
-    }
-  };
-
   const submitManualCode = useCallback(async () => {
     const flowId = flowRef.current;
     const input = ui.manualCode.trim();
@@ -308,7 +300,6 @@ export function useAddCodexAccountOAuth({
     bindCallbacks,
     closeModal,
     startOAuth,
-    copyLoginLink,
     submitManualCode,
   };
 }

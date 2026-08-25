@@ -1,13 +1,13 @@
 # React Doctor — finds security, performance, correctness, accessibility,
 # bundle-size, and architecture issues in React codebases.
 #
-# Advisory-only and least-privilege: findings appear in the step log and the
-# Actions run summary. All write-scoped outputs (sticky PR comments, inline
-# review comments, commit statuses) are explicitly disabled so the workflow
-# needs no write permissions. Do not re-add write scopes without revisiting
-# tests/ci-workflows.test.ts, which pins this contract.
+# Gating and least-privilege: findings fail the job (`blocking: warning`).
+# Write-scoped outputs (sticky PR comments, inline review comments, commit
+# statuses) stay disabled so the workflow needs no write permissions. Do not
+# re-add write scopes without revisiting tests/ci-workflows.test.ts, which
+# pins this contract.
 #
-# Docs: https://www.react.doctor/ci
+# Docs: https://www.react.doctor/docs/ci-and-prs/github-actions-setup
 # Source: https://github.com/millionco/react-doctor
 
 name: React Doctor
@@ -24,7 +24,7 @@ permissions:
   contents: read
   # Needed so the action can list PR files for --changed-files-from.
   # Without this, listFiles fails, the changed-files file is never written,
-  # and the CLI exits 1 on ENOENT even with blocking: none (fork PRs).
+  # and the CLI exits 1 on ENOENT even for fork PRs.
   pull-requests: read
 
 # Cancels any in-flight scan for the same PR (or branch, on push) the moment a
@@ -45,14 +45,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: millionco/react-doctor@938008119a288f2fb47c66a69cd9279a21f31784 # v2.2.7
+      - uses: millionco/react-doctor@01820bb4fd4d0a4aebcd8df2b2a143a098649cb2 # v2.2.8
         with:
           directory: gui
           # Pin the npm engine — the action wrapper would otherwise fetch
           # react-doctor@latest, silently skewing CI from the local pinned runs.
-          version: "0.9.1"
-          # Advisory contract: report to the step log only; never gate, never write.
-          blocking: none
+          version: "0.9.11"
+          # Fail the job on any finding (errors or warnings).
+          blocking: warning
           comment: false
           review-comments: false
           commit-status: false

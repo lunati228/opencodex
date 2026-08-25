@@ -22,7 +22,7 @@
 
 ## 착수 시점 사실
 
-- 작업 워크트리: `/Users/jun/.codex/worktrees/404d/opencodex`
+- 작업 워크트리: `<private-user-home>/.codex/worktrees/404d/opencodex`
 - 버그 스윕 tip: `f76d79ef907185644997010d0091fc64e3b7d5c8`
 - local `dev` tip: `f0db9188d11b87f45f5cca0f52d6e447b6b51428`
 - fetch 뒤 `origin/dev`: `9b37ef5a926388e7570bd819512ac3dbc8ae18e5`
@@ -77,7 +77,7 @@ cd gui && bun test tests && bun run build
 + dev: <rebased sweep tip>
 ```
 
-- `/Users/jun/Developer/new/700_projects/opencodex`에서 `git merge --ff-only
+- `<private-user-home>/Developer/new/700_projects/opencodex`에서 `git merge --ff-only
   codex/260725-bug-sweep`를 실행한다.
 - fast-forward 전에 `.DS_Store`의 `git hash-object` 값을 기록하고, 작업 뒤 같은 값인지 확인한다.
   수정 상태뿐 아니라 내용 해시가 같아야 한다.

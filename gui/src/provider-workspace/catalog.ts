@@ -15,8 +15,8 @@
  *  7. hasApiKey === true             -> ready  (key-auth with credential present)
  *  8. everything else                -> needsSetup
  *
- * Live-auth overlay: `applyActiveAccountReauth` may demote ready → needs-setup
- * when the active account needs reauth (config binning rules above unchanged).
+ * Live-auth overlay: `applyActiveAccountReauth` tags ready providers that
+ * need reauth without moving them out of the ready section (avoids rail flash).
  *
  * Tiers (three-way, interview 2026-07-17): "accounts" (the canonical OpenAI forward
  * provider), "free" (free pricing), "paid" (everything else). Accounts wins
@@ -33,10 +33,13 @@ export interface WorkspaceProvider {
   hasApiKey?: boolean;
   hasHeaders?: boolean;
   defaultModel?: string;
+  apiKeyTransport?: "x-api-key" | "bearer";
   /** Static/configured model ids from provider config (offline fallback). */
   models?: string[];
   /** Whether the proxy fetches the provider's live model catalog (default true). */
   liveModels?: boolean;
+  /** Optional upstream HTTP version pin. Cursor defaults to HTTP/2 when omitted. */
+  upstreamHttpVersion?: "auto" | "http1.1" | "h1" | "http2" | "h2";
   authMode?: "key" | "forward" | "oauth" | "local" | string;
   keyOptional?: boolean;
   /** Free pricing (may still require an API key). */
@@ -44,6 +47,20 @@ export interface WorkspaceProvider {
   disabled?: boolean;
   note?: string;
   allowPrivateNetwork?: boolean;
+  requestPacing?: {
+    enabled?: boolean;
+    requestsPerMinute?: number;
+    minIntervalMs?: number;
+    models?: Record<string, { requestsPerMinute?: number; minIntervalMs?: number }>;
+  };
+  /** Codex account routing mode for the canonical `openai` forward provider. */
+  codexAccountMode?: "direct" | "pool";
+  /** Runtime-managed provider projection; its endpoint is not user-editable. */
+  localRuntimeProfileId?: "qwen38-27b-q6kl";
+  /** Protected external-bundle projection; its credentials are not user-editable. */
+  externalProviderRef?: string;
+  /** Derived state of the two xAI Grok Responses model-adapter entries. */
+  xaiResponsesOptInState?: boolean | "mixed";
 }
 
 /** Three-way pricing/ownership tier for a ready provider row. */
@@ -92,6 +109,23 @@ function normalizedBaseUrl(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+const CANONICAL_PROVIDER_PROTOCOL = new URL(CODEX_FORWARD_BASE_URL).protocol;
+function providerEndpoint(host: string, ...path: string[]): string {
+  return `${CANONICAL_PROVIDER_PROTOCOL}//${host}/${path.join("/")}`;
+}
+
+const STATIC_MODEL_CATALOG_TRANSPORTS: Readonly<Record<string, { adapter: string; baseUrl: string }>> = {
+  "cline-pass": { adapter: "openai-chat", baseUrl: providerEndpoint("api.cline.bot", "api", "v1") },
+  "mimo-free": { adapter: "mimo-free", baseUrl: providerEndpoint("api.xiaomimimo.com", "api", "free-ai", "openai", "chat") },
+};
+
+/** Keep the Providers toggle aligned with the backend's canonical static-catalog boundary. */
+export function providerSupportsLiveModelDiscovery(name: string, provider: WorkspaceProvider): boolean {
+  const canonical = STATIC_MODEL_CATALOG_TRANSPORTS[name];
+  if (!canonical || provider.adapter !== canonical.adapter) return true;
+  return normalizedBaseUrl(provider.baseUrl) !== normalizedBaseUrl(canonical.baseUrl);
 }
 
 /** Loopback host check shared with the provider-kind classifier (WP080a). */
@@ -218,8 +252,9 @@ export function buildProviderWorkspace(
 
 /**
  * Live-auth overlay: when the active account for a provider needs reauth,
- * demote that provider from ready → needs-setup. Inactive-only reauth is
- * ignored (caller must only set true for the active account).
+ * tag that provider with `activeNeedsReauth` without moving it between
+ * ready/needs-setup. Config-based section membership stays stable on first
+ * paint so live discovery cannot flash a resort of the rail.
  */
 export function applyActiveAccountReauth(
   sections: WorkspaceSections,
@@ -232,18 +267,14 @@ export function applyActiveAccountReauth(
   );
   if (demote.size === 0) return sections;
 
-  const stillReady: WorkspaceItem[] = [];
-  const needsSetup = [...sections.needsSetup];
-  for (const item of sections.ready) {
-    if (demote.has(item.name)) {
-      const demoted: WorkspaceItem = { ...item, activeNeedsReauth: true };
-      delete demoted.tier;
-      needsSetup.push(demoted);
-    } else {
-      stillReady.push(item);
-    }
-  }
-  return { ready: stillReady, needsSetup, disabled: sections.disabled };
+  const tag = (items: WorkspaceItem[]): WorkspaceItem[] =>
+    items.map(item => (demote.has(item.name) ? { ...item, activeNeedsReauth: true } : item));
+
+  return {
+    ready: tag(sections.ready),
+    needsSetup: tag(sections.needsSetup),
+    disabled: sections.disabled,
+  };
 }
 
 /** Canonical status string for a single provider — config plus optional live-auth overlay. */

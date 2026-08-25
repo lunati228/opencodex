@@ -78,7 +78,7 @@ Findings:
 
 ### Router
 
-File: `/Users/jun/Developer/new/700_projects/opencodex/src/router.ts`
+File: `<private-user-home>/Developer/new/700_projects/opencodex/src/router.ts`
 
 Routing behavior:
 
@@ -101,7 +101,7 @@ reporter's config.
 
 ### OpenAI Chat adapter
 
-File: `/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts`
+File: `<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts`
 
 Behavior:
 
@@ -128,7 +128,7 @@ Issue #18 implication:
 
 ### Anthropic Messages adapter
 
-File: `/Users/jun/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts`
+File: `<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts`
 
 Behavior:
 
@@ -165,9 +165,9 @@ Issue #18 implication:
 
 Files:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/gui/src/components/AddProviderModal.tsx`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/providers/derive.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/gui/src/components/AddProviderModal.tsx`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/providers/derive.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
 
 Current behavior:
 

@@ -15,10 +15,10 @@ WebSocket advertisement is restored to default-on for `1.9.1`.
 
 ## Changed
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/config.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/types.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-inject.test.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/config.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-inject.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
 
 ## Verification Plan
 

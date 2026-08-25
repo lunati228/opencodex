@@ -33,7 +33,7 @@ External basis:
 
 ## File Plan
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/codex-routing.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-routing.ts`
 
 Expand upstream health:
 
@@ -99,7 +99,7 @@ Change recording:
 - `quota` stores cooldown, clears affinity, and immediately switches active account to a non-cooled fallback when one exists.
 - `transient` and `unknown` use `CODEX_FAILURE_WINDOW_MS`: if the current streak is stale, start at 1 rather than incrementing.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/codex-auth-context.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-auth-context.ts`
 
 Import `getCodexAccountCooldownUntil`.
 
@@ -125,7 +125,7 @@ export function assertCodexAuthContextNotCooled(ctx: CodexAuthContext): void
 
 It throws `CodexAccountCooldownError` when `ctx.kind === "pool"` and the account still has a future cooldown. HTTP paths that resolve a fresh auth context will be covered by `resolveCodexAuthContext()`; WebSocket per-message reuse will call this helper before `handleResponses()` receives cached `ws.data.authContext`.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
 
 Import `CodexAccountCooldownError`.
 
@@ -148,7 +148,7 @@ In passthrough response recording:
 
 Sidecar callbacks intentionally keep status-only recording for now because they do not expose reset headers at the server call site.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
 
 Add/adjust tests:
 
@@ -159,7 +159,7 @@ Add/adjust tests:
 - stale transient streak expires after `CODEX_FAILURE_WINDOW_MS` via `now` metadata.
 - existing 5xx threshold behavior still works inside one window.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-auth-context.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-auth-context.test.ts`
 
 Add cleanup for upstream health in hooks.
 
@@ -170,7 +170,7 @@ Add test:
 - `resolveCodexAuthContext()` rejects with `CodexAccountCooldownError`, not `{ kind: "main" }`.
 - `assertCodexAuthContextNotCooled()` rejects a cached pool context while cooled and accepts it after expiry.
 
-### OPTIONAL MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
+### OPTIONAL MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
 
 Only if a server-level 429 response test is cheap. Routing and auth-context tests are sufficient for this slice.
 
@@ -213,23 +213,23 @@ Status: implemented in B.
 
 Implementation files:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/codex-routing.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-routing.ts`
   - Added quota cooldown health state, `Retry-After` parsing, Codex reset-header cooldown fallback, 24h clamp, 60s default, and 5-minute transient failure window.
   - Filtered cooled pool accounts out of new-thread and stale-affinity selection when another usable pool account exists.
   - Preserved fail-closed behavior by returning the configured cooled active pool account when no alternative exists, so auth context resolution can reject it instead of returning main.
   - Made 429 clear account affinity and switch the global active pool to a non-cooled fallback when available.
   - Made 2xx success clear transient failure streaks while preserving unexpired 429 cooldown.
-- `/Users/jun/Developer/new/700_projects/opencodex/src/codex-auth-context.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-auth-context.ts`
   - Added `CodexAccountCooldownError`.
   - Added cooldown checks before token fetch in `resolveCodexAuthContext()`.
   - Added `assertCodexAuthContextNotCooled()` for already-upgraded WebSocket turns that reuse a cached pool auth context.
-- `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
   - Returns generic 429 `rate_limit_error` for cooldown errors on HTTP and WebSocket upgrade.
   - Passes `Retry-After` and Codex reset headers into `recordCodexUpstreamOutcome()` for passthrough responses.
   - Re-checks cached WebSocket pool auth context before each `response.create` turn and sends a generic 429 error frame when cooled.
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
   - Added coverage for delay-seconds and HTTP-date `Retry-After`, reset-header fallback, affinity clearing, active fallback, success preserving cooldown, and stale transient failure window reset.
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-auth-context.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-auth-context.test.ts`
   - Added coverage for cooled single-pool fail-closed behavior with inbound main auth present.
   - Added coverage for cached pool auth context rejection while cooled and acceptance after expiry.
 

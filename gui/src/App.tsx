@@ -1,26 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { setClientResourceData, useKeyedClientResource } from "./client-resource";
+import { useEffect, useRef, useState } from "react";
+import { useKeyedClientResource } from "./client-resource";
 import Dashboard from "./pages/Dashboard";
 import Providers from "./pages/Providers";
 import Models from "./pages/Models";
-import Combos from "./pages/Combos";
 import Subagents from "./pages/Subagents";
 import Logs from "./pages/Logs";
 import Usage from "./pages/Usage";
 import Storage from "./pages/Storage";
 import CodexAuth from "./pages/CodexAuth";
-import ApiKeys from "./pages/ApiKeys";
-import Claude from "./pages/Claude";
-import Grok from "./pages/Grok";
+import Integrations from "./pages/Integrations";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX } from "./icons";
-import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n/shared";
-import { Select, Switch } from "./ui";
+import { SidebarGithubRow } from "./components/sidebar-github-row";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconX, IconRefresh} from "./icons";
+import { useI18n, useT, LOCALES, localeDisplayName, type Locale, type TKey } from "./i18n/shared";
+import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
-import { readJsonIfOk } from "./fetch-json";
 import { type Page } from "./app-routing";
+import { readModelsTab, type ModelsTab } from "./pages/models-tab";
 import { useAppRouteState } from "./use-app-route-state";
+import { requestProxyStop } from "./stop-proxy";
+import { useCodexRestart } from "./use-codex-restart";
 
 installApiAuthFetch();
 
@@ -31,21 +31,32 @@ const PAGE_TKEY: Record<Page, TKey> = {
   startup: "nav.startup",
   providers: "nav.providers",
   models: "nav.models",
-  combos: "nav.combos",
   subagents: "nav.subagents",
   logs: "nav.logs",
   usage: "nav.usage",
   storage: "nav.storage",
   "codex-auth": "nav.codexAuth",
-  api: "nav.api",
-  claude: "nav.claude",
-  grok: "nav.grok",
+  integrations: "nav.integrations",
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const THEME_KEY = "ocx-theme";
 
-const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
+/**
+ * Every sidebar row maps one-to-one onto a page again.
+ *
+ * The Claude row was the exception: a second entry pointing at a tab of Integrations,
+ * which needed `subPath`, `activeHashes`, and an `isNavEntryActive` helper whose only
+ * job was stopping the sidebar from lighting two rows and claiming the user was in two
+ * places. Removing the duplicate removed all four.
+ */
+type NavEntry = {
+  id: Page;
+  tkey: TKey;
+  Icon: typeof IconGrid;
+};
+
+const NAV: NavEntry[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
   { id: "codex-auth", tkey: "nav.codexAuth", Icon: IconKey },
   { id: "providers", tkey: "nav.providers", Icon: IconServer },
@@ -54,9 +65,7 @@ const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "logs", tkey: "nav.logs", Icon: IconList },
   { id: "usage", tkey: "nav.usage", Icon: IconActivity },
   { id: "storage", tkey: "nav.storage", Icon: IconHardDrive },
-  { id: "api", tkey: "nav.api", Icon: IconGlobe },
-  { id: "claude", tkey: "nav.claude", Icon: IconSparkle },
-  { id: "grok", tkey: "nav.grok", Icon: IconBoxes },
+  { id: "integrations", tkey: "nav.integrations", Icon: IconGlobe },
 ];
 
 const THEME_ICON = { light: IconSun, dark: IconMoon, system: IconMonitor } as const;
@@ -75,6 +84,20 @@ function readStoredTheme(): Theme {
 
 export default function App() {
   const { page, navigateToPage } = useAppRouteState();
+  /*
+   * App needs the Models tab for one reason only: the full-bleed combos modifier lives
+   * on `.main-inner`, which is App's element. Models owns every other tab concern.
+   */
+  const [modelsTab, setModelsTab] = useState<ModelsTab>(readModelsTab);
+  useEffect(() => {
+    const syncModelsTab = () => setModelsTab(readModelsTab());
+    window.addEventListener("hashchange", syncModelsTab);
+    window.addEventListener("popstate", syncModelsTab);
+    return () => {
+      window.removeEventListener("hashchange", syncModelsTab);
+      window.removeEventListener("popstate", syncModelsTab);
+    };
+  }, []);
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const { locale, setLocale } = useI18n();
   const t = useT();
@@ -118,21 +141,6 @@ export default function App() {
   const displayedVersion: string = healthPoll.data ?? __APP_VERSION__;
 
   const [stopping, setStopping] = useState(false);
-  // Claude navigation row also owns the connection toggle.
-  const fetchClaudeEnabled = useCallback(async (signal: AbortSignal) => {
-    const res = await fetch(`${API_BASE}/api/claude-code`, { signal });
-    const d = await readJsonIfOk<{ enabled?: unknown }>(res);
-    return d && typeof d.enabled === "boolean" ? d.enabled : null;
-  }, []);
-
-  const claudePoll = useKeyedClientResource(
-    `app-claude-code:${API_BASE}`,
-    [],
-    fetchClaudeEnabled,
-  );
-  const claudeEnabled = claudePoll.data ?? null;
-  const claudeToggleInFlight = useRef(false);
-  const [claudeTogglePending, setClaudeTogglePending] = useState(false);
 
   useEffect(() => {
     if (!navOpen) return;
@@ -162,40 +170,28 @@ export default function App() {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  const toggleClaude = async () => {
-    if (claudeEnabled === null || claudeToggleInFlight.current) return;
-    claudeToggleInFlight.current = true;
-    setClaudeTogglePending(true);
-    const next = !claudeEnabled;
-    setClientResourceData(`app-claude-code:${API_BASE}`, next);
-    try {
-      const res = await fetch(`${API_BASE}/api/claude-code`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
-      });
-      if (!res.ok) setClientResourceData(`app-claude-code:${API_BASE}`, !next);
-    } catch {
-      setClientResourceData(`app-claude-code:${API_BASE}`, !next);
-    } finally {
-      claudeToggleInFlight.current = false;
-      setClaudeTogglePending(false);
-    }
-  };
+  // The sidebar control is on every page, including Models. Bumping an epoch on a
+  // settled restart lets the models tab re-read staleness without the two surfaces
+  // sharing a controller — the backend is already single-flight, so what is missing
+  // is invalidation, not mutual exclusion.
+  const [codexRestartEpoch, setCodexRestartEpoch] = useState(0);
+  const { restarting: codexRestarting, restart: handleCodexRestart } = useCodexRestart(API_BASE, {
+    onSettled: () => setCodexRestartEpoch(epoch => epoch + 1),
+  });
+
   const handleStop = async () => {
     if (!confirm(t("dash.stopConfirm"))) return;
     setStopping(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/stop`, { method: "POST" });
-      // A refusal (409: a service under another home owns this proxy) returns normally instead
-      // of dropping the connection, so the button would otherwise sit in "stopping…" forever
-      // with nothing explaining why.
-      if (!res.ok) {
-        setStopping(false);
-        const detail = await res.json().catch(() => null) as { message?: string } | null;
-        if (detail?.message) alert(detail.message);
-      }
-    } catch { /* connection drops — the proxy is going down as expected */ }
+    const outcome = await requestProxyStop(API_BASE, {
+      formatFailure: status => t("dash.stopFailed", { status: String(status) }),
+    });
+    // Refusals and restore failures return normally instead of dropping the connection.
+    // In both cases the proxy did not reach a clean-stop result, so re-enable the control
+    // and surface the server's remediation instead of leaving "stopping…" stuck forever.
+    if (!outcome.accepted) {
+      setStopping(false);
+      alert(outcome.message);
+    }
   };
 
   const brand = (
@@ -216,10 +212,17 @@ export default function App() {
           <IconMenu />
         </button>
         {brand}
-        <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping}
-          aria-label={t("dash.stop")} title={t("dash.stop")}>
-          <IconPower />
-        </button>
+        <div className="mobile-topbar-actions">
+          <button type="button" className="sidebar-orb sidebar-orb--danger" onClick={handleStop} disabled={stopping}
+            aria-label={t("dash.stop")} title={t("dash.stop")}>
+            <IconPower />
+          </button>
+          <button type="button" className="sidebar-orb"
+            onClick={() => { void handleCodexRestart(); }} disabled={codexRestarting}
+            aria-label={t("dash.codexRestart")} title={t("dash.codexRestart")}>
+            <IconRefresh />
+          </button>
+        </div>
       </header>
       {navOpen && <div className="drawer-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />}
       <aside id="app-sidebar" className={`sidebar${navOpen ? " open" : ""}`} ref={sidebarRef} tabIndex={-1}>
@@ -237,34 +240,36 @@ export default function App() {
             account pool. It is now promoted to the second slot instead: there is only
             one layout, so that filter would have hidden the page permanently.
           */}
-          {NAV.map(({ id, tkey, Icon }) => (
-            <div key={id} className={`nav-entry${id === "claude" ? ` nav-entry-claude${page === id ? " active" : ""}` : ""}`}>
-              <button type="button" className={`nav-item${page === id ? " active" : ""}`} data-page={id}
-                onClick={() => {
-                  // Deliberate sidebar navigation — push a history entry.
-                  navigateToPage(id);
-                  setNavOpen(false);
-                }}
-                aria-current={page === id ? "page" : undefined}>
-                <Icon /> {t(tkey)}
-              </button>
-              {id === "claude" && claudeEnabled !== null && (
-                <Switch
-                  on={claudeEnabled}
-                  onClick={() => void toggleClaude()}
-                  disabled={claudeTogglePending}
-                  label={t("claude.toggleAria")}
-                />
-              )}
-            </div>
-          ))}
+          {/*
+            The sidebar is navigation only — no row owns a mutation. That rule was
+            written when the Claude row carried the Claude Code connection switch;
+            ClaudeCode owns GET/PUT /api/claude-code now, and the row itself is gone.
+          */}
+          {NAV.map(entry => {
+            const { id, tkey, Icon } = entry;
+            const active = id === page;
+            return (
+              <div key={id} className="nav-entry">
+                <button type="button" className={`nav-item${active ? " active" : ""}`}
+                  data-page={id}
+                  onClick={() => {
+                    // Deliberate sidebar navigation — push a history entry.
+                    navigateToPage(id);
+                    setNavOpen(false);
+                  }}
+                  aria-current={active ? "page" : undefined}>
+                  <Icon /> {t(tkey)}
+                </button>
+              </div>
+            );
+          })}
         </nav>
         <div className="sidebar-foot">
           <div className="lang-toggle">
             <IconGlobe aria-hidden />
             <Select
               value={locale}
-              options={LOCALES.map(l => ({ value: l.code, label: l.name }))}
+              options={LOCALES.map(l => ({ value: l.code, label: localeDisplayName(l.code) }))}
               onChange={v => setLocale(v as Locale)}
               label={t("lang.label")}
               placement="right"
@@ -276,18 +281,45 @@ export default function App() {
             aria-label={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`} title={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`}>
             <ThemeIcon /> <span className="mode">{t(THEME_TKEY[theme])}</span>
           </button>
-          <button type="button" className="theme-toggle stop-toggle" onClick={handleStop} disabled={stopping}
-            aria-label={t("dash.stop")} title={t("dash.stop")}>
-            <IconPower /> <span className="mode">{stopping ? t("dash.stopping") : t("dash.stop")}</span>
-          </button>
-          <a className="sidebar-link" href="https://github.com/lidge-jun/opencodex" target="_blank" rel="noreferrer">
-            <IconGithub /> {t("common.github")}
-          </a>
+          <div className="sidebar-action-row">
+            <span className="sidebar-action-label">{t("dash.actions")}</span>
+            <div className="sidebar-action-orbs">
+              <button type="button" className="sidebar-orb sidebar-orb--danger"
+                onClick={handleStop} disabled={stopping}
+                aria-label={stopping ? t("dash.stopping") : t("dash.stop")}
+                title={stopping ? t("dash.stopping") : t("dash.stop")}>
+                <IconPower />
+              </button>
+              <button type="button" className="sidebar-orb"
+                onClick={() => { void handleCodexRestart(); }} disabled={codexRestarting}
+                aria-label={codexRestarting ? t("dash.codexRestarting") : t("dash.codexRestart")}
+                title={codexRestarting ? t("dash.codexRestarting") : t("dash.codexRestart")}>
+                <IconRefresh />
+              </button>
+            </div>
+          </div>
+          <SidebarGithubRow
+            apiBase={API_BASE}
+            onOpenUpdate={() => {
+              // The update dialog lives on the dashboard maintenance panel. Deep-link to
+              // `#dashboard/update` and let the dashboard own the check/run flow — no
+              // cross-component event bus, and the link survives a refresh.
+              setNavOpen(false);
+              navigateToPage("dashboard", "update");
+            }}
+          />
         </div>
       </aside>
 
       <main className="main" inert={navOpen}>
-        <div className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
+        {/*
+          Combos is full-bleed, unlike every other surface, and it is reachable only as
+          a Models tab. `.main-inner` is App's element, so App is the only place that
+          can know which tab is showing.
+        */}
+        <div className={`main-inner${
+          page === "models" && modelsTab === "combos" ? " main-inner--combos" : ""
+        }`}>
           <ErrorBoundary
             key={page}
             pageName={t(PAGE_TKEY[page])}
@@ -299,16 +331,13 @@ export default function App() {
             {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
             {page === "providers" && <Providers apiBase={API_BASE} />}
-            {page === "models" && <Models apiBase={API_BASE} />}
-            {page === "combos" && <Combos apiBase={API_BASE} />}
-            {page === "subagents" && <Subagents apiBase={API_BASE} />}
+            {page === "models" && <Models key={API_BASE} apiBase={API_BASE} restartEpoch={codexRestartEpoch} />}
+            {page === "subagents" && <Subagents key={API_BASE} apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
             {page === "usage" && <Usage apiBase={API_BASE} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
-            {page === "api" && <ApiKeys apiBase={API_BASE} />}
-            {page === "claude" && <Claude apiBase={API_BASE} />}
-            {page === "grok" && <Grok apiBase={API_BASE} />}
+            {page === "integrations" && <Integrations apiBase={API_BASE} />}
           </ErrorBoundary>
         </div>
       </main>

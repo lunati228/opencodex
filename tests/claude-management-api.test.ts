@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { managementFetch as fetch } from "./helpers/management-auth";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { startServer } from "../src/server";
 import * as systemEnv from "../src/server/system-env";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { MANAGEMENT_JSON_BODY_MAX_BYTES } from "../src/server/management/body";
 
 // Full-suite Windows load: startServer + multi-PUT management flows often exceed bun's
 // default 5s per-test budget (same flake class as 810fa115 / kiro-oauth).
@@ -17,12 +19,6 @@ let previousHome: string | undefined;
 let previousClaudeConfigDir: string | undefined;
 let previousDesktopConfigDir: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
-
-function setPlatform(platform: NodeJS.Platform): void {
-  Object.defineProperty(process, "platform", { configurable: true, value: platform });
-}
-
-const originalPlatform = process.platform;
 
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
@@ -45,7 +41,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setPlatform(originalPlatform);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -72,10 +67,61 @@ test("GET /api/claude-code returns defaults + available + aliases", async () => 
     expect(d.aliases.some((a: { id: string }) => a.id === "claude-ocx-mock--test-model")).toBe(true);
     expect(typeof d.port).toBe("number");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
+
+test("PUT round-trips classifier routing settings and clears them with null (#1697)", async () => {
+  const server = startServer(0);
+  try {
+    const put = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        classifierModel: " mock/test-model ",
+        classifierFallbacks: [" mock/test-model ", "mock/other"],
+      }),
+    });
+    expect(put.status).toBe(200);
+
+    const get = await fetch(new URL("/api/claude-code", server.url));
+    const d = await get.json() as Record<string, any>;
+    expect(d.classifierModel).toBe("mock/test-model");
+    expect(d.classifierFallbacks).toEqual(["mock/test-model", "mock/other"]);
+
+    // null clears both, which is how the operator turns classifier routing back off.
+    const cleared = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ classifierModel: "", classifierFallbacks: null }),
+    });
+    expect(cleared.status).toBe(200);
+    const after = await (await fetch(new URL("/api/claude-code", server.url))).json() as Record<string, any>;
+    expect(after.classifierModel).toBe("");
+    expect(after.classifierFallbacks).toEqual([]);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("PUT rejects a malformed classifierFallbacks instead of persisting it (#1697)", async () => {
+  const server = startServer(0);
+  try {
+    for (const body of [{ classifierFallbacks: "mock/test-model" }, { classifierFallbacks: [1] }, { classifierFallbacks: [""] }]) {
+      const res = await fetch(new URL("/api/claude-code", server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+      const err = await res.json() as Record<string, unknown>;
+      expect(String(err.error)).toContain("classifierFallbacks");
+    }
+  } finally {
+    await server.stop(true);
+  }
+});
 test("PUT round-trips settings and persists to config", async () => {
   const server = startServer(0);
   try {
@@ -118,7 +164,28 @@ test("PUT round-trips settings and persists to config", async () => {
     expect(after.claudeCode?.smallFastModel).toBe("mock/test-model");
     expect(after.claudeCode?.enabled).toBe(false);
   } finally {
-    server.stop(true);
+    await server.stop(true);
+  }
+});
+
+test("a rejected PUT does not apply fastMode in memory", async () => {
+  const config = loadConfig();
+  config.fastMode = false;
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const put = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fastMode: true, modelMap: { invalid: "" } }),
+    });
+    expect(put.status).toBe(400);
+
+    const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.fastMode).toBe(false);
+    expect(loadConfig().fastMode).toBe(false);
+  } finally {
+    await server.stop(true);
   }
 });
 
@@ -163,7 +230,7 @@ test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_a
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("auto");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -177,7 +244,7 @@ test("GET exposes the resolved marker mode and its provenance", async () => {
     // The badge must say it is daemon-side: a terminal-exported key is invisible here.
     expect(get.detectionScope).toBe("daemon");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -197,7 +264,7 @@ test("an unrelated PUT leaves an auto config on auto", async () => {
     const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("auto");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -217,7 +284,7 @@ test("auto survives a restart instead of being migrated back to subscription", a
     expect(put.status).toBe(200);
     expect(loadConfig().claudeCode?.authMode).toBeUndefined();
   } finally {
-    first.stop(true);
+    await first.stop(true);
   }
 
   // A restart runs the startup migration against what the PUT persisted.
@@ -227,7 +294,7 @@ test("auto survives a restart instead of being migrated back to subscription", a
     const get = await fetch(new URL("/api/claude-code", second.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("auto");
   } finally {
-    second.stop(true);
+    await second.stop(true);
   }
 });
 
@@ -242,13 +309,13 @@ test("toggling Claude on does not pin a fresh install to subscription", async ()
       body: JSON.stringify({ enabled: true }),
     });
   } finally {
-    first.stop(true);
+    await first.stop(true);
   }
   const second = startServer(0);
   try {
     expect(loadConfig().claudeCode?.authMode).toBeUndefined();
   } finally {
-    second.stop(true);
+    await second.stop(true);
   }
 });
 
@@ -262,7 +329,7 @@ test("PUT rejects an unknown authMode value", async () => {
     });
     expect(bad.status).toBe(400);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -279,7 +346,7 @@ test("PUT rejects invalid authMode values (invalid string + non-string)", async 
     }
     expect(loadConfig().claudeCode?.authMode).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -296,7 +363,7 @@ test("authMode-only PUT triggers system-env reconciliation (audit R2 #1)", async
     expect(applySpy).toHaveBeenCalled();
   } finally {
     applySpy.mockRestore();
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -309,23 +376,38 @@ test("Claude sidecar overrides round-trip, partially update, clear, and reject u
   });
   try {
     let response = await put({
-      webSearchSidecar: { backend: "anthropic", model: "claude-search" },
+      // The web-search override now passes the #2188 membership gate; the
+      // Haiku auth slot is always a legal setting regardless of login state.
+      webSearchSidecar: { backend: "anthropic", model: "claude-haiku-4-5" },
       visionSidecar: { backend: "openai", model: "gpt-vision" },
     });
     expect(response.status).toBe(200);
     expect(loadConfig().claudeCode).toMatchObject({
-      webSearchSidecar: { backend: "anthropic", model: "claude-search" },
+      webSearchSidecar: { backend: "anthropic", model: "claude-haiku-4-5" },
       visionSidecar: { backend: "openai", model: "gpt-vision" },
     });
 
     let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
-    expect(get.webSearchSidecar).toEqual({ backend: "anthropic", model: "claude-search" });
+    expect(get.webSearchSidecar).toEqual({ backend: "anthropic", model: "claude-haiku-4-5" });
     expect(get.visionSidecar).toEqual({ backend: "openai", model: "gpt-vision" });
 
-    // Nested partial updates preserve omitted fields and omitted sections.
-    response = await put({ webSearchSidecar: { model: "claude-search-2" } });
+    // A model outside (runnable candidates ∪ auth slots) is refused with the
+    // filter named — this route shares the gate with /api/sidecar-settings.
+    response = await put({ webSearchSidecar: { model: "claude-search" } });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toContain("web-search sidecar candidate");
+
+    // A partial model update is validated against the effective preserved backend.
+    response = await put({ webSearchSidecar: { model: "gpt-5.6-luna" } });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toContain("backend/model pair");
+    expect(loadConfig().claudeCode?.webSearchSidecar).toEqual({ backend: "anthropic", model: "claude-haiku-4-5" });
+    expect(loadConfig().claudeCode?.visionSidecar).toEqual({ backend: "openai", model: "gpt-vision" });
+
+    // Updating both fields to a runnable pair succeeds and preserves omitted sections.
+    response = await put({ webSearchSidecar: { backend: "openai", model: "gpt-5.6-luna" } });
     expect(response.status).toBe(200);
-    expect(loadConfig().claudeCode?.webSearchSidecar).toEqual({ backend: "anthropic", model: "claude-search-2" });
+    expect(loadConfig().claudeCode?.webSearchSidecar).toEqual({ backend: "openai", model: "gpt-5.6-luna" });
     expect(loadConfig().claudeCode?.visionSidecar).toEqual({ backend: "openai", model: "gpt-vision" });
 
     // null backend is the explicit Auto/inherit transition; empty model deletes only model.
@@ -334,10 +416,10 @@ test("Claude sidecar overrides round-trip, partially update, clear, and reject u
       visionSidecar: { backend: null, model: "" },
     });
     expect(response.status).toBe(200);
-    expect(loadConfig().claudeCode?.webSearchSidecar).toEqual({ model: "claude-search-2" });
+    expect(loadConfig().claudeCode?.webSearchSidecar).toEqual({ model: "gpt-5.6-luna" });
     expect(loadConfig().claudeCode?.visionSidecar).toBeUndefined();
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
-    expect(get.webSearchSidecar).toEqual({ model: "claude-search-2" });
+    expect(get.webSearchSidecar).toEqual({ model: "gpt-5.6-luna" });
     expect(get.visionSidecar).toBeUndefined();
 
     // null and empty sections both clear the whole override.
@@ -346,7 +428,10 @@ test("Claude sidecar overrides round-trip, partially update, clear, and reject u
     expect(loadConfig().claudeCode?.webSearchSidecar).toBeUndefined();
     expect(loadConfig().claudeCode?.visionSidecar).toBeUndefined();
 
-    await put({ webSearchSidecar: { backend: "openai", model: "stable" } });
+    // Auth-slot id: passes the membership gate regardless of login state, so the
+    // known-good snapshot below is real (a non-slot id would silently 400 here).
+    const snapshotPut = await put({ webSearchSidecar: { backend: "openai", model: "gpt-5.6-luna" } });
+    expect(snapshotPut.status).toBe(200);
     const beforeInvalid = loadConfig().claudeCode;
     for (const body of [
       { webSearchSidecar: { backend: "other" } },
@@ -358,7 +443,7 @@ test("Claude sidecar overrides round-trip, partially update, clear, and reject u
       expect(loadConfig().claudeCode).toEqual(beforeInvalid);
     }
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -398,7 +483,7 @@ test("PUT immediately restores generated agents after re-enable and roster chang
     expect(roster.status).toBe(200);
     expect(readdirSync(agentsDir)).toEqual(["ocx-gpt-5-6-terra.md"]);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -430,14 +515,14 @@ test("PUT/GET round-trips the context/effort levers (devlog 136 B6)", async () =
     expect(persisted.claudeCode?.maxContextTokens).toBeUndefined();
     expect(persisted.claudeCode?.alwaysEnableEffort).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
 test("PUT/GET round-trips auto-context (devlog 260712 020)", async () => {
   const server = startServer(0);
   try {
-    // Defaults: on, window null (GUI shows the 350000 placeholder).
+    // Defaults: on, window null — the GUI renders the runtime default as the empty choice.
     let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.autoContext).toBe(true);
     expect(get.autoCompactWindow).toBeNull();
@@ -470,7 +555,7 @@ test("PUT/GET round-trips auto-context (devlog 260712 020)", async () => {
     expect(persisted.claudeCode?.autoCompactWindow).toBeUndefined();
     expect(persisted.claudeCode?.blockedSkills).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -508,7 +593,7 @@ test("PUT/GET round-trips tierModels and GET exposes contextWindows + effectiveM
     });
     expect(bad.status).toBe(400);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -548,20 +633,19 @@ test("PUT validation rejects bad shapes", async () => {
     }
     expect(loadConfig().claudeCode).toBeUndefined(); // nothing persisted on rejects
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
 test("GET /api/claude-code reports Auto-connect support on Darwin", async () => {
-  setPlatform("darwin");
-  const server = startServer(0);
+  const server = startServer(0, { managementApi: { platform: "darwin" } });
   try {
     const r = await fetch(new URL("/api/claude-code", server.url));
     expect(r.status).toBe(200);
     const d = await r.json() as Record<string, any>;
     expect(d.autoConnectSupported).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -570,8 +654,7 @@ test("GET /api/claude-code reports Auto-connect unsupported outside Darwin", asy
     ...loadConfig(),
     claudeCode: { systemEnv: true },
   } as OcxConfig);
-  setPlatform("linux");
-  const server = startServer(0);
+  const server = startServer(0, { managementApi: { platform: "linux" } });
   try {
     const r = await fetch(new URL("/api/claude-code", server.url));
     expect(r.status).toBe(200);
@@ -579,7 +662,7 @@ test("GET /api/claude-code reports Auto-connect unsupported outside Darwin", asy
     expect(d.systemEnv).toBe(true);              // raw stored preference
     expect(d.autoConnectSupported).toBe(false);  // effective capability
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -617,7 +700,135 @@ test("Claude Desktop profile GET, PUT and apply round-trip four-family assignmen
     const appliedConfig = JSON.parse(readFileSync(result.path, "utf8")) as { inferenceGatewayBaseUrl: string };
     expect(appliedConfig.inferenceGatewayBaseUrl).toBe(new URL(server.url).origin);
   } finally {
-    server.stop(true);
+    await server.stop(true);
+  }
+});
+
+/*
+ * Mechanism guard for #859: the apply route must keep building the alias
+ * registry in the serving process. (The CLI→daemon delegation half is pinned
+ * in tests/claude-desktop-cli.test.ts; this module-global registry is shared
+ * in-process, so this test guards the route, not the delegation.)
+ */
+test("Claude Desktop apply installs the alias registry in the serving process (#859)", async () => {
+  const { resolveDesktop3pAlias, activeDesktop3pAlias } = await import("../src/claude/desktop-3p");
+  // A provider unique to this test: no prior test can have populated its
+  // alias, so resolution proves THIS apply built the registry in-process.
+  const seeded = loadConfig();
+  seeded.providers = {
+    ...seeded.providers,
+    unique859: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:1/v1", apiKey: "k", allowPrivateNetwork: true, models: ["test-model-x"] },
+  };
+  saveConfig(seeded);
+  const server = startServer(0);
+  try {
+    const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "static" }),
+    });
+    expect(apply.status).toBe(200);
+    // Without another /v1/models discovery call, the serving process must now
+    // decode the alias the CLI would have generated.
+    const alias = activeDesktop3pAlias("unique859", "test-model-x");
+    expect(resolveDesktop3pAlias(alias)).toBe("unique859/test-model-x");
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("Claude Desktop apply honors the profile in the request body over daemon-stale config (#859)", async () => {
+  const server = startServer(0);
+  try {
+    const current = await fetch(new URL("/api/claude-desktop", server.url)).then(r => r.json()) as Record<string, any>;
+    const edited = structuredClone(current.profile);
+    edited.assignments["mock/test-model"].family = "sonnet";
+    edited.defaults.sonnet = "mock/test-model";
+    edited.defaults.opus = Object.keys(edited.assignments)
+      .filter(route => edited.assignments[route].family === "opus")
+      .sort()[0] ?? null;
+
+    const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "static", profile: edited }),
+    });
+    expect(apply.status).toBe(200);
+    // The delegated profile wins: persisted state shows sonnet, not the stale opus.
+    expect(loadConfig().claudeCode?.desktopProfile?.assignments["mock/test-model"]?.family).toBe("sonnet");
+    expect(loadConfig().claudeCode?.desktopProfile?.defaults.sonnet).toBe("mock/test-model");
+
+    const badProfile = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "static", profile: { version: 2 } }),
+    });
+    expect(badProfile.status).toBe(400);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("Claude Desktop apply validates the mode body", async () => {
+  const server = startServer(0);
+  try {
+    const beforeMalformed = structuredClone(loadConfig());
+    const malformed = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({ error: "invalid JSON body" });
+    expect(loadConfig()).toEqual(beforeMalformed);
+
+    const beforeBadMode = structuredClone(loadConfig());
+    const bad = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "nonsense" }),
+    });
+    expect(bad.status).toBe(400);
+    expect(loadConfig()).toEqual(beforeBadMode);
+
+    const beforeBadProfile = structuredClone(loadConfig());
+    const badProfile = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: { version: 2 } }),
+    });
+    expect(badProfile.status).toBe(400);
+    expect(loadConfig()).toEqual(beforeBadProfile);
+
+    const hybrid = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "hybrid" }),
+    });
+    expect(hybrid.status).toBe(200);
+    const result = await hybrid.json() as { path: string };
+    const written = JSON.parse(readFileSync(result.path, "utf8")) as { modelDiscoveryEnabled: boolean };
+    expect(written.modelDiscoveryEnabled).toBe(true);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("Claude Desktop apply rejects an oversized decompressed body without mutating config", async () => {
+  const server = startServer(0);
+  try {
+    const before = structuredClone(loadConfig());
+    const oversized = JSON.stringify({ pad: "x".repeat(MANAGEMENT_JSON_BODY_MAX_BYTES) });
+    const response = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+      body: Bun.gzipSync(new TextEncoder().encode(oversized)),
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: "request body too large" });
+    expect(loadConfig()).toEqual(before);
+  } finally {
+    await server.stop(true);
   }
 });
 
@@ -633,7 +844,7 @@ test("Claude Desktop PUT rejects invalid JSON profile without mutating saved con
     expect(put.status).toBe(400);
     expect(loadConfig()).toEqual(before);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -666,6 +877,6 @@ test("Claude Desktop PUT retains but cannot move an unavailable route", async ()
     expect((await put.json() as { error: string }).error).toContain("사용할 수 없는 모델");
     expect(loadConfig().claudeCode?.desktopProfile?.assignments["missing/old-model"]?.family).toBe("opus");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });

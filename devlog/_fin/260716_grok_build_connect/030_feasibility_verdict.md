@@ -141,8 +141,8 @@ See [040_live_smoke.md](./040_live_smoke.md).
 **No, not as a silent default, and not via Grok’s default Chat Completions custom-model path.**
 
 ## Evidence index
-- Grok custom models: `/Users/jun/Developer/codex/180_grok-build/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md`
-- OpenCodex routes: `/Users/jun/Developer/new/700_projects/opencodex/src/server/index.ts`
-- Auth loopback: `/Users/jun/Developer/new/700_projects/opencodex/src/server/auth-cors.ts`
+- Grok custom models: `<private-user-home>/Developer/codex/180_grok-build/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md`
+- OpenCodex routes: `<private-user-home>/Developer/new/700_projects/opencodex/src/server/index.ts`
+- Auth loopback: `<private-user-home>/Developer/new/700_projects/opencodex/src/server/auth-cors.ts`
 - Live: `http://127.0.0.1:10100/v1/models` (2026-07-16)
-- Analysis: `/Users/jun/Developer/codex/180_grok-build/analysis/`
+- Analysis: `<private-user-home>/Developer/codex/180_grok-build/analysis/`

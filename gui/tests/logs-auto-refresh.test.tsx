@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
+import { clearClientResourceStoresForTests } from "../src/client-resource";
 import Logs from "../src/pages/Logs";
 
 const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT", "ResizeObserver"] as const;
@@ -92,11 +93,15 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   installLayoutStubs(testWindow);
   jest.useFakeTimers({ now: 1_700_000_000_000 });
+  // Logs reads through the shared resource layer now, and that cache is module-level: without
+  // this, one test's rows leak into the next one's cold mount and suppress its request.
+  clearClientResourceStoresForTests();
 });
 
 afterEach(() => {
   jest.useRealTimers();
   globalThis.fetch = originalFetch;
+  clearClientResourceStoresForTests();
   testWindow.close();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
@@ -254,6 +259,45 @@ test("Logs: silent success clears a previous error; later silent failure keeps t
   await act(async () => { root.unmount(); });
 });
 
+// One failed tick on a two-second poll is noise worth swallowing, but an outage that never
+// recovers must not leave stale rows reading as current forever. Three consecutive failures
+// is the point where silence becomes a lie.
+test("Logs: a sustained poll outage says the rows are stale, and a recovery clears it", async () => {
+  let mode: "ok" | "fail" = "ok";
+
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (!url.includes("/api/logs")) return new Response(null, { status: 404 });
+    if (mode === "fail") return jsonResponse({ error: "down" }, 503);
+    return jsonResponse([sampleLog]);
+  }) as typeof fetch;
+
+  const { root, container } = await mountLogs();
+  await flushMicrotasks();
+  expectTableLoaded(container, "gpt-test");
+
+  mode = "fail";
+  // Below the limit the rows stay quiet: a single dropped tick is not worth an alarm.
+  await advanceSilentRefresh();
+  expect(container.textContent).not.toContain("Could not load request logs.");
+  await advanceSilentRefresh();
+  expect(container.textContent).not.toContain("Could not load request logs.");
+
+  // Third consecutive failure: the outage is not transient, so say so while keeping the rows.
+  await advanceSilentRefresh();
+  expect(container.textContent).toContain("Could not load request logs.");
+  expect(container.querySelector(".logs-table")).not.toBeNull();
+  expect(container.textContent).toContain("gpt-test");
+  expect(container.textContent).not.toContain("No requests yet.");
+
+  // A recovered poll must retract the notice rather than leaving a permanent scar.
+  mode = "ok";
+  await advanceSilentRefresh();
+  expectTableLoaded(container, "gpt-test");
+
+  await act(async () => { root.unmount(); });
+});
+
 test("Logs: disabling auto-refresh stops scheduled requests", async () => {
   const urls: string[] = [];
   globalThis.fetch = (async (input) => {
@@ -332,3 +376,161 @@ test("Logs: switching to the Debug tab stops scheduled log requests", async () =
 
   await act(async () => { root.unmount(); });
 });
+
+test("Logs: attempt details render exact reasoning wire values without legacy placeholders", async () => {
+  const attemptsLog = {
+    ...sampleLog,
+    requestedEffort: "max->high",
+    effectiveEffort: "high",
+    reasoningWireField: "reasoning_effort",
+    reasoningWireValue: "high",
+    attempts: [
+      {
+        ordinal: 1,
+        provider: "budget-provider",
+        model: "budget-model",
+        adapter: "openai-chat",
+        status: 503,
+        durationMs: 10,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "unreported",
+        requestedEffort: "minimal",
+        effectiveEffort: "low",
+        reasoningWireField: "thinking_budget",
+        reasoningWireValue: 0,
+      },
+      {
+        ordinal: 2,
+        provider: "toggle-provider",
+        model: "toggle-model",
+        adapter: "openai-chat",
+        status: 503,
+        durationMs: 11,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "unreported",
+        requestedEffort: "high",
+        effectiveEffort: "enabled",
+        reasoningWireField: "thinking.type",
+        reasoningWireValue: "enabled",
+      },
+      {
+        ordinal: 3,
+        provider: "legacy-provider",
+        model: "legacy-model",
+        adapter: "openai-chat",
+        status: 200,
+        durationMs: 12,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "unreported",
+      },
+    ],
+  };
+  globalThis.fetch = (async (input) => {
+    if (!String(input).includes("/api/logs")) return new Response(null, { status: 404 });
+    return jsonResponse([attemptsLog]);
+  }) as typeof fetch;
+
+  const { root, container } = await mountLogs();
+  await flushMicrotasks();
+  const overviewReasoning = container.querySelector<HTMLElement>(".log-reasoning-cell");
+  expect(overviewReasoning?.textContent).toContain("max → high");
+  expect(overviewReasoning?.textContent).toContain("reasoning_effort=high");
+  expect(overviewReasoning?.textContent).not.toContain("max → high → high");
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>(".log-detail-btn")!.click();
+  });
+
+  const rows = [...container.querySelectorAll<HTMLTableRowElement>(".log-detail-attempts tbody tr")];
+  expect(rows).toHaveLength(3);
+  expect(rows[0]?.textContent).toContain("minimal → low (thinking_budget=0)");
+  expect(rows[1]?.textContent).toContain("high → enabled (thinking.type=enabled)");
+  expect(rows[2]?.textContent).toContain("legacy-model");
+  expect(rows[2]?.querySelectorAll("br")).toHaveLength(1);
+  expect(rows[2]?.textContent).not.toContain("undefined");
+
+  await act(async () => { root.unmount(); });
+});
+
+test("Logs: inside-card clicks keep the detail dialog open; backdrop dismiss closes it", async () => {
+  globalThis.fetch = (async (input) => {
+    if (!String(input).includes("/api/logs")) return new Response(null, { status: 404 });
+    return jsonResponse([sampleLog]);
+  }) as typeof fetch;
+
+  const { root, container } = await mountLogs();
+  await flushMicrotasks();
+
+  const detailBtn = container.querySelector<HTMLButtonElement>(".log-detail-btn")!;
+  await act(async () => { detailBtn.click(); });
+  expect(container.querySelector("dialog")).not.toBeNull();
+
+  const card = container.querySelector<HTMLElement>(".log-detail-card")!;
+  expect(card).not.toBeNull();
+  await act(async () => { card.click(); });
+  expect(container.querySelector("dialog")).not.toBeNull();
+
+  const backdrop = container.querySelector<HTMLButtonElement>(".modal-backdrop-dismiss")!;
+  expect(backdrop).not.toBeNull();
+  expect(backdrop.tabIndex).toBe(-1);
+
+  await act(async () => { backdrop.click(); });
+  expect(container.querySelector("dialog")).toBeNull();
+
+  await act(async () => { root.unmount(); });
+});
+
+// #2157: the Codex App sends helper requests on every message and turn completion. That
+// traffic is the App's, not ours -- what is ours is making an INTERCEPTED one identifiable, so
+// the reporter can tell recurring helper spend from their own work.
+//
+// "Intercepted", deliberately. A helper request that was not intercepted carries no marker and
+// is indistinguishable from ordinary traffic here, so the filter must not promise more.
+test("Logs: an intercepted helper row is badged and filterable", async () => {
+  const interceptedLog = {
+    ...sampleLog,
+    requestId: "req-shadow",
+    model: "grok-4.6",
+    shadowCallRewrittenFrom: "gpt-5.6-luna",
+  };
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (!url.includes("/api/logs")) return new Response(null, { status: 404 });
+    return jsonResponse([interceptedLog, sampleLog]);
+  }) as typeof fetch;
+
+  const { root, container } = await mountLogs();
+  await flushMicrotasks();
+
+  // The badge names the ORIGINAL helper model, which is the attribution that was being lost.
+  expect(container.textContent).toContain("I · gpt-5.6-luna");
+  expect(container.textContent).toContain("gpt-test");
+
+  const toggle = [...container.querySelectorAll("input[type=checkbox]")].find(
+    input => input.closest("label")?.textContent?.includes("Intercepted helpers only"),
+  ) as HTMLInputElement | undefined;
+  expect(toggle).toBeDefined();
+
+  await act(async () => { toggle!.click(); });
+  await act(async () => {
+    jest.advanceTimersByTime(0);
+    await Promise.resolve();
+  });
+
+  // Filtered: the marked row stays, the ordinary one goes.
+  expect(container.textContent).toContain("I · gpt-5.6-luna");
+  expect(container.textContent).not.toContain("gpt-test");
+
+  await act(async () => { toggle!.click(); });
+  await act(async () => {
+    jest.advanceTimersByTime(0);
+    await Promise.resolve();
+  });
+
+  expect(container.textContent).toContain("gpt-test");
+
+  await act(async () => { root.unmount(); });
+});
+

@@ -43,7 +43,7 @@ Rail 버튼 자체는 이미 `pws.rail.selectAria`로 provider name, status, suf
 - `bunx tsc -b --noEmit` — exit 0
 - `bunx eslint src/components/provider-workspace/ProviderRail.tsx` — exit 0
 - `bun run build` — exit 0, Vite 67 modules transformed
-- agbrowse: `/Users/jun/.browser-agent/screenshots/screenshot_1784337650464.png`
+- agbrowse: `<private-user-home>/.browser-agent/screenshots/screenshot_1784337650464.png`
   - 모델 수 로드 후에도 `Ready` 텍스트가 별도 노출되지 않음
   - 상태 점, 기본 provider 별, chevron 유지
   - 접근성 스냅샷은 `Select <provider> — Ready`를 계속 제공

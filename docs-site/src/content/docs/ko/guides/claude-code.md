@@ -20,7 +20,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | 프록시에 API 키가 필요할 때만 설정해요. 그 외에는 설정하지 않으므로 claude.ai 로그인(구독 + 커넥터)이 유지돼요 |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (기본 `/model` 선택기의 모델 검색) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 자동 컨텍스트 압축 임곗값(기본값 `350000`). 자동 컨텍스트가 켜져 있을 때만 주입해요 |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 자동 컨텍스트 압축 임곗값(기본값 `829800`). 자동 컨텍스트가 켜져 있을 때만 주입해요 |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (선택 사항) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (선택 사항, 기존 `ANTHROPIC_SMALL_FAST_MODEL`도 지원) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (선택 사항) |
@@ -62,7 +62,9 @@ macOS의 자동 연결(`claudeCode.systemEnv`)도 같은 방식으로 판단하�
 
 `ocx stop`과 프록시 종료는 **주입된 키를 해제해요**. 이전 값을 복원하지는 않고 opencodex가
 주입한 키만 제거해요. 프록시는 `~/.opencodex/claude-env.sh`도 작성하고, `ocx start`는 이 파일을
-자동으로 불러오는 `.zshrc` source hook을 설치해요.
+자동으로 불러오는 `.zshrc` source hook을 실행 가능한 Claude Code CLI가 `PATH`에 있을 때만 설치해요.
+Claude Code가 없거나 시스템 환경 연동이 비활성화되어 있으면 시작 과정과 `ocx ensure`가 OpenCodex가 추가한
+hook을 제거해요. Claude Desktop은 별도 profile을 사용하며 shell hook 설치를 유발하지 않아요.
 
 설정에서 `claudeCode.systemEnv: false`로 지정하거나 GUI 토글로 끌 수 있어요. 이 기능은 macOS
 전용이며, 다른 플랫폼에서는 `ocx claude`를 사용하세요.
@@ -75,12 +77,16 @@ macOS의 자동 연결(`claudeCode.systemEnv`)도 같은 방식으로 판단하�
 네이티브 상태로 유지되고, 같은 세션에서 선택기 별칭을 써서 라우팅 모델도 계속 사용할 수 있어요.
 
 **헤더 처리:** hop-by-hop 헤더와 `host`, `content-length`, `accept-encoding`,
-`x-opencodex-api-key`, `origin`은 전달 전에 제거해요. 그 밖의 헤더(`anthropic-beta`,
-`anthropic-version` 포함)는 그대로 전달해요.
+`x-opencodex-api-key`, `origin`은 항상 전달 전에 제거해요. 비루프백 바인드의 네이티브 패스스루는
+유효한 프록시 자격 증명을 `x-opencodex-api-key`로도 요구하고, 이때 `Authorization`과
+`x-api-key`는 Anthropic 전용이에요. 두 provider 헤더 중 프록시 admission secret이 있으면
+제거하고, 다른 헤더의 실제 provider 자격 증명은 유지해요. 쉼표로 결합된 모호한 자격 증명
+헤더는 전달하지 않아요.
 
-다음 네 조건을 **모두** 충족하면 패스스루가 작동해요. `nativePassthrough`가 `false`가 아니고,
-모델 이름이 `claude` 또는 `anthropic`으로 시작하며, bearer 또는 `x-api-key`가 `sk-ant-`로
-시작하고, 별칭/모델 맵 해석 결과가 변경되지 않은 같은 모델이어야 해요. 그래서 `ocx claude`를
+다음 조건을 **모두** 충족하면 패스스루가 작동해요. `nativePassthrough`가 `false`가 아니고,
+모델 이름이 `claude` 또는 `anthropic`으로 시작하며, bearer 토큰 또는 `x-api-key`가 `sk-ant-`로
+시작하고, 별칭/모델 맵 해석 결과가 변경되지 않은 같은 모델이며, 비루프백 바인드에서는 전용
+프록시 admission 헤더도 유효해야 해요. 그래서 `ocx claude`를
 사용할 때 "claude.ai connectors are disabled" 경고도 더 이상 나타나지 않아요.
 
 `claudeCode.nativePassthrough: false`로 끌 수 있고, `claudeCode.anthropicBaseUrl`로 다른 주소를
@@ -104,7 +110,7 @@ Claude Code 2.1.129 이상은 `GET /v1/models?limit=1000`에서 게이트웨이 
 
 | 화면 | 형식 | 예시 |
 | --- | --- | --- |
-| Claude Code CLI | `claude-ocx-<provider>--<model>` | `claude-ocx-native--gpt-5.6-sol` |
+| Claude Code CLI | `claude-ocx-<provider>--<model>` (plain) 또는 `claude-ocx2-…` (escaped) | `claude-ocx-native--gpt-5.6-sol` |
 | Claude Desktop 3P | `claude-opus-4-8-<code>` (3자리 base36 해시) | `claude-opus-4-8-ncb` |
 
 프록시는 요청마다 계열을 골라요. `?ids=cli` 또는 `?ids=desktop`이 우선하고, 지정하지 않으면
@@ -112,9 +118,17 @@ Claude Code 2.1.129 이상은 `GET /v1/models?limit=1000`에서 게이트웨이 
 제공해요. 두 계열은 계속 디코딩할 수 있으므로 어느 형식이든 `settings.json`에 저장한 모델이
 계속 작동해요.
 
-**별칭 문법 규칙:** provider에는 `/`나 `--`를 넣을 수 없고 `native`와 같아도 안 돼요. model에는
-`/`를 넣을 수 없어요. 읽기 쉬운 형식으로 표현할 수 없는 라우트는 해시 별칭으로 대체해요. 모델
-ID에는 `--`를 넣을 **수 있어요**(해석할 때 첫 번째 `--`만 기준으로 나눠요). `--`가 포함된
+Claude Desktop의 하단 선택기로 이미 실행 중인 3P 대화의 모델이 바뀌지 않는다면, 그 대화에서
+`/model <id>`를 사용하세요. OpenCodex는 선택기 상태를 따로 볼 수 없고 각 요청에 실린 모델 ID를
+라우팅해요. 적용 결과는 **Logs → requestedModel**에서 확인할 수 있어요.
+
+**별칭 문법 규칙:** provider에는 `/`나 `--`를 넣을 수 없고 `native`와 같아도 안 돼요. `/`와 `~`가
+없는 plain model ID는 v1 접두사 `claude-ocx-…`를 유지해요. `/` 또는 `~`가 있는 model ID는 v2
+접두사 `claude-ocx2-…`로 만들고 이스케이프해요(`/` → `~s`, `~` → `~t`). 예:
+`openrouter/anthropic/claude-opus-4-8` → `claude-ocx2-openrouter--anthropic~sclaude-opus-4-8`.
+v1 별칭은 리터럴로 디코딩해요(예전 model ID에 들어 있던 두 글자 시퀀스 `~s` / `~t`도 그대로 보존).
+v2 별칭은 이스케이프를 펼쳐요. 읽기 쉬운 형식으로 표현할 수 없는 라우트는 해시 별칭으로 대체해요.
+모델 ID에는 `--`를 넣을 **수 있어요**(해석할 때 첫 번째 `--`만 기준으로 나눠요). `--`가 포함된
 네이티브 슬러그는 해시 형식으로 대체해요.
 
 **모델 해석 순서:** `[1m]` 표식 제거 → 읽기 쉬운 별칭 디코딩 → Desktop 해시 별칭 디코딩 →
@@ -138,7 +152,7 @@ Claude Code는 알 수 없는 모델의 컨텍스트를 200k 토큰으로 계산
 
 1. 실제 컨텍스트 창이 200k보다 크고 자동 압축 임곗값 이상인 모델의 선택기 행과 환경 슬롯에
    `[1m]` 표식이 붙어요.
-2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(기본값 `350000`, 범위 `100000`–`1000000`)를 주입해 해당
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(기본값 `829800`, 범위 `100000`–`1000000`)를 주입해 해당
    지점에서 대화를 자동으로 요약해요.
 
 설정 상태는 세 가지예요.
@@ -152,7 +166,7 @@ Claude 페이지에서 압축 값을 조절할 수 있어요. **경고:** 모델
 
 1M 미만인 네이티브 Anthropic 모델에는 자동으로 표식을 붙이지 않아요. 직접 내보낸 값이 항상
 우선하며, 프록시는 **사용자가 지정한** 값을 기준으로 어떤 모델에 안전하게 표식을 붙일지 결정해요.
-직접 편집한 설정값이 잘못되면 350k로 돌아가요.
+직접 편집한 설정값이 잘못되면 829,800로 돌아가요.
 
 ### 실제 모델 환경
 
@@ -165,7 +179,7 @@ Claude 페이지에서 압축 값을 조절할 수 있어요. **경고:** 모델
 
 ## 로스터 에이전트(injectAgents)
 
-`ocx claude`와 시스템 환경 데몬은 추천 서브에이전트 로스터(Subagents 탭, 최대 5개 모델)와
+프록시 시작/ensure, `ocx claude`, 관련 대시보드 저장은 추천 서브에이전트 로스터(Subagents 탭, 최대 5개 모델)와
 `ocx-self`를 `~/.claude/agents/ocx-*.md`에 동기화해요.
 
 - **`ocx-self`**는 `/model` 선택기의 기본값을 고정하고, 값이 없으면 `claudeCode.model`을 사용해요.
@@ -279,7 +293,7 @@ Claude Code의 `/effort` 설정은 어댑터에서도 유지돼요.
 | --- | --- |
 | `thinking.type: "adaptive"` + `output_config.effort` | Effort를 그대로 전달해요(`minimal`\|`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`ultra`) |
 | `thinking.type: "enabled"` + `budget_tokens` | ≤4096→`low`, ≤16384→`medium`, 그보다 크면→`high` |
-| `thinking.type: "disabled"` | 추론 매개변수를 모두 생략해요 |
+| `thinking.type: "disabled"` | `reasoning: { effort: "none" }`을 명시하고 `summary`는 생략해요 |
 
 해석된 값은 요청 로그의 **Reasoning effort** 열에 표시돼요.
 
@@ -297,7 +311,7 @@ Claude Code의 `/effort` 설정은 어댑터에서도 유지돼요.
 | 사용자 `tool_result` | `function_call_output`(`is_error` → `[tool error]` 접두사) |
 | `thinking` / `redacted_thinking` 재생 | 버려요 |
 | Function 도구 | `{type: "function"}`(`web_search*` → `{type: "web_search"}`) |
-| `tool_choice` | `auto`→`auto`, `none`→`none`, `any`→`required`, 이름 지정→`{type:"function",name}` |
+| `tool_choice` | `auto`→`auto`, `none`→`none`, `any`→`required`, 이름 지정 함수→`{type:"function",name}`, 호스팅 WebSearch/web_search→`{type:"web_search"}` |
 | `max_tokens` | `max_output_tokens` |
 | `stop_sequences` | `stop` |
 

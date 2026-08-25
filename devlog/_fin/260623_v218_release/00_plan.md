@@ -15,7 +15,7 @@ The release must:
 
 ## Current State
 
-- Repository: `/Users/jun/Developer/new/700_projects/opencodex`
+- Repository: `<private-user-home>/Developer/new/700_projects/opencodex`
 - Current branch at planning time: `dev`
 - `origin/dev`: `3a8852cb77037d2f70e5f0c2e3ebe3721140495f`
 - Local `dev` includes this release-plan evidence commit after `origin/dev` and should be included in
@@ -98,15 +98,15 @@ after an independent final objective review returns DONE.
 
 ### NEW
 
-- `/Users/jun/Developer/new/700_projects/opencodex/devlog/_plan/260623_v218_release/00_plan.md`
-- `/Users/jun/Developer/new/700_projects/opencodex/devlog/_plan/260623_v218_release/10_result.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/devlog/_plan/260623_v218_release/00_plan.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/devlog/_plan/260623_v218_release/10_result.md`
   - Create before the release only if its content can be factual and non-speculative; otherwise use
     goal evidence/memory for post-release facts to keep `main` and `dev` synchronized at the release
     commit.
 
 ### MODIFY
 
-- `/Users/jun/Developer/new/700_projects/opencodex/package.json`
+- `<private-user-home>/Developer/new/700_projects/opencodex/package.json`
   - version `2.1.7` -> `2.1.8`
   - This change should be created by `scripts/release.ts`.
 

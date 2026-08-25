@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
-import { createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
+import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
+import { CODEX_FORWARD_BASE_URL } from "../src/providers/openai-tiers";
 import { parseRequest } from "../src/responses/parser";
 import {
   COMPACT_PROMPT,
@@ -12,6 +13,10 @@ import {
   extractCompactUserMessages,
 } from "../src/responses/compaction";
 import type { AdapterEvent } from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
+
+const createResponsesPassthroughAdapter = (...args: Parameters<typeof createResponsesPassthroughAdapterProduction>) =>
+  withTestTranslatorBudget(createResponsesPassthroughAdapterProduction(...args));
 
 async function* replay(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
   for (const event of events) yield event;
@@ -128,6 +133,40 @@ describe("bridge compaction mode (streaming)", () => {
     expect(frames.some(f => f.event === "response.output_item.done")).toBe(false);
   });
 
+  test("a completed turn with no visible summary fails instead of erasing history", async () => {
+    const frames = await collectFrames(bridgeToResponsesSSE(replay([
+      { type: "thinking_delta", thinking: "internal reasoning without a final answer" },
+      { type: "text_delta", text: " \n\t" },
+      { type: "done" },
+    ]), "m", undefined, undefined, undefined, undefined, 2_000, { compaction: true }));
+
+    expect(frames.some(f => f.event === "response.failed")).toBe(true);
+    expect(frames.some(f => f.event === "response.completed")).toBe(false);
+    expect(frames.some(f => f.event === "response.output_item.done")).toBe(false);
+    expect(JSON.stringify(frames)).toContain("compaction turn produced an empty summary");
+  });
+
+  test("a truncated summary never emits a compaction replacement", async () => {
+    const frames = await collectFrames(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "partial summary" },
+      { type: "done", stopReason: "max_tokens" },
+    ]), "m", undefined, undefined, undefined, undefined, 2_000, { compaction: true }));
+
+    expect(frames.some(f => f.event === "response.incomplete")).toBe(true);
+    expect(frames.some(f => f.event === "response.output_item.done")).toBe(false);
+  });
+
+  test("an unrecognized compaction stop reason fails closed", async () => {
+    const frames = await collectFrames(bridgeToResponsesSSE(replay([
+      { type: "text_delta", text: "apparently complete summary" },
+      { type: "done", stopReason: "unexpected_provider_stop" },
+    ]), "m", undefined, undefined, undefined, undefined, 2_000, { compaction: true }));
+
+    expect(frames.some(f => f.event === "response.failed")).toBe(true);
+    expect(frames.some(f => f.event === "response.completed")).toBe(false);
+    expect(frames.some(f => f.event === "response.output_item.done")).toBe(false);
+  });
+
   test("without the flag nothing changes", async () => {
     const frames = await collectFrames(bridgeToResponsesSSE(replay([
       { type: "text_delta", text: "normal answer" },
@@ -158,12 +197,82 @@ describe("buildResponseJSON compaction mode", () => {
     expect(json.status).toBe("failed");
     expect(json.output).toHaveLength(0);
   });
+
+  test("a completed turn with no visible summary fails instead of emitting ocx1 empty", () => {
+    const json = buildResponseJSON([
+      { type: "thinking_delta", thinking: "internal reasoning without a final answer" },
+      { type: "text_delta", text: " \n\t" },
+      { type: "done" },
+    ], "m", { compaction: true }) as {
+      output: Array<{ type: string; encrypted_content?: string }>;
+      status: string;
+      error?: { message?: string };
+    };
+
+    expect(json.status).toBe("failed");
+    expect(json.output).toHaveLength(0);
+    expect(json.error?.message).toContain("compaction turn produced an empty summary");
+  });
+
+  test("non-empty text without a terminal done fails instead of replacing history", () => {
+    const json = buildResponseJSON([
+      { type: "text_delta", text: "partial summary before transport EOF" },
+    ], "m", { compaction: true }) as {
+      output: Array<{ type: string }>;
+      status: string;
+      error?: { message?: string };
+    };
+
+    expect(json.status).toBe("failed");
+    expect(json.output).toHaveLength(0);
+    expect(json.error?.message).toContain("without a terminal done event");
+  });
+
+  test("content-filtered batch output remains incomplete and never replaces history", () => {
+    const json = buildResponseJSON([
+      { type: "text_delta", text: "filtered partial summary" },
+      { type: "done", stopReason: "content_filter" },
+    ], "m", { compaction: true }) as { output: Array<{ type: string }>; status: string };
+
+    expect(json.status).toBe("incomplete");
+    expect(json.output).toHaveLength(0);
+  });
+
+  test("an unrecognized batch stop reason fails closed", () => {
+    const json = buildResponseJSON([
+      { type: "text_delta", text: "apparently complete summary" },
+      { type: "done", stopReason: "unexpected_provider_stop" },
+    ], "m", { compaction: true }) as { output: Array<{ type: string }>; status: string };
+
+    expect(json.status).toBe("failed");
+    expect(json.output).toHaveLength(0);
+  });
+
+  test("batch compaction suppresses reasoning and tool artifacts around a valid summary", () => {
+    const json = buildResponseJSON([
+      { type: "thinking_delta", thinking: "private planning" },
+      { type: "tool_call_start", id: "call_1", name: "ignored_tool" },
+      { type: "tool_call_delta", arguments: "{}" },
+      { type: "tool_call_end" },
+      { type: "text_delta", text: "usable final handoff" },
+      { type: "done" },
+    ], "m", { compaction: true }) as {
+      output: Array<{ type: string; encrypted_content?: string }>;
+      status: string;
+    };
+
+    expect(json.status).toBe("completed");
+    expect(json.output).toHaveLength(1);
+    expect(json.output[0].type).toBe("compaction");
+    expect(decodeCompactionSummary(json.output[0].encrypted_content ?? "")).toBe("usable final handoff");
+  });
 });
 
 describe("COMPACT_PROMPT", () => {
   test("mirrors the codex-rs checkpoint instruction", () => {
     expect(COMPACT_PROMPT).toContain("CONTEXT CHECKPOINT COMPACTION");
     expect(COMPACT_PROMPT).toContain("What remains to be done");
+    expect(COMPACT_PROMPT).toContain("visible final response MUST contain the handoff summary");
   });
 });
 
@@ -174,10 +283,19 @@ describe("forward-path ocx1 compaction scrub", () => {
     authMode: "forward" as const,
   };
 
-  function forwardedBody(rawBody: Record<string, unknown>): { input: Array<Record<string, unknown>> } {
-    const adapter = createResponsesPassthroughAdapter(provider as never);
+  function forwardedBody(
+    rawBody: Record<string, unknown>,
+    target = provider,
+    threadServingIdentityChanged = false,
+  ): { input: Array<Record<string, unknown>> } {
+    const adapter = createResponsesPassthroughAdapter(target as never);
     const request = adapter.buildRequest({
-      modelId: "gpt-5.5", context: { messages: [] }, stream: true, options: {}, _rawBody: rawBody,
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: rawBody,
+      ...(threadServingIdentityChanged ? { _stripReasoningEncryptedContent: true } : {}),
     }, { headers: new Headers() });
     return JSON.parse(request.body as string) as { input: Array<Record<string, unknown>> };
   }
@@ -214,9 +332,44 @@ describe("forward-path ocx1 compaction scrub", () => {
     const body = forwardedBody({
       model: "gpt-5.5",
       input: [{ type: "compaction", encrypted_content: "gAAAAA-real-openai-blob" }],
-    });
+    }, { ...provider, baseUrl: CODEX_FORWARD_BASE_URL });
     expect(body.input[0].type).toBe("compaction");
     expect(body.input[0].encrypted_content).toBe("gAAAAA-real-openai-blob");
+  });
+
+  test("known serving-identity changes degrade native blobs before OpenAI forwarding", () => {
+    const before = { type: "message", role: "user", content: [{ type: "input_text", text: "before" }] };
+    const after = { type: "message", role: "user", content: [{ type: "input_text", text: "after" }] };
+    const body = forwardedBody({
+      model: "gpt-5.5",
+      input: [
+        before,
+        { type: "compaction", encrypted_content: "xai-native-compaction-blob" },
+        after,
+      ],
+    }, { ...provider, baseUrl: CODEX_FORWARD_BASE_URL }, true);
+
+    expect(body.input).toEqual([
+      before,
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: OPAQUE_COMPACTION_NOTE }],
+      },
+      after,
+    ]);
+  });
+
+  test("noncanonical forward providers degrade OpenAI-encrypted compaction items", () => {
+    const body = forwardedBody({
+      model: "gpt-5.5",
+      input: [{ type: "compaction", encrypted_content: "gAAAAA-real-openai-blob" }],
+    }, provider);
+    expect(body.input[0]).toEqual({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: OPAQUE_COMPACTION_NOTE }],
+    });
   });
 });
 
@@ -260,5 +413,17 @@ describe("remote compaction v1 helpers (260707 Design-B sweep)", () => {
     const second = output[1] as { content: { text: string }[] };
     expect(second.content[0].text).toBe(recent);
     expect(first.content[0].text.length).toBe(80_000 - recent.length);
+  });
+
+  test("the retained tail never begins on a lone low surrogate", () => {
+    // The reviewer's repro: an 80,001-code-unit message BEGINNING with an
+    // astral character, so the 80k budget cut lands exactly inside the pair.
+    const withAstral = "🎆" + "가".repeat(79_999);
+    expect(withAstral.length).toBe(80_001);
+    const output = buildCompactV1Output([withAstral], "summary");
+    const retained = (output[output.length - 2] as { content: { text: string }[] }).content[0].text;
+    const first = retained.charCodeAt(0);
+    expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
+    expect(retained.includes("\uFFFD")).toBe(false);
   });
 });

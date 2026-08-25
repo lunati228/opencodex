@@ -113,7 +113,7 @@ expected alias shape. Mirrors the image-guard precedent.
    even send a custom header, and the fence emits only
    `model/base_url/api_backend/api_key/name` (`src/grok/inject.ts:152-160`).
 
-   Verified against the Grok source (`/Users/jun/Developer/codex/180_grok-build`): Grok
+   Verified against the Grok source (`<private-user-home>/Developer/codex/180_grok-build`): Grok
    DOES support a per-model custom header that it sends verbatim on every inference
    call — `extra_headers = { "X-Request-Tags" = "..." }` in the user guide
    (`crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md:89,111`), with a

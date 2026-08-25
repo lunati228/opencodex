@@ -19,12 +19,12 @@ adapter.parseStream(...) -> bridgeToResponsesSSE(...)
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:193
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:54
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:60
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:142
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:155
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:217
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:193
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:54
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:60
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:142
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:155
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:217
 ```
 
 The bridge emits the core Responses SSE sequence Codex expects:
@@ -54,9 +54,9 @@ upstream Responses body and sanitized headers directly.
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-responses.ts:31
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/azure.ts:5
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:141
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-responses.ts:31
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/azure.ts:5
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:141
 ```
 
 ## Thinking / Reasoning Blocks
@@ -70,7 +70,7 @@ thinking_delta
 Relevant local path:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:149
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:149
 ```
 
 The bridge currently emits provider thinking as reasoning summaries:
@@ -83,11 +83,11 @@ The bridge currently emits provider thinking as reasoning summaries:
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:162
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:165
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:169
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:175
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:81
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:162
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:165
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:169
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:175
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:81
 ```
 
 Upstream Codex distinguishes summary reasoning from raw reasoning content:
@@ -105,8 +105,8 @@ presented as a summary, even when the upstream provider is returning raw reasoni
 Incoming previous-turn reasoning is parsed into local assistant `thinking` with a JSON signature:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/schema.ts:42
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:240
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/schema.ts:42
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:240
 ```
 
 That is useful, but it does not round-trip provider-specific opaque reasoning metadata natively.
@@ -119,10 +119,10 @@ and usage, then emits a message item if text exists.
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:216
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:260
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:269
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:274
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:216
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:260
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:269
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:274
 ```
 
 Known examples:
@@ -135,12 +135,12 @@ Known examples:
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:233
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:283
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:202
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:237
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts:137
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts:170
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:233
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:283
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:202
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:237
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts:137
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts:170
 ```
 
 ## Usage and Context Metadata
@@ -155,8 +155,8 @@ outputTokens
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts:158
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:221
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts:158
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:221
 ```
 
 Upstream Codex can consume richer usage:
@@ -219,7 +219,7 @@ Relevant upstream paths:
 Translated opencodex streams set minimal SSE headers only:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:206
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:206
 ```
 
 Error fidelity is also incomplete. opencodex emits `response.failed` with `last_error`, while the
@@ -228,7 +228,7 @@ upstream parser evidence suggests typed classification reads `response.error`.
 Relevant paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:231
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:231
 /tmp/opencodex-codex-src/codex-rs/codex-api/src/sse/responses.rs:347
 /tmp/opencodex-codex-src/codex-rs/codex-api/src/sse/responses.rs:350
 /tmp/opencodex-codex-src/codex-rs/codex-api/src/sse/responses.rs:382

@@ -20,22 +20,22 @@ the change is one guard per adapter. `anthropic.ts` already handles this via its
 Codex consumes a classified failure correctly (stable checkout):
 
 ```text
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:318  is_context_window_error / classification flow
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:513-535  is_*_error recognized codes
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:318  is_context_window_error / classification flow
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:513-535  is_*_error recognized codes
 ```
 
 opencodex gap (200-stream inline error is dropped):
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:189-204  JSON.parse → usage → choices; no error branch
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts:142-146       JSON.parse → candidates; no error branch
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:189-204  JSON.parse → usage → choices; no error branch
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts:142-146       JSON.parse → candidates; no error branch
 ```
 
 opencodex already-correct sink (reused unchanged):
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:322-336  case "error" → response.failed { error, last_error } (classified)
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:277-280  case "error" (already present)
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:322-336  case "error" → response.failed { error, last_error } (classified)
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:277-280  case "error" (already present)
 ```
 
 ## Files
@@ -43,7 +43,7 @@ opencodex already-correct sink (reused unchanged):
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
 ```
 
 Insert an inline-error guard immediately after the JSON parse, before the `usage` check
@@ -76,7 +76,7 @@ Insert an inline-error guard immediately after the JSON parse, before the `usage
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts
 ```
 
 Insert the same guard after the JSON parse, before the `candidates` check (current lines 142-146).
@@ -100,7 +100,7 @@ Gemini surfaces stream errors as a top-level `error` object:
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/adapter-error-inline.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/adapter-error-inline.test.ts
 ```
 
 Complete content:

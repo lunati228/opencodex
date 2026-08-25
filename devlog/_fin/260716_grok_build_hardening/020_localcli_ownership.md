@@ -15,8 +15,8 @@
 | Entrypoints | login-time local import and request/guardian-driven refresh |
 | Trust boundary | Grok Build-owned `~/.grok/auth.json` → OpenCodex-owned `~/.opencodex/auth.json` → xAI token endpoint |
 | Failure | Grok CLI and OpenCodex independently spend the same refresh generation; one receives `invalid_grant`, or the last persisted stale generation forces re-login |
-| Official invariant | one `AuthManager` owns a store and holds `auth.json.lock` across the IdP exchange; a follower adopts the rotated disk token instead of calling the IdP (`/Users/jun/Developer/codex/180_grok-build/crates/codegen/xai-grok-shell/src/auth/manager.rs:64-68,1529-1561,1604-1642`) |
-| Contract proof | two managers sharing one store produce exactly one IdP call (`/Users/jun/Developer/codex/180_grok-build/crates/codegen/xai-grok-shell/src/auth/refresh/auth_backend_contract_tests.rs:351-388`) |
+| Official invariant | one `AuthManager` owns a store and holds `auth.json.lock` across the IdP exchange; a follower adopts the rotated disk token instead of calling the IdP (`<private-user-home>/Developer/codex/180_grok-build/crates/codegen/xai-grok-shell/src/auth/manager.rs:64-68,1529-1561,1604-1642`) |
+| Contract proof | two managers sharing one store produce exactly one IdP call (`<private-user-home>/Developer/codex/180_grok-build/crates/codegen/xai-grok-shell/src/auth/refresh/auth_backend_contract_tests.rs:351-388`) |
 
 ## Ownership decision
 
@@ -474,7 +474,7 @@ Test hygiene: restore `console.warn`, `fetch`, `HOME`, and `OPENCODEX_HOME` in `
 
 ## Verification commands
 
-Run from `/Users/jun/Developer/new/700_projects/opencodex`:
+Run from `<private-user-home>/Developer/new/700_projects/opencodex`:
 
 ```bash
 bun test --isolate ./tests/oauth-refresh.test.ts

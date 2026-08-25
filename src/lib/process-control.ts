@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { loadConfig, readRuntimePort } from "../config";
+import { configuredAdminToken } from "./admin-secrets";
 
 export function isProcessAlive(pid: number): boolean {
   try {
@@ -51,6 +52,9 @@ export function gracefulStopHost(hostname: string | undefined): string {
  */
 export type GracefulStopResult = boolean | "refused";
 
+/** A proxy declined shutdown because a service under another home owns it (HTTP 409). */
+export class ProxyOwnershipRefusedError extends Error {}
+
 /**
  * Ask a running proxy to stop itself via the management API (`POST /api/stop`), which
  * drains in-flight turns, restores native Codex, and cleans its pid/runtime files.
@@ -60,18 +64,33 @@ export type GracefulStopResult = boolean | "refused";
  * or doesn't exit in time — callers fall back to {@link killProxy}. Returns `"refused"`
  * when the proxy declines the stop (HTTP 409), which callers must NOT force past.
  */
-export async function stopProxyGracefully(pid: number, io: GracefulStopIo = {}): Promise<GracefulStopResult> {
+export async function stopProxyGracefully(
+  pid: number,
+  io: GracefulStopIo = {},
+  /**
+   * Drain and exit, but leave Codex's injected routing in place.
+   *
+   * The Codex companion needs exactly this: it stops the proxy after Codex
+   * closes, and `~/.codex/config.toml` must keep pointing at the proxy so the
+   * next launch still routes. Restoring native Codex there would silently
+   * un-inject `openai_base_url` and `model_catalog_json` on every close, so the
+   * following session would come up on the native catalog with none of the
+   * routed rows.
+   */
+  keepCodexRouting = false,
+): Promise<GracefulStopResult> {
   const readRuntime = io.readRuntime ?? readRuntimePort;
   const runtime = readRuntime(pid);
   if (!runtime?.port) return false;
   const env = io.env ?? process.env;
   const headers: Record<string, string> = {};
-  // Non-loopback binds require management auth; loopback ignores the extra header.
-  const token = env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  const token = configuredAdminToken(env.OPENCODEX_HOME?.trim() || undefined, env as NodeJS.ProcessEnv);
   if (token) headers["x-opencodex-api-key"] = token;
   const fetchFn = io.fetchFn ?? fetch;
   try {
-    const res = await fetchFn(`http://${gracefulStopHost(runtime.hostname)}:${runtime.port}/api/stop`, {
+    const stopUrl = `http://${gracefulStopHost(runtime.hostname)}:${runtime.port}/api/stop`
+      + (keepCodexRouting ? "?keep-codex-routing=1" : "");
+    const res = await fetchFn(stopUrl, {
       method: "POST",
       headers,
       // Hung proxies with many CLOSE_WAIT clients can be slow to accept; give them
@@ -110,7 +129,7 @@ export async function stopProxy(pid: number): Promise<void> {
   if (graceful === "refused") {
     // The proxy refused on purpose (foreign service owns it). Forcing would strip shared
     // config while that service keeps the proxy alive.
-    throw new Error(
+    throw new ProxyOwnershipRefusedError(
       "The running proxy refused to stop: a service installed under a different "
       + "CODEX_HOME/OPENCODEX_HOME owns it. Run the stop from that home.",
     );

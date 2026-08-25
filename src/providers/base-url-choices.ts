@@ -39,6 +39,16 @@ export const ALIBABA_INTL_BASE_URL_CHOICES: readonly ProviderBaseUrlChoice[] = [
   { id: "custom", label: "Custom" },
 ];
 
+/** Alibaba Coding Plan endpoint presets (international default; China mainland selectable). */
+export const ALIBABA_CODING_INTL_BASE_URL = "https://coding-intl.dashscope.aliyuncs.com/v1";
+export const ALIBABA_CODING_CN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1";
+
+export const ALIBABA_CODING_BASE_URL_CHOICES: readonly ProviderBaseUrlChoice[] = [
+  { id: "intl", label: "International", baseUrl: ALIBABA_CODING_INTL_BASE_URL },
+  { id: "china", label: "China", baseUrl: ALIBABA_CODING_CN_BASE_URL },
+  { id: "custom", label: "Custom" },
+];
+
 /** Match a saved baseUrl to a known choice id (`custom` when it does not match). */
 export function matchBaseUrlChoice(
   choices: readonly ProviderBaseUrlChoice[],
@@ -52,3 +62,13 @@ export function matchBaseUrlChoice(
   }
   return choices.some(c => c.id === "custom") ? "custom" : choices[0]!.id;
 }
+
+/** Moonshot/Kimi API endpoint presets (international default; China selectable). */
+export const MOONSHOT_INTL_BASE_URL = "https://api.moonshot.ai/v1";
+export const MOONSHOT_CN_BASE_URL = "https://api.moonshot.cn/v1";
+
+export const MOONSHOT_BASE_URL_CHOICES: readonly ProviderBaseUrlChoice[] = [
+  { id: "international", label: "International (.ai)", baseUrl: MOONSHOT_INTL_BASE_URL },
+  { id: "china", label: "China (.cn)", baseUrl: MOONSHOT_CN_BASE_URL },
+  { id: "custom", label: "Custom" },
+];

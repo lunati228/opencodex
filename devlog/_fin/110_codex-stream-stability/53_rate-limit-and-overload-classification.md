@@ -5,7 +5,7 @@
 Make translated backoff faithful to what the **stable** Codex parser actually does. This
 supersedes the 110 RCA note that "`rate_limit_exceeded` is not recognized" — that was based on
 the stale `/tmp/opencodex-codex-src` snapshot. The stable checkout
-(`/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs`) recognizes
+(`<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs`) recognizes
 `rate_limit_exceeded` and extracts the delay from the **message text**.
 
 Three faithful-backoff items, plus one cleanup:
@@ -32,19 +32,19 @@ Three faithful-backoff items, plus one cleanup:
 ## Evidence
 
 ```text
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:318      is_context_window_error(&error)        (classification entry)
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:332-335  is_server_overloaded_error → delay = try_parse_retry_after(&error)
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:487-509  try_parse_retry_after gates on code == "rate_limit_exceeded", parses "try again in Ns"
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:517      is_quota_exceeded_error (fatal quota)
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:533-535  is_server_overloaded_error → "server_is_overloaded" | "slow_down"
-/Users/jun/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:844      test fixture: rate_limit_exceeded message "Please try again in 11.054s."
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:318      is_context_window_error(&error)        (classification entry)
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:332-335  is_server_overloaded_error → delay = try_parse_retry_after(&error)
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:487-509  try_parse_retry_after gates on code == "rate_limit_exceeded", parses "try again in Ns"
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:517      is_quota_exceeded_error (fatal quota)
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:533-535  is_server_overloaded_error → "server_is_overloaded" | "slow_down"
+<private-user-home>/Developer/codex/codex-cli/codex-rs/codex-api/src/sse/responses.rs:844      test fixture: rate_limit_exceeded message "Please try again in 11.054s."
 ```
 
 opencodex classifier:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/errors.ts:18-37
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts:330-331, 343-344  (F3d optional)
+<private-user-home>/Developer/new/700_projects/opencodex/src/errors.ts:18-37
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts:330-331, 343-344  (F3d optional)
 ```
 
 ## Files
@@ -52,7 +52,7 @@ opencodex classifier:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/errors.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/errors.ts
 ```
 
 F3c — drop the over-broad `"quota exceeded"` so transient 429 buckets stay retryable
@@ -100,7 +100,7 @@ check) — so 401/403 auth is matched first, then overload, then the generic 5xx
 ### MODIFY (optional — F3d)
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts
 ```
 
 ```diff

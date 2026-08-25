@@ -5,6 +5,7 @@ import { nativeModelRows } from "../src/codex/catalog";
 import { loadConfig, saveConfig } from "../src/config";
 import { handleManagementAPI } from "../src/server/management-api";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 const TEST_DIR = join(import.meta.dir, `.tmp-model-visibility-management-${process.pid}`);
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -26,13 +27,13 @@ beforeEach(() => {
         baseUrl: "https://api.example.test/v1",
         apiKey: "test-key",
         liveModels: false,
-        models: ["claude-opus-4-6-thinking", "claude-sonnet-4-6", "gemini-3.1-pro", "gemini-3.6-flash", "gpt-oss-120b-medium", "vendor/model"],
-        selectedModels: ["gemini-3.1-pro", "gemini-3.6-flash"],
+        models: ["claude-opus-4-6-thinking", "claude-sonnet-4-6", "gemini-3.1-pro", "gemini-3.7-flash", "gpt-oss-120b-medium", "vendor/model"],
+        selectedModels: ["gemini-3.1-pro", "gemini-3.7-flash"],
       },
     },
     combos: {
       free: { alias: "fast-chat", targets: [{ provider: "google-antigravity", model: "gemini-3.1-pro" }] },
-      plain: { targets: [{ provider: "google-antigravity", model: "gemini-3.6-flash" }] },
+      plain: { targets: [{ provider: "google-antigravity", model: "gemini-3.7-flash" }] },
     },
     disabledModels: ["google-antigravity/gpt-oss-120b-medium", "google-antigravity/temporarily-missing", "other/keep"],
   });
@@ -52,7 +53,7 @@ async function putWithConfig(body: unknown, config = loadConfig()): Promise<Resp
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
-  }), url, config, { refreshCodexCatalog: async () => { refreshes += 1; } });
+  }), url, config, { createManagementConvergeCodex: catalogConvergenceFactory(() => { refreshes += 1; }) });
   if (!response) throw new Error("model visibility route was not handled");
   return response;
 }
@@ -62,10 +63,23 @@ async function put(body: unknown): Promise<Response> {
 }
 
 describe("atomic model visibility management", () => {
+  test("catalog busy maps management and v1 models to 503 startup to warn-skip and system-env to skip", async () => {
+    const management = await Bun.file(new URL("../src/server/management-api.ts", import.meta.url)).text();
+    const server = await Bun.file(new URL("../src/server/index.ts", import.meta.url)).text();
+    const prewarm = await Bun.file(new URL("../src/cli/catalog-prewarm.ts", import.meta.url)).text();
+    const systemEnv = await Bun.file(new URL("../src/server/system-env.ts", import.meta.url)).text();
+    for (const source of [management, server]) {
+      expect(source).toContain("CatalogGatherBusyError");
+      expect(source).toContain('"catalog_busy"');
+      expect(source).toContain('"Retry-After": "1"');
+    }
+    expect(prewarm).toContain("startup discovery skipped");
+    expect(systemEnv).toContain('(error as { code?: unknown }).code === "catalog_busy"');
+  });
   test("enables excluded or blocked models and disables without erasing the allowlist", async () => {
     expect((await put({ scope: "models", provider: "google-antigravity", targets: [{ id: "claude-sonnet-4-6" }], enabled: true })).status).toBe(200);
     expect(loadConfig().providers["google-antigravity"].selectedModels)
-      .toEqual(["gemini-3.1-pro", "gemini-3.6-flash", "claude-sonnet-4-6"]);
+      .toEqual(["gemini-3.1-pro", "gemini-3.7-flash", "claude-sonnet-4-6"]);
 
     expect((await put({ scope: "models", provider: "google-antigravity", targets: [{ id: "gpt-oss-120b-medium" }], enabled: true })).status).toBe(200);
     expect(loadConfig().disabledModels).not.toContain("google-antigravity/gpt-oss-120b-medium");
@@ -245,6 +259,49 @@ describe("atomic model visibility management", () => {
     expect(refreshes).toBe(4);
   });
 
+  test("native-alias toggles preserve the separate bare native disable key", async () => {
+    const config = loadConfig();
+    config.combos = {
+      nova: {
+        alias: "gpt-5.6-sol",
+        nativeAlias: true,
+        displayName: "Nova1 - Sol",
+        targets: [{ provider: "google-antigravity", model: "gemini-3.1-pro" }],
+      },
+    };
+    config.disabledModels = ["gpt-5.6-sol", "gpt-5.5", "combo/nova", "other/keep"];
+    saveConfig(config);
+
+    expect((await put({
+      scope: "models",
+      provider: "combo",
+      targets: [{ id: "nova" }],
+      enabled: true,
+    })).status).toBe(200);
+    expect(loadConfig().disabledModels).toEqual(["gpt-5.6-sol", "gpt-5.5", "other/keep"]);
+
+    expect((await put({
+      scope: "models",
+      provider: "combo",
+      targets: [{ id: "nova" }],
+      enabled: false,
+    })).status).toBe(200);
+    expect(loadConfig().disabledModels).toEqual([
+      "gpt-5.6-sol", "gpt-5.5", "other/keep", "combo/nova",
+    ]);
+
+    const current = loadConfig();
+    const nativeTargets = nativeModelRows(current).map(row => ({ id: row.slug, native: true }));
+    expect(nativeTargets.some(target => target.id === "gpt-5.6-sol")).toBe(false);
+    expect((await put({
+      scope: "provider",
+      provider: "openai",
+      targets: nativeTargets,
+      enabled: true,
+    })).status).toBe(200);
+    expect(loadConfig().disabledModels).toEqual(["gpt-5.6-sol", "other/keep", "combo/nova"]);
+  });
+
   test("uses raw allowlist ids, canonical routed slugs, and rejects invalid requests", async () => {
     await put({ scope: "models", provider: "google-antigravity", targets: [{ id: "vendor/model" }, { id: "vendor/model" }], enabled: true });
     expect(loadConfig().providers["google-antigravity"].selectedModels).toContain("vendor/model");
@@ -266,3 +323,4 @@ describe("atomic model visibility management", () => {
     expect(refreshes).toBe(2);
   });
 });
+import { ManagementRequest as Request } from "./helpers/management-auth";

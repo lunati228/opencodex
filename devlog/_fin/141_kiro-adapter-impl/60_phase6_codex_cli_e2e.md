@@ -7,7 +7,7 @@ temporary errors" and never produced output. "안되는데?" → "codex exec으�
 ## Root cause (confirmed, not guessed)
 The proxy listening on `localhost:10100` was the **globally-installed published build**
 `/opt/homebrew/lib/node_modules/@bitkyc08/opencodex/dist` (v2.6.0) — which has **no kiro
-adapter**. Evidence: `grep 'kiro/' /Users/jun/.codex/opencodex-catalog.json` returned
+adapter**. Evidence: `grep 'kiro/' <private-user-home>/.codex/opencodex-catalog.json` returned
 **empty** → kiro models were never advertised to Codex, so `kiro/*` requests failed.
 My kiro implementation lives only on `feat/kiro-on-dev` in the workspace, never published.
 
@@ -17,7 +17,7 @@ Replace the running proxy on 10100 with the **branch build**:
 2. `bun run src/cli.ts start --port 10100` (dev run — `bin/ocx.mjs` is the npm shim that
    execs the *bundled published* package, so dev MUST use `src/cli.ts` directly).
 3. Branch `start` auto-injected **23 models incl. 11 `kiro/*`** into the Codex catalog
-   (`/Users/jun/.codex/opencodex-catalog.json`) — verified `kiro/claude-sonnet-4.6` present.
+   (`<private-user-home>/.codex/opencodex-catalog.json`) — verified `kiro/claude-sonnet-4.6` present.
 
 ## Verification (live, real Codex CLI 0.142.3)
 - Direct `POST /v1/responses` to the proxy → **HTTP 200** + full Responses SSE

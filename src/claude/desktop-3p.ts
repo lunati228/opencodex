@@ -1,15 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { atomicWriteFile } from "../config";
+import { dirname, join } from "node:path";
+import {
+  atomicWriteFile,
+  atomicWriteSecretFile,
+  hardenDirectoryForSecretWrite,
+  readExistingSecretFileRequired,
+} from "../config";
 import type { OcxClaudeDesktopProfile } from "../types";
+import { claudeDesktopConfigLibraryDir, resolveConfigLibraryDir } from "./desktop-3p-paths";
 import {
   reconcileDesktopProfile,
   renderDesktopProfile,
   type DesktopProfileModel,
 } from "./desktop-profile";
-import { nativeOpenAiContextWindow } from "../codex/catalog";
+import { nativeOpenAiContextWindow, type NativeContextLimitsInput } from "../codex/catalog";
 import { assertDesktop3pModelsValid } from "./desktop-3p-guard";
 
 export interface Desktop3pModelEntry {
@@ -49,6 +55,33 @@ export interface Desktop3pRoutedModel {
  */
 export const DESKTOP_SUPPORTS_1M_THRESHOLD = 1_000_000;
 
+export interface Desktop3pConfigLibraryOptions {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+}
+
+/**
+ * Resolve the config library from the same user-data root Claude Desktop uses. Keeping this in one
+ * helper prevents the writer and dashboard status probe from agreeing on a path Desktop never reads.
+ *
+ * The resolution itself lives in `./desktop-3p-paths`, which ports Claude Desktop's own `GE()`
+ * branch for branch — including the `-3p` suffix the app appends to its userData root. Dropping
+ * that suffix points us at a directory Desktop never reads (GitHub #539).
+ */
+export function resolveDesktop3pConfigLibraryPath(
+  options: Desktop3pConfigLibraryOptions = {},
+): string {
+  if (options.env === undefined && options.platform === undefined && options.homeDir === undefined) {
+    return claudeDesktopConfigLibraryDir();
+  }
+  return resolveConfigLibraryDir({
+    env: options.env ?? process.env,
+    platform: options.platform ?? process.platform,
+    home: options.homeDir ?? homedir(),
+  });
+}
+
 /** CLI arg parsing for `ocx claude desktop` mode flags (mutually exclusive). */
 export function parseDesktop3pModeArgs(flags: string[]): { mode: Desktop3pConfigMode } | { error: string } {
   const known = new Map<string, Desktop3pConfigMode>([
@@ -73,6 +106,45 @@ interface Desktop3pMetadata {
   appliedId?: string;
   entries: Desktop3pMetadataEntry[];
   [key: string]: unknown;
+}
+
+export type Desktop3pLibraryKind =
+  | "not_installed"
+  | "standard"
+  | "gateway_ours"
+  | "gateway_drifted"
+  | "foreign"
+  | "no_owned_state"
+  | "broken"
+  | "unsafe";
+
+export interface Desktop3pLibraryInspection {
+  kind: Desktop3pLibraryKind;
+  libraryPath: string;
+  selectedProfilePath: string | null;
+  appliedId: string | null;
+  /** Paths of opencodex-owned rows that are not selected by Desktop. */
+  residualPaths: string[];
+  /** Bounded reason code; never includes metadata or profile contents. */
+  reason?: "metadata_unreadable" | "unsafe_applied_id" | "invalid_owned_profile";
+  fingerprint?: string;
+  /**
+   * Whether Desktop's applied selection is our owned entry, by ID match alone.
+   * `null` = undeterminable (no metadata, unreadable metadata, or no appliedId);
+   * a readable appliedId with no owned entry is a KNOWN false, not unknown.
+   * Deliberately independent of profile-file health: the status contract
+   * predates this inspector and callers render tri-state.
+   */
+  ownedProfileActive: boolean | null;
+}
+
+export interface Desktop3pRemovalResult {
+  ok: boolean;
+  changed: boolean;
+  kind: "removed" | "noop" | "cleanup_incomplete" | "unsafe" | "write_failed";
+  libraryPath: string;
+  residualPaths?: string[];
+  reason?: string;
 }
 
 let desktop3pRegistry = new Map<string, string>();
@@ -124,6 +196,7 @@ function collectDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: NativeContextLimitsInput,
 ): { models: Desktop3pModelEntry[]; registry: Map<string, string> } {
   const registry = new Map<string, string>();
   const models: Desktop3pModelEntry[] = [];
@@ -132,7 +205,7 @@ function collectDesktop3pModels(
     // Desktop DTO uses, so a native 1M/372k model resolves identically in the written
     // config and on the dashboard.
     ...nativeSlugs.map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id);
+      const contextWindow = nativeOpenAiContextWindow(id, nativeContextCap);
       return { provider: "native", id, ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),
     ...routedModels,
@@ -225,8 +298,9 @@ export function buildDesktop3pRegistry(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: NativeContextLimitsInput,
 ): Map<string, string> {
-  const { registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile);
+  const { registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
   return registry;
 }
@@ -236,8 +310,9 @@ export function generateDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: NativeContextLimitsInput,
 ): Desktop3pModelEntry[] {
-  const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile);
+  const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
   return models;
 }
@@ -267,6 +342,7 @@ export function generateDesktop3pConfig(
   apiKey = "ocx",
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: NativeContextLimitsInput,
 ): object {
   const base = {
     inferenceProvider: "gateway",
@@ -276,14 +352,14 @@ export function generateDesktop3pConfig(
   };
   if (mode === "discovery") {
     // Build/refresh the decode registry even though no static list is emitted.
-    buildDesktop3pRegistry(nativeSlugs, routedModels, profile);
+    buildDesktop3pRegistry(nativeSlugs, routedModels, profile, nativeContextCap);
     return { ...base, modelDiscoveryEnabled: true };
   }
   return {
     ...base,
     modelDiscoveryEnabled: mode === "hybrid",
     inferenceModels: (() => {
-      const models = generateDesktop3pModels(nativeSlugs, routedModels, profile);
+      const models = generateDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
       // Fail loud at the write boundary rather than ship a config Desktop rejects:
       // the output counterpart of the request-path guards.
       assertDesktop3pModelsValid(models);
@@ -299,6 +375,203 @@ function parseMetadata(path: string): Desktop3pMetadata {
   return { ...parsed, entries: parsed.entries };
 }
 
+const SAFE_DESKTOP_PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOwnedDesktopEntry(entry: Desktop3pMetadataEntry | undefined): boolean {
+  return entry?.name === "opencodex" || entry?.name === "opencodex-standard";
+}
+
+/** A gateway row is removable; the selected standard row must always remain. */
+function isOwnedDesktopGatewayEntry(entry: Desktop3pMetadataEntry | undefined): boolean {
+  return entry?.name === "opencodex";
+}
+
+function profilePath(libraryPath: string, id: string): string {
+  return join(libraryPath, `${id}.json`);
+}
+
+/** Hash only the non-secret routing shape persisted in a Desktop profile. */
+function desktop3pRoutingFingerprint(profile: Record<string, unknown>): string {
+  const { inferenceGatewayApiKey: _credential, ...fingerprintableProfile } = profile;
+  return createHash("sha256")
+    .update(JSON.stringify(fingerprintableProfile))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * Read Desktop's selected config without changing its library.
+ *
+ * This is intentionally separate from the eager writer below: status probes must
+ * never manufacture a config-library directory on a machine without Desktop.
+ */
+export function inspectDesktop3pConfigLibrary(
+  options: Desktop3pConfigLibraryOptions & { appliedFingerprint?: string | null } = {},
+): Desktop3pLibraryInspection {
+  const libraryPath = resolveDesktop3pConfigLibraryPath(options);
+  if (!existsSync(libraryPath)) {
+    return { kind: "not_installed", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], ownedProfileActive: null };
+  }
+
+  const metadataPath = join(libraryPath, "_meta.json");
+  if (!existsSync(metadataPath)) {
+    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], ownedProfileActive: null };
+  }
+
+  let metadata: Desktop3pMetadata;
+  try {
+    metadata = parseMetadata(metadataPath);
+  } catch {
+    return {
+      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], reason: "metadata_unreadable", ownedProfileActive: null,
+    };
+  }
+  const appliedId = typeof metadata.appliedId === "string" ? metadata.appliedId : null;
+  if (appliedId === null) {
+    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], ownedProfileActive: null };
+  }
+  const selected = metadata.entries.find(entry => entry?.id === appliedId);
+  // A readable appliedId with no owned entry is a KNOWN false, not unknown.
+  const ownedProfileActive = isOwnedDesktopEntry(selected);
+  if (!SAFE_DESKTOP_PROFILE_ID.test(appliedId)) {
+    return {
+      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId, residualPaths: [], reason: "unsafe_applied_id", ownedProfileActive,
+    };
+  }
+
+  const selectedProfilePath = profilePath(libraryPath, appliedId);
+  const residualPaths = metadata.entries
+    .filter(entry => isOwnedDesktopGatewayEntry(entry) && entry.id !== appliedId && SAFE_DESKTOP_PROFILE_ID.test(entry.id))
+    .flatMap(entry => [profilePath(libraryPath, entry.id), `${profilePath(libraryPath, entry.id)}.bak`])
+    .filter(existsSync);
+  if (!existsSync(selectedProfilePath)) {
+    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths, ownedProfileActive };
+  }
+
+  let profile: Record<string, unknown>;
+  let fingerprint: string;
+  try {
+    const parsed = JSON.parse(readFileSync(selectedProfilePath, "utf8")) as unknown;
+    if (!isRecord(parsed)) return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths, ownedProfileActive };
+    profile = parsed;
+    fingerprint = desktop3pRoutingFingerprint(profile);
+  } catch {
+    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths, ownedProfileActive };
+  }
+  if (!isOwnedDesktopEntry(selected)) {
+    return { kind: "foreign", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive };
+  }
+  if (profile.inferenceProvider === undefined) {
+    return { kind: "standard", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive };
+  }
+  const validGateway = profile.inferenceProvider === "gateway"
+    && profile.inferenceCredentialKind === "static"
+    && typeof profile.inferenceGatewayBaseUrl === "string"
+    && typeof profile.inferenceGatewayApiKey === "string";
+  if (!validGateway) {
+    return {
+      kind: "unsafe", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, reason: "invalid_owned_profile", ownedProfileActive,
+    };
+  }
+  return {
+    kind: options.appliedFingerprint && options.appliedFingerprint === fingerprint ? "gateway_ours" : "gateway_drifted",
+    libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive,
+  };
+}
+
+/**
+ * Select a credential-free standard profile before deleting an owned gateway.
+ * The old metadata row remains as a retry locator only until both its profile
+ * and backup are absent; successful cleanup removes it in the same operation.
+ *
+ * `gateway_drifted` is still an owned opencodex gateway (name + valid shape); the
+ * fingerprint only says on-disk bytes differ from the last saved marker. Refusing
+ * OFF for drift left users unable to disable after a lost `appliedFingerprint`
+ * (or any other benign mismatch), while the Integrations card still showed the
+ * leftover profile as applied/stale.
+ */
+export function removeDesktop3pStandardPivot(
+  options: Desktop3pConfigLibraryOptions & {
+    appliedFingerprint?: string | null;
+    unlink?: (path: string) => void;
+  } = {},
+): Desktop3pRemovalResult {
+  const inspected = inspectDesktop3pConfigLibrary(options);
+  if (inspected.kind === "not_installed" || inspected.kind === "no_owned_state") {
+    return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
+  }
+  if (inspected.kind === "broken" || inspected.kind === "unsafe") {
+    return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath, reason: inspected.reason };
+  }
+  if (!inspected.appliedId || !SAFE_DESKTOP_PROFILE_ID.test(inspected.appliedId)) {
+    return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath, reason: "unsafe_applied_id" };
+  }
+
+  const metadataPath = join(inspected.libraryPath, "_meta.json");
+  try {
+    const metadata = parseMetadata(metadataPath);
+    const selectedId = inspected.appliedId;
+    // When Desktop is actively using our gateway (current or drifted), pivot only
+    // that selected row first. Any second owned row is residue for a later
+    // standard-mode retry; this preserves the selected-row preference after an
+    // interrupted cleanup.
+    const selectedOwnedGatewayActive =
+      inspected.kind === "gateway_ours" || inspected.kind === "gateway_drifted";
+    const targetIds = selectedOwnedGatewayActive
+      ? [selectedId]
+      : metadata.entries
+        .filter(isOwnedDesktopGatewayEntry)
+        .map(entry => entry.id)
+        .filter(id => SAFE_DESKTOP_PROFILE_ID.test(id));
+    if (targetIds.length === 0) return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
+
+    let metadataAfterPivot = metadata;
+    if (selectedOwnedGatewayActive) {
+      const standardId = randomUUID();
+      const standardPath = profilePath(inspected.libraryPath, standardId);
+      atomicWriteFile(standardPath, "{}\n");
+      const standardEntry: Desktop3pMetadataEntry = { id: standardId, name: "opencodex-standard" };
+      metadataAfterPivot = { ...metadata, appliedId: standardId, entries: [...metadata.entries, standardEntry] };
+      atomicWriteFile(metadataPath, JSON.stringify(metadataAfterPivot, null, 2) + "\n");
+    }
+
+    const residualPaths: string[] = [];
+    for (const id of targetIds) {
+      for (const candidate of [profilePath(inspected.libraryPath, id), `${profilePath(inspected.libraryPath, id)}.bak`]) {
+        try {
+          if (existsSync(candidate)) (options.unlink ?? unlinkSync)(candidate);
+        } catch {
+          // Only the path is allowed to leave this credential-bearing cleanup boundary.
+        }
+        if (existsSync(candidate)) residualPaths.push(candidate);
+      }
+    }
+    const ownedResiduePaths = metadataAfterPivot.entries
+      .filter(entry => isOwnedDesktopGatewayEntry(entry) && !targetIds.includes(entry.id) && SAFE_DESKTOP_PROFILE_ID.test(entry.id))
+      .flatMap(entry => [profilePath(inspected.libraryPath, entry.id), `${profilePath(inspected.libraryPath, entry.id)}.bak`])
+      .filter(existsSync);
+    if (residualPaths.length > 0 || ownedResiduePaths.length > 0) {
+      return {
+        ok: false, changed: true, kind: "cleanup_incomplete", libraryPath: inspected.libraryPath,
+        residualPaths: [...new Set([...residualPaths, ...ownedResiduePaths])],
+      };
+    }
+    // Do not leave a metadata row pointing at a deleted profile. For a foreign
+    // selection this only removes proven opencodex residues; appliedId is kept.
+    atomicWriteFile(
+      metadataPath,
+      JSON.stringify({ ...metadataAfterPivot, entries: metadataAfterPivot.entries.filter(entry => !targetIds.includes(entry.id)) }, null, 2) + "\n",
+    );
+    return { ok: true, changed: true, kind: "removed", libraryPath: inspected.libraryPath };
+  } catch {
+    return { ok: false, changed: false, kind: "write_failed", libraryPath: inspected.libraryPath };
+  }
+}
+
 /** Write and apply the opencodex config in Claude Desktop 3P's config library. */
 export function writeDesktop3pConfig(
   port: number,
@@ -307,31 +580,54 @@ export function writeDesktop3pConfig(
   apiKey?: string,
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: NativeContextLimitsInput,
 ): { written: boolean; path: string; reason?: string; fingerprint?: string } {
-  const libraryPath = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR?.trim()
-    || join(homedir(), "Library", "Application Support", "Claude-3p", "configLibrary");
+  const libraryPath = resolveDesktop3pConfigLibraryPath();
   const metadataPath = join(libraryPath, "_meta.json");
   let configPath = libraryPath;
 
   try {
-    mkdirSync(libraryPath, { recursive: true, mode: 0o700 });
+    hardenDirectoryForSecretWrite(libraryPath);
     const metadata = parseMetadata(metadataPath);
-    const existing = metadata.entries.find(entry => entry?.name === "opencodex" && typeof entry.id === "string");
+    const selected = metadata.entries.find(entry => entry?.id === metadata.appliedId && isOwnedDesktopGatewayEntry(entry));
+    const existing = selected ?? metadata.entries.find(entry => isOwnedDesktopGatewayEntry(entry) && typeof entry.id === "string");
     const id = existing?.id ?? randomUUID();
+    if (typeof id !== "string" || !SAFE_DESKTOP_PROFILE_ID.test(id)) {
+      throw new Error("Claude Desktop 3P metadata contains an unsafe opencodex config id");
+    }
     configPath = join(libraryPath, `${id}.json`);
     const entry: Desktop3pMetadataEntry = existing ? { ...existing, id, name: "opencodex" } : { id, name: "opencodex" };
     const entries = existing
       ? metadata.entries.map(current => current === existing ? entry : current)
       : [...metadata.entries, entry];
 
-    const configJson = JSON.stringify(generateDesktop3pConfig(port, nativeSlugs, routedModels, apiKey, mode, profile), null, 2) + "\n";
-    const fingerprint = createHash("sha256").update(configJson).digest("hex").slice(0, 16);
+    const generatedConfig = generateDesktop3pConfig(
+      port,
+      nativeSlugs,
+      routedModels,
+      apiKey,
+      mode,
+      profile,
+      nativeContextCap,
+    ) as Record<string, unknown>;
+    const configJson = JSON.stringify(generatedConfig, null, 2) + "\n";
+    const fingerprint = desktop3pRoutingFingerprint(generatedConfig);
     const { backupPath } = atomicReplaceDesktopConfig(configPath, configJson);
     try {
-      atomicWriteFile(metadataPath, JSON.stringify({ ...metadata, appliedId: id, entries }, null, 2) + "\n");
+      atomicWriteSecretFile(metadataPath, JSON.stringify({ ...metadata, appliedId: id, entries }, null, 2) + "\n");
     } catch (metaError) {
-      // Rollback: restore the backed-up config if metadata write fails.
-      if (backupPath && existsSync(backupPath)) copyFileSync(backupPath, configPath);
+      // Roll back through the same identity-bound, ACL-hardened publication boundary.
+      try {
+        if (backupPath && existsSync(backupPath)) {
+          atomicWriteSecretFile(configPath, readExistingSecretFileRequired(backupPath).toString("utf8"));
+        } else if (existsSync(configPath)) {
+          unlinkSync(configPath);
+        }
+      } catch (rollbackError) {
+        const primary = metaError instanceof Error ? metaError.message : String(metaError);
+        const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        throw new Error(`${primary}; Claude Desktop config rollback failed: ${rollback}`, { cause: metaError });
+      }
       throw metaError;
     }
     return { written: true, path: configPath, fingerprint };
@@ -345,10 +641,13 @@ export function writeDesktop3pConfig(
 export function atomicReplaceDesktopConfig(
   path: string,
   content: string,
-  writer: (path: string, content: string) => void = atomicWriteFile,
+  writer: (path: string, content: string) => void = atomicWriteSecretFile,
 ): { backupPath?: string } {
-  const backupPath = `${path}.bak`;
-  if (existsSync(path)) copyFileSync(path, backupPath);
+  hardenDirectoryForSecretWrite(dirname(path));
+  const backupPath = existsSync(path) ? `${path}.bak` : undefined;
+  if (backupPath) {
+    atomicWriteSecretFile(backupPath, readExistingSecretFileRequired(path).toString("utf8"));
+  }
   writer(path, content);
-  return existsSync(backupPath) ? { backupPath } : {};
+  return backupPath ? { backupPath } : {};
 }

@@ -101,9 +101,11 @@ HTTP 경계는 `server/index.ts`가 맡고, Responses 데이터 플레인은 `se
 | `error` | `response.failed` (with `last_error`) |
 
 브리지는 **하트비트 킵얼라이브**(RC3)도 실행합니다. 업스트림에서 데이터가 오지 않을 때 2초마다
-파서가 무시하는 `response.heartbeat` SSE 이벤트를 보내 Codex의 유휴 타이머를 다시 시작합니다.
-기본 **stall deadline**은 300초(`stallTimeoutSec`)입니다. 이 시간을 넘기면 업스트림을 중단하고
-이유가 `upstream_stall_timeout`인 `response.incomplete`를 내보내 연결이 끝없이 매달리지 않게 합니다.
+파서가 무시하는 `: opencodex heartbeat` SSE 주석 줄을 보내 Codex의 유휴 타이머를 다시 시작합니다.
+주석 줄은 이벤트를 생성하지 않고 모든 eventsource 파서에 의해 버려지므로, 엄격한 Responses 디코더는
+알 수 없는 variant를 절대 보지 못합니다. 기본 **stall deadline**은 300초(`stallTimeoutSec`)입니다.
+이 시간을 넘기면 업스트림을 중단하고 이유가 `upstream_stall_timeout`인 `response.incomplete`를
+내보내 연결이 끝없이 매달리지 않게 합니다.
 
 툴 호출은 파서가 캡처한 네임스페이스 맵, freeform 집합, tool-search 집합을 사용하여 세 가지
 Responses 항목 타입으로 구분됩니다 — 따라서 MCP 네임스페이스, `apply_patch` 스타일의 freeform
@@ -116,6 +118,14 @@ Responses 항목 타입으로 구분됩니다 — 따라서 MCP 네임스페이�
 상태에서 Codex가 Responses WebSocket 업그레이드를 시도하면 opencodex는 `426 upgrade_required`를
 반환하고, Codex는 해당 세션에서 HTTP로 폴백합니다. `"websockets": true`가 설정되면 같은
 엔드포인트가 업그레이드를 받아들이고 WebSocket 브리지를 사용합니다.
+
+이 클라이언트 설정과 별개로, 루트 `stream: true`인 canonical ChatGPT forward 요청은
+stable Bun 1.4.0 이상에서 Codex 업스트림 WebSocket을 사용할 수 있습니다. 번들 Bun 1.3.14,
+prerelease, 또는 검증할 수 없는 런타임 identity는 HTTP/SSE를 사용합니다. 성공한 업스트림 WS
+응답은 같은 downstream SSE 계약을 유지하며, 원시 JSON WebSocket 프레임과 downstream SSE
+envelope를 각각 4 MiB로 제한하고 8 MiB producer queue 상한이 있는 bounded eager single-reader
+relay를 거칩니다. queue overflow 시 업스트림을 닫고 downstream에는
+terminal `response.failed` 이벤트와 `[DONE]`을 내보냅니다.
 
 Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `server/responses/compact.ts`는
 `POST /v1/responses/compact`를 내부 라우팅 요약 턴으로 처리해 압축된 히스토리를 반환합니다.
@@ -134,14 +144,17 @@ Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `
 ## Reasoning effort
 
 `reasoning-effort.ts`는 Codex의 reasoning 레이블을 각 프로바이더의 와이어 값으로 변환합니다.
-Codex 카탈로그는 Codex가 수용하는 레이블(`low` / `medium` / `high` / `xhigh` / `max`)을
-광고하지만, 업스트림 프로바이더는 더 작은 하위 집합만 지원하거나 실제 alias가 필요할 수 있습니다.
-이 모듈은:
+명시적으로 선언된 비 GPT ladder는 합성 단계를 추가하지 않고 그대로 표시됩니다. 선언되지 않은 항목은
+호환 기본값을 유지하고, GPT 계열은 기존 Codex 제품 단계를 유지합니다. 이 모듈은:
 
 - 표준 `CODEX_REASONING_LEVELS`와 그 정렬 순서를 정의합니다.
 - 요청된 effort를 정확한 레벨이 없을 때 가장 가까운 지원 단계로 클램핑합니다.
 - 커스텀 와이어 매핑을 위한 모델별 및 프로바이더별 `reasoningEffortMap` 오버라이드를 해석합니다.
 - `noReasoningModels`에 나열된 모델에 대해서는 effort를 완전히 제거합니다.
+
+예를 들어 Gemini 3.7 Flash는 `low` / `medium` / `high`만 표시합니다. 관리형 로컬 Qwen은
+`low` / `medium` / `xhigh`를 표시하고 기본값은 `xhigh`입니다. 오래된 저장 값은 와이어 경계에서만
+클램프되거나 매핑됩니다.
 
 ## 코어 타입
 

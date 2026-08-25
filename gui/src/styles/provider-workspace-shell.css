@@ -278,6 +278,16 @@
   background: var(--raised);
 }
 
+/* The absolute delete button occupies the rail's trailing status area. Hide the
+   star/status while it is visible instead of letting the button crop either icon. */
+.pws-rail-row-wrap:hover .providers-workspace-rail-trail {
+  opacity: 0;
+}
+
+.providers-workspace-rail-trail {
+  transition: opacity var(--motion-fast);
+}
+
 .pws-rail-row-remove:hover {
   background: var(--raised);
 }
@@ -304,6 +314,20 @@
   width: var(--icon-lg);
   height: var(--icon-lg);
   display: block;
+}
+
+/* Colored initial-letter fallback for providers without a logo asset. */
+.provider-icon-fallback {
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  font-weight: var(--weight-semibold);
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
 }
 
 .provider-icon-mask {
@@ -342,6 +366,7 @@
 
 .providers-workspace-rail-secondary {
   min-width: 0;
+  min-height: 1.15em;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -669,7 +694,7 @@
   font-size: 0.85rem;
   color: inherit;
   cursor: pointer;
-  min-height: 48px;
+  min-height: 62px;
   transition: border-color 0.15s;
 }
 
@@ -687,7 +712,7 @@
   color: inherit;
   background: var(--bg);
   resize: vertical;
-  min-height: 48px;
+  min-height: 62px;
 }
 
 .pws-notes-textarea:focus {
@@ -971,6 +996,17 @@
 }
 
 /* ---- Usage tab: metrics + rate-limit blocks ---- */
+.pws-usage-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pws-usage-heading-row .pws-section-title {
+  margin-bottom: 0;
+}
+
 .pws-usage-block + .pws-usage-block {
   margin-top: 32px;
   padding-top: 24px;

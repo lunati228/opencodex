@@ -6,7 +6,7 @@ Date: 2026-07-16
 Initial pass only dropped thin (~280 total lines) notes under `180_grok-build-analysis/`. User correctly called out that the requested work was a real source-based upgrade of `~/Developer/codex` analysis docs, comparable to Claude/Codex analysis depth.
 
 ## What was done
-1. Confirmed clone up to date: `/Users/jun/Developer/codex/180_grok-build` @ `b189869`.
+1. Confirmed clone up to date: `<private-user-home>/Developer/codex/180_grok-build` @ `b189869`.
 2. Rewrote analysis set to 000–010 + ANALYSIS.md with crate/file citations:
    - inventory/architecture
    - install/`GROK_HOME`
@@ -23,5 +23,5 @@ Initial pass only dropped thin (~280 total lines) notes under `180_grok-build-an
 4. Local commit on codex archive repo (no push).
 
 ## Paths
-- `/Users/jun/Developer/codex/180_grok-build-analysis/ANALYSIS.md`
-- `/Users/jun/Developer/codex/180_grok-build` (source clone)
+- `<private-user-home>/Developer/codex/180_grok-build-analysis/ANALYSIS.md`
+- `<private-user-home>/Developer/codex/180_grok-build` (source clone)

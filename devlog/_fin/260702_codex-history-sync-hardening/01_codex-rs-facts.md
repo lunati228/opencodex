@@ -1,6 +1,6 @@
 # Codex-rs History Facts (research record)
 
-- **Date:** 2026-07-02 · Source: local clone /Users/jun/Developer/codex/121_openai-codex/codex-rs
+- **Date:** 2026-07-02 · Source: local clone <private-user-home>/Developer/codex/121_openai-codex/codex-rs
   (fresh to 2026-06-28), Codex gpt-5.5 read-only investigation. File:line cites are into that clone.
 
 ## The vanish mechanism — CONFIRMED

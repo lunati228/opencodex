@@ -6,9 +6,12 @@ import { getCodexRoutingKind } from "../codex/inject";
 import { diagnoseCodexShim } from "../codex/shim";
 import { durableBunPath } from "../lib/bun-runtime";
 import type { OcxConfig } from "../types";
+import { truncateRetainedUtf8 } from "../lib/admission";
 
 const CACHE_TTL_MS = 30_000;
 const PROBE_TIMEOUT_MS = 5_000;
+const INITIAL_PROBE_WAIT_MS = 5_500;
+const MAX_DIAGNOSTIC_VALUE_BYTES = 8 * 1024;
 let cached: { timestamp: number; value: StartupHealth } | null = null;
 let inflight: Promise<StartupHealth> | null = null;
 let generation = 0;
@@ -21,9 +24,14 @@ export function markStartupHealthDiagnosticStale(value: StartupHealth): StartupH
     rebootSafe: false,
     protection: "none",
     diagnosticStale: true,
+    // Mirror deriveStartupHealth's choice: an already-registered service is refreshed in
+    // place. Hardcoding installService here silently undid that for every stale-cache
+    // read, which is the path the dashboard hits while a probe is revalidating.
     recommendedCommand: value.routingKind === "custom-local" || value.routingKind === "unknown"
       ? value.commands.restoreNative
-      : value.commands.installService,
+      : value.serviceInstalled && !value.serviceConflict
+        ? value.commands.repairService
+        : value.commands.installService,
   };
 }
 
@@ -63,7 +71,19 @@ function runProbe(config: Pick<OcxConfig, "codexAutoStart">): Promise<StartupHea
           try {
             const parsed = JSON.parse(lines[index]) as StartupHealth;
             if (["native", "protected", "at-risk"].includes(parsed.status) && typeof parsed.rebootSafe === "boolean") {
-              resolve({ ...parsed, diagnosticStale: false });
+              resolve({
+                ...parsed,
+                recommendedCommand: parsed.recommendedCommand === null
+                  ? null
+                  : truncateRetainedUtf8(parsed.recommendedCommand, MAX_DIAGNOSTIC_VALUE_BYTES),
+                commands: {
+                  installService: truncateRetainedUtf8(parsed.commands.installService, MAX_DIAGNOSTIC_VALUE_BYTES),
+                  repairService: truncateRetainedUtf8(parsed.commands.repairService, MAX_DIAGNOSTIC_VALUE_BYTES),
+                  installShim: truncateRetainedUtf8(parsed.commands.installShim, MAX_DIAGNOSTIC_VALUE_BYTES),
+                  restoreNative: truncateRetainedUtf8(parsed.commands.restoreNative, MAX_DIAGNOSTIC_VALUE_BYTES),
+                },
+                diagnosticStale: false,
+              });
               return;
             }
           } catch { /* scan earlier output; config repair messages may precede JSON */ }
@@ -90,6 +110,17 @@ function refreshInBackground(config: Pick<OcxConfig, "codexAutoStart">): void {
 export async function getCachedStartupHealth(config: Pick<OcxConfig, "codexAutoStart">): Promise<StartupHealth> {
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.value;
   refreshInBackground(config);
+  // An expired or empty read is an explicit protection check. Wait for the
+  // isolated probe instead of presenting a synthetic failure while that probe
+  // is still running. The probe remains child-process isolated and hard-capped
+  // at 5s; stale state is returned only if that bounded probe cannot settle.
+  if (inflight) {
+    const settled = await Promise.race([
+      inflight,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), INITIAL_PROBE_WAIT_MS)),
+    ]);
+    if (settled) return settled;
+  }
   return cached ? markStartupHealthDiagnosticStale(cached.value) : conservativeFallback(config);
 }
 

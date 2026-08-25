@@ -52,7 +52,7 @@ use_responses_lite: false
 for both native and routed sample entries in:
 
 ```text
-/Users/jun/.codex/opencodex-catalog.json
+<private-user-home>/.codex/opencodex-catalog.json
 ```
 
 That is currently safe, but still inherited. The Phase 100 policy is to make the safe value

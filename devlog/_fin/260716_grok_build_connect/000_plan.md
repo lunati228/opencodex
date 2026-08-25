@@ -6,7 +6,7 @@
 - Goal: source-backed possible/partial/impossible verdict + upgraded `~/Developer/codex` analysis docs
 - Non-goals: production OpenCodex inbound chat-completions implementation unless reopened; push
 - Verifier: every claim cites real file path or live probe; residual list explicit
-- Memory: this unit + `/Users/jun/Developer/codex/180_grok-build/analysis/*`
+- Memory: this unit + `<private-user-home>/Developer/codex/180_grok-build/analysis/*`
 
 ## Corrected question
 **Grok Build TUI/CLI 사용자가 OpenCodex가 이미 라우팅 중인 모델들(gpt-5.6-*, anthropic/*, cursor/*, …)을 고를 수 있는가?**

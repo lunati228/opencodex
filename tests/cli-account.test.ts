@@ -1,9 +1,26 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { PassThrough, Readable } from "node:stream";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cmdAccount, classifyAccount, formatAccountTable, type AccountDeps } from "../src/cli/account";
 import type { AccountStdin } from "../src/cli/account-api";
 import { printSubcommandUsage } from "../src/cli/help";
+import {
+  DEFAULT_ACCOUNT_PRIORITY,
+  MAX_ACCOUNT_PRIORITY,
+  MIN_ACCOUNT_PRIORITY,
+} from "../src/codex/pool-rotation";
+import {
+  ACCOUNT_PRIORITY_PRESETS,
+  accountPriorityPresetKey,
+  DEFAULT_ACCOUNT_PRIORITY as GUI_DEFAULT_PRIORITY,
+  MAX_ACCOUNT_PRIORITY as GUI_MAX_PRIORITY,
+  MIN_ACCOUNT_PRIORITY as GUI_MIN_PRIORITY,
+} from "../gui/src/account-priority";
 import type { OcxConfig } from "../src/types";
+import { ACCOUNT_IMPORT_MAX_BYTES } from "../src/oauth/account-import";
 
 const RAW_SENTINEL = "test-key-rawsentinel1234567890";
 const MASKED_SENTINEL = "test****7890";
@@ -43,6 +60,10 @@ let lastDeletedType: "codex" | "oauth" | "api-key" | null = null;
 let codexAccounts: Array<Record<string, unknown>> = [];
 let oauthAccounts: Array<Record<string, unknown>> = [];
 let oauthActiveId: string | null = "acct_1";
+let oauthLoginStatus: Record<string, unknown> = { loggedIn: false };
+let codexLoginStatus: Record<string, unknown> = { status: "pending" };
+let codexDeleteCatalogRefreshPending = false;
+let importResultOverride: unknown | undefined;
 let keyEntries: Array<Record<string, unknown>> = [];
 let keyActiveId: string | null = "key_1";
 let logs: string[] = [];
@@ -126,7 +147,11 @@ async function mockManagementApi(req: Request): Promise<Response> {
     codexAccounts = codexAccounts.filter(account => account.id !== id);
     if (activeCodexAccountId === id) activeCodexAccountId = null;
     lastDeletedType = "codex";
-    return json({ ok: true });
+    return json({
+      ok: true,
+      catalogRefreshPending: codexDeleteCatalogRefreshPending,
+      internalError: "private-delete-detail",
+    });
   }
 
   if (req.method === "PUT" && url.pathname === "/api/codex-auth/accounts/alias") {
@@ -135,6 +160,14 @@ async function mockManagementApi(req: Request): Promise<Response> {
     if (!account) return json({ error: "account not found" }, 404);
     account.alias = payload.alias;
     return json({ ok: true, id: payload.id, alias: payload.alias || null });
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/codex-auth/accounts/priority") {
+    const payload = body as { id: string; priority: number | null };
+    const account = codexAccounts.find(entry => entry.id === payload.id);
+    if (!account) return json({ error: "account not found" }, 404);
+    account.priority = payload.priority ?? 0;
+    return json({ ok: true, id: payload.id, priority: account.priority });
   }
 
   if (url.pathname === "/api/codex-auth/active") {
@@ -205,6 +238,22 @@ async function mockManagementApi(req: Request): Promise<Response> {
     return json({ ok: true, activeAccountId: accountId });
   }
 
+  if (req.method === "POST" && url.pathname === "/api/oauth/accounts/import") {
+    const payload = body as { provider?: string; format?: string; document?: unknown };
+    if (payload.provider !== "google-antigravity") return json({ code: "unsupported_provider" }, 400);
+    if (payload.format !== "cockpit-tools") return json({ code: "unsupported_format" }, 400);
+    if (!Array.isArray(payload.document)) return json({ code: "invalid_document" }, 400);
+    if (importResultOverride !== undefined) return json(importResultOverride);
+    return json({
+      totalCount: payload.document.length,
+      importedCount: payload.document.length,
+      updatedCount: 0,
+      failedCount: 0,
+      unsupportedCount: 0,
+      results: payload.document.map((_, index) => ({ index, status: "imported", code: "imported" })),
+    });
+  }
+
   if (req.method === "PUT" && url.pathname === "/api/oauth/accounts/alias") {
     const payload = body as { accountId: string; alias: string };
     const account = oauthAccounts.find(entry => entry.id === payload.accountId);
@@ -269,6 +318,30 @@ async function mockManagementApi(req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
+  if (req.method === "POST" && url.pathname === "/api/oauth/login") {
+    return json({ url: "https://auth.example/authorize", instructions: "Sign in, then paste the redirect URL." });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/codex-auth/login") {
+    return json({ url: "https://auth.example/authorize", flowId: "flow-mock" });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/codex-auth/login/code") {
+    return json({ ok: true, accepted: true });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/codex-auth/login-status") {
+    return json(codexLoginStatus);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/oauth/login/code") {
+    return json({ ok: true, accepted: true });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/oauth/status") {
+    return json(oauthLoginStatus);
+  }
+
   return json({ error: `unhandled mock endpoint: ${req.method} ${url.pathname}` }, 404);
 }
 
@@ -281,6 +354,37 @@ function stdinFrom(value: string, isTTY = false): AccountStdin {
   input.isTTY = isTTY;
   return input;
 }
+
+test("the login URL reaches piped stdout before the polling window (#1007)", async () => {
+  const child = Bun.spawn({
+    cmd: [process.execPath, "run", fileURLToPath(new URL("./helpers/account-login-pipe-child.ts", import.meta.url))],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  try {
+    // Read incrementally with a sub-second deadline: the URL block must
+    // arrive while the child is still polling (still authenticating).
+    const reader = child.stdout.getReader();
+    const deadline = AbortSignal.timeout(5_000);
+    let received = "";
+    while (!received.includes("auth.example/authorize")) {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        Bun.sleep(5_000).then(() => ({ value: undefined, done: true }) as const),
+      ]);
+      if (done) break;
+      if (value) received += new TextDecoder().decode(value);
+    }
+    expect(received).toContain("https://auth.example/authorize?flow=pipe-test");
+    expect(received).toContain("Flow: flow-pipe");
+    // The child is STILL authenticating (the whole point of the flush).
+    expect(child.exitCode).toBeNull();
+    void deadline;
+  } finally {
+    child.kill();
+    await child.exited.catch(() => {});
+  }
+}, 15_000);
 
 async function run(args: string[], deps: AccountDeps = defaultDeps()): Promise<CommandResult> {
   logs.length = 0;
@@ -325,13 +429,17 @@ beforeEach(() => {
         monthlyResetAt: 1_900_000_000,
       },
     },
-    { id: "chatgpt_1", email: "j***@example.com", plan: "pro", needsReauth: true, quota: null },
+    { id: "chatgpt_1", email: "j***@example.com", plan: "pro", needsReauth: true, priority: 1, quota: null },
   ];
   oauthAccounts = [
     { id: "acct_1", email: "a***@example.com" },
     { id: "acct_2" },
   ];
   oauthActiveId = "acct_1";
+  oauthLoginStatus = { loggedIn: false };
+  codexLoginStatus = { status: "pending" };
+  codexDeleteCatalogRefreshPending = false;
+  importResultOverride = undefined;
   keyEntries = [{
     id: "key_1",
     label: "personal",
@@ -358,10 +466,14 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     const result = await run(["list"]);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toMatch(/^PROVIDER\s{2,}TYPE\s{2,}ID\s{2,}PLAN\/LABEL\s{2,}STATUS/m);
-    expect(result.stdout).toMatch(/^openai\s+codex\s+main\s+plus/m);
-    expect(result.stdout).toMatch(/^anthropic\s+oauth\s+acct_1\s+a\*\*\*@example\.com\s+active/m);
-    expect(result.stdout).toMatch(/^openrouter\s+api-key\s+key_1\s+test\*\*\*\*7890 \(personal\)\s+active/m);
+    expect(result.stdout).toMatch(/^PROVIDER\s{2,}TYPE\s{2,}ID\s{2,}PLAN\/LABEL\s{2,}PRIORITY\s{2,}STATUS/m);
+    expect(result.stdout).toMatch(/^openai\s+codex\s+main\s+plus\s+0/m);
+    // The sign, not just the header: an order above the default must render "+1" so the
+    // column reads as a position on an axis rather than a magnitude. Without this the
+    // whole suite passes with priorityText's `+${n}` branch collapsed to String(n).
+    expect(result.stdout).toMatch(/^openai\s+codex\s+chatgpt_1\s+\S+\s+\+1\s/m);
+    expect(result.stdout).toMatch(/^anthropic\s+oauth\s+acct_1\s+a\*\*\*@example\.com\s+-\s+active/m);
+    expect(result.stdout).toMatch(/^openrouter\s+api-key\s+key_1\s+test\*\*\*\*7890 \(personal\)\s+-\s+active/m);
     expect(result.stdout).not.toContain("__main__");
 
     const lines = result.stdout.split("\n");
@@ -558,12 +670,19 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(result.stdout).toContain("needs-reauth");
   });
 
-  test("WP2 regression: use openai main prints next-session and auto-switch override notes", async () => {
+  test("WP2 regression: use openai main prints takes-effect-immediately and auto-switch override notes", async () => {
     const result = await run(["use", "openai", "main"]);
 
     expect(result.code).toBe(0);
-    expect(result.stderr).toContain("new Codex sessions");
-    expect(result.stderr).toContain("running threads keep their current account");
+    // A manual switch clears thread affinity outright (resetCodexRoutingForManualSelection
+    // calls clearThreadAccountMap as its first statement), so running threads do NOT keep
+    // their account -- they rebind on their next request, and the route reports
+    // appliesImmediately: true. Only requests already in flight keep what they captured.
+    // Do not reword back toward "new sessions" or "running threads keep their account":
+    // this test previously asserted that clause, which is what kept it alive.
+    expect(result.stderr).toContain("Takes effect immediately");
+    expect(result.stderr).toContain("in-flight requests keep the account they captured");
+    expect(result.stderr).not.toContain("running threads keep their current account");
     expect(result.stderr).toContain("auto-switch (threshold 80%) may override this pin");
   });
 
@@ -707,6 +826,30 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(requests.some(request =>
       request.method === "DELETE" && request.path === "/api/codex-auth/accounts"
     )).toBe(true);
+  });
+
+  test("pending Codex removal keeps success and prints generic recovery guidance", async () => {
+    codexDeleteCatalogRefreshPending = true;
+    const result = await run(["remove", "openai", "chatgpt_1", "--yes"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("auto (no pin");
+    expect(result.stderr).toContain("ocx sync");
+    expect(result.stderr).toContain("account change was saved");
+    expect(result.output).not.toContain("private-delete-detail");
+  });
+
+  test("JSON Codex removal retains the pending flag without a human warning", async () => {
+    codexDeleteCatalogRefreshPending = true;
+    const result = await run(["remove", "openai", "chatgpt_1", "--yes", "--json"]);
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(expect.objectContaining({
+      ok: true,
+      catalogRefreshPending: true,
+    }));
+    expect(result.stdout).not.toContain("private-delete-detail");
+    expect(result.stderr).toBe("");
   });
 
   test("25: removing the active OAuth account reports the promoted account", async () => {
@@ -931,6 +1074,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
       id: "chatgpt_1",
       removedActive: true,
       promotedActiveId: null,
+      catalogRefreshPending: false,
     });
 
     deleteFailure = { status: 500, error: "json delete failed" };
@@ -951,5 +1095,823 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/codex-auth/accounts/alias" }));
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/oauth/accounts/alias" }));
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/providers/keys/alias" }));
+  });
+
+  describe("37b: account priority sets and reads Codex selection order", () => {
+    const priorityRequests = () => requests.filter(r => r.path === "/api/codex-auth/accounts/priority");
+    const unreachableDeps = (): AccountDeps => ({
+      ...defaultDeps(),
+      fetchImpl: async () => { throw new TypeError("connection refused"); },
+    });
+
+    test("a numeric value is sent as an integer and echoed back signed", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "-1"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: chatgpt_1 selection order is now -1 (later)");
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ method: "PUT", body: { id: "chatgpt_1", priority: -1 } }),
+      ]);
+    });
+
+    // The signed form is what the command itself prints back, so it has to round-trip.
+    test("a leading-plus integer parses to the same value as the bare spelling", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "+2"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: chatgpt_1 selection order is now +2 (first)");
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ method: "PUT", body: { id: "chatgpt_1", priority: 2 } }),
+      ]);
+    });
+
+    test.each([
+      ["first", 2],
+      ["Earlier", 1],
+      ["normal", 0],
+      ["later", -1],
+      ["LAST", -2],
+    ] as const)("the preset word %s maps to %d", async (word, expected) => {
+      const result = await run(["priority", "openai", "chatgpt_1", word]);
+
+      expect(result.code).toBe(0);
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ body: { id: "chatgpt_1", priority: expected } }),
+      ]);
+    });
+
+    // The five presets live in three places that cannot import one another: the dashboard
+    // select, the CLI's preset words, and the core range. Driving the CLI from the GUI's own
+    // list means a change to either side fails here instead of silently disagreeing about
+    // what "First" means.
+    test("the dashboard select and the CLI preset words describe the same five orders", async () => {
+      const presets = ACCOUNT_PRIORITY_PRESETS.map(value => ({
+        value,
+        word: accountPriorityPresetKey(value)?.replace("accountPool.priority", "").toLowerCase(),
+      }));
+      expect(presets.map(preset => preset.word)).toEqual(["first", "earlier", "normal", "later", "last"]);
+
+      for (const { value, word } of presets) {
+        requests.length = 0;
+        const result = await run(["priority", "openai", "chatgpt_1", word!]);
+
+        expect(result.code).toBe(0);
+        expect(priorityRequests()).toEqual([
+          expect.objectContaining({ body: { id: "chatgpt_1", priority: value } }),
+        ]);
+      }
+    });
+
+    test("the dashboard mirrors the core priority range", () => {
+      expect({ fallback: GUI_DEFAULT_PRIORITY, min: GUI_MIN_PRIORITY, max: GUI_MAX_PRIORITY }).toEqual({
+        fallback: DEFAULT_ACCOUNT_PRIORITY,
+        min: MIN_ACCOUNT_PRIORITY,
+        max: MAX_ACCOUNT_PRIORITY,
+      });
+    });
+
+    test("main is translated to the internal id the API expects", async () => {
+      const result = await run(["priority", "openai", "main", "last", "--json"]);
+
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        ok: true,
+        provider: "openai",
+        id: "__main__",
+        priority: -2,
+        preset: "last",
+      });
+    });
+
+    test("reset sends null", async () => {
+      await run(["priority", "openai", "chatgpt_1", "reset"]);
+
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ body: { id: "chatgpt_1", priority: null } }),
+      ]);
+    });
+
+    test("an omitted value reads the stored order without writing", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: chatgpt_1 selection order is +1 (earlier)");
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("the read emits the same JSON envelope as the write", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "--json"]);
+
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        ok: true,
+        provider: "openai",
+        id: "chatgpt_1",
+        priority: 1,
+        preset: "earlier",
+      });
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("reading main resolves the alias and reports the unset default", async () => {
+      const result = await run(["priority", "openai", "main"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: main selection order is 0 (normal)");
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("reading an unknown id exits one and names the account", async () => {
+      const result = await run(["priority", "openai", "nope"]);
+
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("no openai account nope");
+      expect(result.stderr).toContain("Usage:");
+    });
+
+    // The inherited names guard the preset lookup: `word in PRIORITY_PRESETS` would
+    // resolve them off Object.prototype and send a non-number to the proxy.
+    test.each(["2.5", "abc", "101", "-101", "constructor", "__proto__", "toString"])(
+      "rejects %s before any HTTP call",
+      async value => {
+        const recording: Array<string> = [];
+        const result = await run(["priority", "openai", "chatgpt_1", value], {
+          ...defaultDeps(),
+          fetchImpl: (async (input: RequestInfo | URL) => {
+            recording.push(String(input));
+            throw new Error("must not be called");
+          }) as typeof fetch,
+        });
+
+        expect(result.code).toBe(1);
+        expect(recording).toEqual([]);
+      },
+    );
+
+    test("a trailing extra argument falls through to usage", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "first", "extra"]);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Usage:");
+      expect(result.stderr).toContain("ocx account priority");
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("non-Codex providers are rejected", async () => {
+      const result = await run(["priority", "anthropic", "acct_1", "first"]);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("only applies to the openai Codex account pool");
+    });
+
+    // Both paths reach the proxy through different helpers — the read through
+    // fetchCodexRows, the write through apiJson — so each needs its own guard.
+    test.each([
+      ["the read", ["priority", "openai", "chatgpt_1"]],
+      ["the write", ["priority", "openai", "chatgpt_1", "first"]],
+    ] as const)("%s reports an unreachable proxy instead of throwing", async (_label, args) => {
+      const result = await run([...args], unreachableDeps());
+
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("Proxy not reachable");
+      expect(result.stderr).toContain("ocx start");
+      expect(result.stderr).toContain("ocx ensure");
+    });
+
+    test("the advisory note goes to stderr so --json stdout stays parseable", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "later", "--json"]);
+
+      expect(result.code).toBe(0);
+      // Both advisory lines, asserted exactly: the pin release is a side effect of a command
+      // that reads as purely declarative, so it has to stay stated rather than drift out.
+      expect(result.stderr).toBe([
+        "Takes effect from the next unbound request; running threads keep their current account until drained.",
+        'Also releases any manual "use this account now" pin, on any account.',
+      ].join("\n"));
+      expect(JSON.parse(result.stdout)).toEqual({
+        ok: true,
+        provider: "openai",
+        id: "chatgpt_1",
+        priority: -1,
+        preset: "later",
+      });
+    });
+  });
+
+  describe("38: the authorization code never has to travel through argv", () => {
+    // An OAuth redirect URL carries a short-lived credential. Passed as an
+    // argument it lands in shell history and is readable via `ps` for as long
+    // as the command runs. The interactive login already reads it from a
+    // prompt; the headless path did not, and that is what these cover.
+    const SECRET = "https://cb.example/callback?code=SUPERSECRET123&state=abc";
+
+    test("a piped code produces the same request body as an argument would", async () => {
+      const piped = await run(
+        ["code", "anthropic", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\n`) },
+      );
+      const pipedPost = requests.at(-1);
+
+      const passed = await run(["code", "anthropic", SECRET, "--json"]);
+      const passedPost = requests.at(-1);
+
+      expect(piped.code).toBe(0);
+      expect(passed.code).toBe(0);
+      expect(pipedPost?.body).toEqual({ provider: "anthropic", input: SECRET });
+      expect(pipedPost?.body).toEqual(passedPost?.body);
+
+      // Same result, different exposure: only the argv path warns, and the
+      // warning names the problem without repeating the credential.
+      expect(piped.stderr).toBe("");
+      expect(passed.stderr).toContain("shell history");
+      expect(passed.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("`-` is the documented way to say stdin, and it does not warn", async () => {
+      const positional = await run(
+        ["code", "anthropic", "-", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\n`) },
+      );
+
+      expect(positional.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+      expect(positional.stderr).toBe("");
+    });
+
+    test("--code=<value> is accepted and warned about, because rejecting it prints the value", async () => {
+      // `takeOption` only understands `--code value`, so `--code=value` used to
+      // fall through to rejectArgs, which reported the whole argument —
+      // writing the authorization code to stderr. Refusing the syntax leaked
+      // more than accepting it.
+      const result = await run(["code", "anthropic", `--code=${SECRET}`, "--json"]);
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+      expect(result.stderr).toContain("shell history");
+      expect(result.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("a rejected argument list redacts the secret option instead of echoing it", async () => {
+      // `code` parses --code now, so the leak has to be reached through a
+      // subcommand that does not: mistyping `cancel --code=<secret>` (or any
+      // other command in this family) still lands the whole argument in
+      // rejectArgs, which reports what it was given.
+      const mistyped = await run(["cancel", "anthropic", `--code=${SECRET}`]);
+
+      // CliUsageError is exit 2 in this CLI; the point of the case is the body
+      // of the message, not the code.
+      expect(mistyped.code).toBe(2);
+      expect(mistyped.stderr).toContain("--code=<redacted>");
+      expect(mistyped.output).not.toContain("SUPERSECRET123");
+
+      // And the same protection where the option is understood but the rest of
+      // the line is not.
+      const extra = await run(["code", "anthropic", "-", `--code=${SECRET}`, "extra"]);
+      expect(extra.code).toBe(2);
+      expect(extra.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("--flow is parsed as a flag, not swallowed as the code", async () => {
+      // The positional used to be taken before the flags, so
+      // `code openai --flow f1` read `--flow` as the credential and then
+      // rejected `f1` as unexpected.
+      const result = await run(
+        ["code", "openai", "--flow", "flow-123", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\n`) },
+      );
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)).toEqual(expect.objectContaining({
+        method: "POST",
+        path: "/api/codex-auth/login/code",
+        body: { flowId: "flow-123", input: SECRET },
+      }));
+      expect(result.output).not.toContain("--flow");
+    });
+
+    test("an empty pipe is a usage error, not an empty credential POST", async () => {
+      const before = requests.length;
+      const result = await run(
+        ["code", "anthropic"],
+        { ...defaultDeps(), stdinImpl: stdinFrom("   \n") },
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("input was empty");
+      expect(requests).toHaveLength(before);
+    });
+
+    test("a silent pipe times out and cleans up its listeners", async () => {
+      const silent = new PassThrough() as AccountStdin;
+      silent.isTTY = false;
+      const result = await run(
+        ["code", "anthropic"],
+        { ...defaultDeps(), stdinImpl: silent, stdinTimeoutMs: 5 },
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("timed out");
+      expect(silent.listenerCount("data")).toBe(0);
+      expect(silent.listenerCount("end")).toBe(0);
+      expect(silent.listenerCount("error")).toBe(0);
+    });
+
+    test("a space-separated --code is redacted too, not just the equals form", async () => {
+      // The equals form is one token; the space form is two, and reporting the
+      // leftovers verbatim printed the second one. Mistyping the option on a
+      // command that does not parse it is the reachable path.
+      const cancel = await run(["cancel", "anthropic", "--code", SECRET]);
+
+      expect(cancel.code).toBe(2);
+      expect(cancel.stderr).toContain("--code <redacted>");
+      expect(cancel.output).not.toContain("SUPERSECRET123");
+
+      const reset = await run(["reset-credits", "main", "--code", SECRET]);
+      expect(reset.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("repeating --code is refused instead of leaving the second value to be echoed", async () => {
+      // The parser took the first occurrence only, so the second flag and its
+      // value fell through to rejectArgs — which reported them.
+      for (const argv of [
+        ["code", "anthropic", "--code", "FIRST", "--code", SECRET],
+        ["login", "anthropic", "--code", "FIRST", "--code", SECRET],
+      ]) {
+        const result = await run(argv);
+        expect(result.code).toBe(2);
+        expect(result.stderr).toContain("more than once");
+        expect(result.output).not.toContain("SUPERSECRET123");
+        expect(result.output).not.toContain("FIRST");
+      }
+    });
+
+    test("the inline form consumes its own token only, not the rest of the line", async () => {
+      // `splice(index)` instead of `splice(index, 1)` removes everything after
+      // the option too: --json stops working and a genuinely wrong argument is
+      // silently accepted, both without any visible failure.
+      const withJson = await run(["code", "anthropic", `--code=${SECRET}`, "--json"]);
+      expect(withJson.code).toBe(0);
+      expect(() => JSON.parse(withJson.stdout)).not.toThrow();
+
+      // A stray token after the inline option is still seen. Here it is read
+      // as the positional code, which collides with --code and is refused; the
+      // point is that it is not silently swallowed.
+      const withGarbage = await run(["code", "anthropic", `--code=${SECRET}`, "nonsense"]);
+      expect(withGarbage.code).toBe(2);
+      expect(withGarbage.stderr).toContain("not both");
+
+      // And with the collision removed, an unknown flag still reaches the
+      // rejection instead of disappearing.
+      const withUnknownFlag = await run(["code", "anthropic", `--code=${SECRET}`, "--nope"]);
+      expect(withUnknownFlag.code).toBe(2);
+      expect(withUnknownFlag.stderr).toContain("--nope");
+    });
+
+    test("--code= with nothing after it is a usage error, not an empty credential", async () => {
+      const result = await run(["code", "anthropic", "--code="]);
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("requires a value");
+    });
+
+    test("only the first line of a pipe is the credential", async () => {
+      // Resolving the whole buffer would fold a trailing line into the value,
+      // so a pasted block with a stray newline would POST something the user
+      // never typed.
+      const result = await run(
+        ["code", "anthropic", "--json"],
+        { ...defaultDeps(), stdinImpl: stdinFrom(`${SECRET}\ntrailing junk\n`) },
+      );
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
+    test("giving the code twice is refused rather than silently preferring one", async () => {
+      const result = await run(["code", "anthropic", SECRET, "--code", SECRET]);
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("not both");
+      expect(result.output).not.toContain("SUPERSECRET123");
+    });
+
+    test("a flag-shaped code after --code is still hidden", async () => {
+      // Redaction used to stop at the first `--`, reading the next token as a
+      // flag rather than a value. The shell hands over whatever was typed, so
+      // a credential that happens to start with `--`, or one placed after the
+      // end-of-options separator, went straight into the usage error.
+      const dashed = await run(["cancel", "anthropic", "--code", "--SUPERSECRET123"]);
+      expect(dashed.code).toBe(2);
+      expect(dashed.output).not.toContain("SUPERSECRET123");
+      expect(dashed.stderr).toContain("<redacted>");
+
+      const separated = await run(["cancel", "anthropic", "--code", "--", "SUPERSECRET123"]);
+      expect(separated.code).toBe(2);
+      expect(separated.output).not.toContain("SUPERSECRET123");
+      expect(separated.stderr).toContain("<redacted>");
+    });
+
+    test("a second positional is hidden, while a mistyped flag is still named", async () => {
+      // An unquoted redirect URL splits on spaces, so the tail of the code
+      // arrives as extra positionals. Reporting them verbatim is the same leak
+      // by another route.
+      const split = await run(["code", "anthropic", "first", "SUPERSECRET123"]);
+      expect(split.code).toBe(2);
+      expect(split.output).not.toContain("SUPERSECRET123");
+      expect(split.stderr).toContain("<redacted>");
+
+      // Hiding values must not hide the diagnosis: a wrong flag is not a
+      // credential and stays readable.
+      const flag = await run(["code", "anthropic", "first", "--nope"]);
+      expect(flag.code).toBe(2);
+      expect(flag.stderr).toContain("--nope");
+    });
+
+    test("a stdin that already ended fails at once instead of waiting out the timeout", async () => {
+      // `something | something-else | ocx account code <p>` can hand over a
+      // stream that is already drained. Listening on it hears nothing, so the
+      // command sat for the full two minutes and then blamed a slow paste.
+      const drained = new PassThrough() as AccountStdin;
+      drained.isTTY = false;
+      drained.resume();
+      drained.end("");
+      await new Promise(resolve => drained.once("end", resolve));
+
+      const started = Date.now();
+      const result = await run(
+        ["code", "anthropic"],
+        { ...defaultDeps(), stdinImpl: drained, stdinTimeoutMs: 30_000 },
+      );
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("input was empty");
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    test("the credential survives being split across chunks and CRLF line ends", async () => {
+      // Overwriting the buffer instead of appending, or resolving an empty
+      // string at end-of-stream, both truncate the code silently.
+      const chunked = new PassThrough() as AccountStdin;
+      chunked.isTTY = false;
+      const pending = run(["code", "anthropic", "--json"], { ...defaultDeps(), stdinImpl: chunked });
+      chunked.write(SECRET.slice(0, 20));
+      chunked.write(`${SECRET.slice(20)}\r\n`);
+      const result = await pending;
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
+    test("a bare carriage return ends the line too", async () => {
+      // The read stops at either line character. Narrowing it to \n alone
+      // would fold a CR-terminated paste and everything after it into the
+      // value, and the request would carry something the user never typed.
+      const cr = new PassThrough() as AccountStdin;
+      cr.isTTY = false;
+      const pending = run(["code", "anthropic", "--json"], { ...defaultDeps(), stdinImpl: cr });
+      cr.write(`${SECRET}\rtrailing junk`);
+      const result = await pending;
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
+    test("a code that arrives without a trailing newline is still read", async () => {
+      const noNewline = new PassThrough() as AccountStdin;
+      noNewline.isTTY = false;
+      const pending = run(["code", "anthropic", "--json"], { ...defaultDeps(), stdinImpl: noNewline });
+      noNewline.end(SECRET);
+      const result = await pending;
+
+      expect(result.code).toBe(0);
+      expect(requests.at(-1)?.body).toEqual({ provider: "anthropic", input: SECRET });
+    });
+
+    test("a plain login still opens the browser flow instead of waiting on stdin", async () => {
+      // The stdin default belongs to `account code`. If it reached `login`,
+      // every ordinary `ocx account login <provider>` would block on a prompt.
+      const silent = new PassThrough() as AccountStdin;
+      silent.isTTY = false;
+      const result = await run(
+        ["login", "anthropic", "--no-wait", "--json"],
+        { ...defaultDeps(), stdinImpl: silent, stdinTimeoutMs: 5 },
+      );
+
+      expect(result.code).toBe(0);
+      expect(requests.some(request => request.path === "/api/oauth/login/code")).toBe(false);
+    });
+
+  });
+
+  test("39: a login error wins over a retained OAuth credential", async () => {
+    oauthLoginStatus = {
+      loggedIn: true,
+      done: true,
+      error: "The credential was saved, but the provider entry was not written.",
+    };
+    const sleepSpy = spyOn(Bun, "sleep").mockImplementation(async () => {});
+    try {
+      const result = await run(["login", "anthropic"]);
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("provider entry was not written");
+      expect(result.stdout).not.toContain("Logged in to anthropic");
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  test("Cockpit import accepts only bounded file/stdin sources and never renders the token", async () => {
+    const canary = "cli-cockpit-canary-DO-NOT-LEAK";
+    const document = JSON.stringify([{ email: "user@example.com", refresh_token: canary }]);
+
+    const beforeInline = requests.length;
+    const inline = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", document,
+    ]);
+    expect(inline.code).toBe(1);
+    expect(requests).toHaveLength(beforeInline);
+    expect(inline.output).not.toContain(canary);
+
+    const unsupported = await run([
+      "import", "openai", "--format", "cockpit-tools", "--file", "/definitely/not/read.json",
+    ]);
+    expect(unsupported.code).toBe(1);
+    expect(unsupported.stderr).toContain("unsupported_provider");
+    expect(unsupported.stderr).not.toContain("source_read_failed");
+
+    const stdin = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--json",
+    ], { ...defaultDeps(), stdinImpl: stdinFrom(document) });
+    expect(stdin.code).toBe(0);
+    expect(JSON.parse(stdin.stdout)).toEqual({
+      totalCount: 1,
+      importedCount: 1,
+      updatedCount: 0,
+      failedCount: 0,
+      unsupportedCount: 0,
+      results: [{ index: 0, status: "imported", code: "imported" }],
+    });
+    expect(stdin.output).not.toContain(canary);
+    expect(requests.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/api/oauth/accounts/import",
+      body: {
+        provider: "google-antigravity",
+        format: "cockpit-tools",
+        document: [{ email: "user@example.com", refresh_token: canary }],
+      },
+    });
+
+    const directory = mkdtempSync(join(tmpdir(), "ocx-cli-account-import-"));
+    const path = join(directory, "accounts.json");
+    writeFileSync(path, document);
+    try {
+      const file = await run([
+        "import", "google-antigravity", "--format", "cockpit-tools", "--file", path,
+      ]);
+      expect(file.code).toBe(0);
+      expect(file.stdout).toContain("1 imported, 0 updated, 0 failed");
+      expect(file.output).not.toContain(canary);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+
+    const beforeOversized = requests.length;
+    const oversized = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], { ...defaultDeps(), stdinImpl: stdinFrom("x".repeat(ACCOUNT_IMPORT_MAX_BYTES + 1)) });
+    expect(oversized.code).toBe(1);
+    expect(oversized.stderr).toContain("invalid_document");
+    expect(requests).toHaveLength(beforeOversized);
+  });
+
+  test("Cockpit import parses options before provider and rejects residual secrets before I/O", async () => {
+    const canary = "options-before-provider-canary-DO-NOT-LEAK";
+    const document = '[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]';
+    const ordered = await run([
+      "import", "--json", "--format", "cockpit-tools", "--stdin", "google-antigravity",
+    ], { ...defaultDeps(), stdinImpl: stdinFrom(document) });
+    expect(ordered.code).toBe(0);
+    expect(JSON.parse(ordered.stdout).importedCount).toBe(1);
+    expect(requests.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/api/oauth/accounts/import",
+    });
+
+    const beforeExtra = requests.length;
+    const extra = await run([
+      "import", "--format", "cockpit-tools", "--stdin", "google-antigravity", canary,
+    ], { ...defaultDeps(), stdinImpl: stdinFrom(document) });
+    expect(extra.code).toBe(1);
+    expect(requests).toHaveLength(beforeExtra);
+    expect(extra.output).not.toContain(canary);
+  });
+
+  test("Cockpit import source admission fails closed before POST", async () => {
+    const canary = "source-admission-canary-DO-NOT-LEAK";
+    const document = '[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]';
+    const sourceCases: Array<{ args: string[]; deps?: AccountDeps; expected?: string }> = [
+      {
+        args: ["import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--file", `/not-read-${canary}.json`],
+        deps: { ...defaultDeps(), stdinImpl: stdinFrom(document) },
+      },
+      { args: ["import", "google-antigravity", "--format", "cockpit-tools"] },
+      { args: ["import", "google-antigravity", "--format", "cockpit-tools", "--file"] },
+      { args: ["import", "google-antigravity", "--format", "cockpit-tools", "--file", ""] },
+      {
+        args: ["import", "google-antigravity", "--format", "cockpit-tools", "--stdin"],
+        deps: { ...defaultDeps(), stdinImpl: stdinFrom(document, true) },
+        expected: "stdin_required",
+      },
+      {
+        args: ["import", "google-antigravity", "--format", "cockpit-tools", "--stdin"],
+        deps: { ...defaultDeps(), stdinImpl: stdinFrom("x".repeat(ACCOUNT_IMPORT_MAX_BYTES + 1)) },
+        expected: "invalid_document",
+      },
+    ];
+
+    for (const fixture of sourceCases) {
+      const before = requests.length;
+      const result = await run(fixture.args, fixture.deps ?? defaultDeps());
+      expect(result.code).toBe(1);
+      expect(requests).toHaveLength(before);
+      if (fixture.expected) expect(result.stderr).toContain(fixture.expected);
+      expect(result.output).not.toContain(canary);
+    }
+
+    const silent = new PassThrough() as AccountStdin;
+    silent.isTTY = false;
+    const beforeSilent = requests.length;
+    const timedOut = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], { ...defaultDeps(), stdinImpl: silent, stdinTimeoutMs: 5 });
+    expect(timedOut.code).toBe(1);
+    expect(timedOut.stderr).toContain("stdin_timeout");
+    expect(requests).toHaveLength(beforeSilent);
+    expect(silent.listenerCount("data")).toBe(0);
+    expect(silent.listenerCount("end")).toBe(0);
+    expect(silent.listenerCount("error")).toBe(0);
+  });
+
+  test("Cockpit import aborts only its hung POST at the injected timeout", async () => {
+    let capturedSignal: AbortSignal | null = null;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? null;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!capturedSignal) return reject(new Error("missing signal"));
+        if (capturedSignal.aborted) return reject(capturedSignal.reason);
+        capturedSignal.addEventListener("abort", () => reject(capturedSignal?.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const result = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], {
+      ...defaultDeps(),
+      fetchImpl,
+      importTimeoutMs: 5,
+      stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("import_timeout after 5ms");
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  test("Cockpit import clears its POST timer after a successful response", async () => {
+    let capturedSignal: AbortSignal | null = null;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? null;
+      return json({
+        totalCount: 1,
+        importedCount: 1,
+        updatedCount: 0,
+        failedCount: 0,
+        unsupportedCount: 0,
+        results: [{ index: 0, status: "imported", code: "imported" }],
+      });
+    }) as typeof fetch;
+
+    const result = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--json",
+    ], {
+      ...defaultDeps(),
+      fetchImpl,
+      importTimeoutMs: 5,
+      stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+    });
+    expect(result.code).toBe(0);
+    expect(capturedSignal?.aborted).toBe(false);
+    await Bun.sleep(15);
+    expect(capturedSignal?.aborted).toBe(false);
+  });
+
+  test("Cockpit import rejects malformed HTTP 200 result DTO without echoing payload", async () => {
+    const canary = "ya29.token-shaped-cockpit-response-canary-DO-NOT-LEAK";
+    const validRecord = { index: 0, status: "imported", code: "imported" };
+    const validResult = {
+      totalCount: 1,
+      importedCount: 1,
+      updatedCount: 0,
+      failedCount: 0,
+      unsupportedCount: 0,
+      results: [validRecord],
+    };
+    const malformedResults: unknown[] = [
+      { ...validResult, debug: canary },
+      { ...validResult, results: [{ ...validRecord, token: canary }] },
+      { ...validResult, importedCount: -1 },
+      { ...validResult, importedCount: 0.5 },
+      { ...validResult, importedCount: Number.MAX_SAFE_INTEGER + 1 },
+      { totalCount: 1, importedCount: 1, updatedCount: 0, failedCount: 0, results: [validRecord] },
+      { ...validResult, totalCount: 2, importedCount: 2, results: [validRecord, validRecord] },
+      { ...validResult, results: [{ ...validRecord, index: 1 }] },
+      { ...validResult, results: [{ status: "imported", code: "imported" }] },
+      { ...validResult, importedCount: 0, failedCount: 1 },
+      { ...validResult, results: [{ ...validRecord, code: "updated" }] },
+      { ...validResult, importedCount: 0, failedCount: 1, results: [{ index: 0, status: "failed", code: "invalid_document" }] },
+      { ...validResult, importedCount: 0, unsupportedCount: 1, results: [{ index: 0, status: "unsupported", code: "credential_rejected" }] },
+      [validResult],
+    ];
+
+    for (const malformed of malformedResults) {
+      importResultOverride = malformed;
+      const result = await run([
+        "import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--json",
+      ], {
+        ...defaultDeps(),
+        stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+      });
+
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("Error: invalid_response");
+      expect(result.output).not.toContain(canary);
+    }
+  });
+
+  test("Cockpit import renders an accepted mixed result and exits non-zero", async () => {
+    importResultOverride = {
+      totalCount: 3,
+      importedCount: 1,
+      updatedCount: 0,
+      failedCount: 1,
+      unsupportedCount: 1,
+      results: [
+        { index: 0, status: "imported", code: "imported" },
+        { index: 1, status: "failed", code: "credential_rejected" },
+        { index: 2, status: "unsupported", code: "unsupported_format" },
+      ],
+    };
+    const result = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], {
+      ...defaultDeps(),
+      stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("1 imported, 0 updated, 1 failed, 1 unsupported");
+    expect(result.stdout).toContain("#2 failed (credential_rejected)");
+    expect(result.stdout).toContain("#3 unsupported (unsupported_format)");
+  });
+
+  test("pending Codex login keeps success and prints generic recovery guidance", async () => {
+    codexLoginStatus = {
+      status: "done",
+      catalogRefreshPending: true,
+      internalError: "private-login-detail",
+    };
+    const sleepSpy = spyOn(Bun, "sleep").mockImplementation(async () => {});
+    try {
+      const result = await run(["login", "openai"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Logged in.");
+      expect(result.stderr).toContain("ocx sync");
+      expect(result.output).not.toContain("private-login-detail");
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  test("JSON Codex login retains the pending flag without a human warning", async () => {
+    codexLoginStatus = { status: "done", catalogRefreshPending: true };
+    const sleepSpy = spyOn(Bun, "sleep").mockImplementation(async () => {});
+    try {
+      const result = await run(["login", "openai", "--json"]);
+
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        status: "done",
+        catalogRefreshPending: true,
+      });
+      expect(result.stderr).toBe("");
+    } finally {
+      sleepSpy.mockRestore();
+    }
   });
 });

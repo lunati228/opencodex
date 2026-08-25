@@ -1,0 +1,18 @@
+Analyze the following systems problem carefully and quantitatively.
+
+A mixture-of-experts model has 60 routed layers. Each layer owns 512 experts and
+selects 10 experts per token. One complete cached expert slot includes its gate,
+up, and down weights. A machine can reserve a fixed number of slots per layer in
+VRAM. Cache hits run on a GPU while misses run on the CPU, and the two paths can
+overlap, but the token cannot finish until both paths and their synchronization
+complete. Expert popularity can change between prompts and over time.
+
+Develop a rigorous method for deciding whether a persistent VRAM expert cache is
+worth building. Compare LRU, aged LFU, segmented LRU, and an offline frequency
+oracle. Derive the measurements needed to separate cold, warming, and steady
+behavior. Explain how to calculate hit rate, churn, per-layer percentiles, traffic
+coverage, and an honest latency bound without confusing raw model residency,
+Windows page-cache hits, and VRAM compute hits. Give counterexamples where a high
+aggregate hit rate still fails to improve tokens per second. End with a
+pre-registered decision table and a verification plan that protects model
+fidelity. Show equations, assumptions, edge cases, and uncertainty explicitly.

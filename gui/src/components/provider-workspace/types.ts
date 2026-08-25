@@ -3,6 +3,7 @@
  * workspace shell/rail/detail (WP080a). Data shapes only; no React.
  */
 import type { ProviderSortMode, WorkspaceItem } from "../../provider-workspace/catalog";
+import type { AccountQuota } from "../../codex-quota-utils";
 
 export type { ProviderSortMode, WorkspaceItem };
 
@@ -49,6 +50,9 @@ export type OAuthAccountRow = {
   healthLabel?: string;
   healthSummary?: string;
   healthAction?: string;
+  /** Per-account rate limits, for providers that report usage per credential (anthropic). */
+  quota?: AccountQuota | null;
+  quotaUnavailable?: boolean;
 };
 
 export type ApiKeyRow = {
@@ -82,13 +86,28 @@ export interface ProviderAuthHandlers {
 }
 
 export type ProviderUpdatePatch = {
+  /** A standalone routing change; the management API rejects combinations with edits. */
+  setDefault?: true;
   adapter?: string;
   baseUrl?: string;
   defaultModel?: string;
   apiKey?: string;
+  apiKeyTransport?: "x-api-key" | "bearer" | "";
   authMode?: string;
   note?: string;
   disabled?: boolean;
   allowPrivateNetwork?: boolean;
   liveModels?: boolean;
+  upstreamHttpVersion?: "auto" | "http1.1" | "h1" | "http2" | "h2" | null;
+  requestPacing?: WorkspaceItem["requestPacing"] | null;
+  /** Dedicated field: the API PATCHes it alone for the canonical `openai` provider. */
+  codexAccountMode?: "direct" | "pool";
+  /** Management-only write that atomically owns the two supported xAI Grok adapter rows. */
+  xaiResponsesOptIn?: boolean;
+};
+
+export type ProviderUpdateResult = {
+  ok: boolean;
+  error?: string;
+  xaiResponsesOptInState?: WorkspaceItem["xaiResponsesOptInState"];
 };

@@ -23,10 +23,10 @@ Close 110's two hardening items (was P1b + P2 in `30_patch-direction.md`):
 ## Evidence
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:278-301   sanitizePassthroughHeaders + DROP set
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:189-194  try { JSON.parse } catch { continue }
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts:143           try { JSON.parse } catch { continue }
-/Users/jun/Developer/new/700_projects/opencodex/tests/error-fidelity.test.ts          existing sanitize test (json only)
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:278-301   sanitizePassthroughHeaders + DROP set
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:189-194  try { JSON.parse } catch { continue }
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts:143           try { JSON.parse } catch { continue }
+<private-user-home>/Developer/new/700_projects/opencodex/tests/error-fidelity.test.ts          existing sanitize test (json only)
 ```
 
 ## Files
@@ -34,7 +34,7 @@ Close 110's two hardening items (was P1b + P2 in `30_patch-direction.md`):
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/passthrough-headers.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/passthrough-headers.test.ts
 ```
 
 Complete content:
@@ -78,7 +78,7 @@ describe("passthrough header sanitization (RC5)", () => {
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/debug.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/debug.ts
 ```
 
 Complete content:
@@ -99,7 +99,7 @@ export function debugDroppedFrame(adapter: string, payload: string): void {
 ### MODIFY (adapters — wire the opt-in helper into each parse catch)
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
 ```
 
 ```diff
@@ -114,7 +114,7 @@ export function debugDroppedFrame(adapter: string, payload: string): void {
 ```
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts
 ```
 
 ```diff

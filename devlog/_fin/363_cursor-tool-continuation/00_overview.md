@@ -17,7 +17,7 @@ Sources:
   `https://github.com/ephraimduncan/opencode-cursor`,
   `https://github.com/shyndman/danger-pi`.
 - GPT Pro transcript:
-  `/Users/jun/.browser-agent/sessions/01KWA5NZWGS10S03M496MRRXDN/artifacts/transcript.md`.
+  `<private-user-home>/.browser-agent/sessions/01KWA5NZWGS10S03M496MRRXDN/artifacts/transcript.md`.
 
 Kiro works statelessly because its API has a first-class next-request tool result path
 (`userInputMessageContext.toolResults`). Cursor has no equivalent path. The only native

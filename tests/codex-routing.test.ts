@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { STORE_BUDGET_MS } from "./helpers/test-budget";
 import {
   CODEX_FAILURE_WINDOW_MS,
   CODEX_QUOTA_PROBE_INTERVAL_MS,
@@ -16,18 +17,23 @@ import {
   clearThreadAccountMapForAccount,
   computeCodexUsageScore,
   getCodexAccountCooldownUntil,
+  getEffectiveActiveCodexAccountId,
+  getCodexQuotaHealthSnapshot,
   getCodexAccountSoftAvoidUntil,
   getCodexUpstreamHealth,
   isCodexAccountInCooldown,
   isCodexAccountSoftAvoided,
   pickLowestUsageCodexAccount,
   parseRetryAfterMs,
+  previewCodexAccountForRequest,
+  reconcileCodexActiveAfterExclusion,
   recordCodexUpstreamOutcome,
   resetCodexRoutingForManualSelection,
   resolveCodexAccountForThread,
   resolveCodexAccountForThreadDetailed,
   tryAcquireCodexQuotaProbeLease,
 } from "../src/codex/routing";
+import { clearPoolRotationState } from "../src/codex/pool-rotation";
 import { removeCodexAccountCredential, saveCodexAccountCredential } from "../src/codex/account-store";
 import {
   clearAccountNeedsReauth,
@@ -37,7 +43,7 @@ import {
   parseUsageQuota,
   updateAccountQuota,
 } from "../src/codex/auth-api";
-import { CODEX_UNKNOWN_USAGE_SCORE } from "../src/codex/quota";
+import { CODEX_UNKNOWN_USAGE_SCORE, isCodexQuotaExhausted } from "../src/codex/quota";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import { routeModel } from "../src/router";
 import { consumeForInspection } from "../src/server/relay";
@@ -113,18 +119,103 @@ describe("codex routing", () => {
   test("usage score uses the hottest known quota window", () => {
     expect(computeCodexUsageScore({ weeklyPercent: 81 })).toBe(81);
     expect(computeCodexUsageScore({ weeklyPercent: 15, monthlyPercent: 91 })).toBe(91);
+    expect(computeCodexUsageScore({ weeklyPercent: 15, monthlyPercent: 20, shortPercent: 92 })).toBe(92);
     expect(computeCodexUsageScore({ weeklyPercent: 15 })).toBe(15);
+  });
+
+  test("a short-only snapshot is unknown usage, not zero usage", () => {
+    // The burst window refines a known long-window position; it cannot stand in for one.
+    // Scoring a bare `shortPercent: 0` as 0 would make an account whose weekly/monthly usage
+    // was never observed look like the emptiest in the pool, and pickLowestUsageAmong would
+    // send every request to it.
+    expect(computeCodexUsageScore({ shortPercent: 0 })).toBe(CODEX_UNKNOWN_USAGE_SCORE);
+    expect(computeCodexUsageScore({ shortPercent: 87 })).toBe(CODEX_UNKNOWN_USAGE_SCORE);
+    // Once a governing window is known, the burst still wins when it is hotter.
+    expect(computeCodexUsageScore({ weeklyPercent: 1, shortPercent: 100 })).toBe(100);
+    expect(computeCodexUsageScore({ weeklyPercent: 40, shortPercent: 0 })).toBe(40);
+  });
+
+  test("exact-account failures record health without rotating the active Pool account", () => {
+    const transient = makeConfig({ upstreamFailoverThreshold: 1, activeCodexAccountId: "a" });
+    const transientThread = "fixed-transient-thread";
+    expect(resolveCodexAccountForThread(transientThread, transient)).toBe("a");
+    recordCodexUpstreamOutcome(transient, "a", 503, {
+      fixedAccount: true,
+      threadId: transientThread,
+      modelId: "gpt-5.6-sol",
+    });
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1 });
+    expect(transient.activeCodexAccountId).toBe("a");
+    transient.activeCodexAccountId = "b";
+    clearCodexUpstreamHealthForAccount("a");
+    expect(resolveCodexAccountForThread(transientThread, transient)).toBe("a");
+
+    clearCodexUpstreamHealth();
+    const quota = makeConfig({ activeCodexAccountId: "a" });
+    const quotaThread = "fixed-quota-thread";
+    expect(resolveCodexAccountForThread(quotaThread, quota)).toBe("a");
+    recordCodexUpstreamOutcome(quota, "a", 429, {
+      fixedAccount: true,
+      threadId: quotaThread,
+      retryAfter: "60",
+      modelId: "gpt-5.6-sol",
+    });
+    expect(getCodexAccountCooldownUntil("a")).toBeNumber();
+    expect(quota.activeCodexAccountId).toBe("a");
+    quota.activeCodexAccountId = "b";
+    clearCodexUpstreamHealthForAccount("a");
+    expect(resolveCodexAccountForThread(quotaThread, quota)).toBe("a");
+  });
+
+  test("exact-account credential failure clears stale Pool affinity without rotating active", () => {
+    const config = makeConfig({ activeCodexAccountId: "a" });
+    const threadId = "fixed-credential-thread";
+    expect(resolveCodexAccountForThread(threadId, config)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 401, {
+      fixedAccount: true,
+      threadId,
+      modelId: "gpt-5.6-sol",
+    });
+
+    expect(isAccountNeedsReauth("a")).toBe(true);
+    expect(config.activeCodexAccountId).toBe("a");
+
+    // Simulate successful reauthentication after the user manually selected B. The old ordinary
+    // Pool thread must not resurrect its pre-reauth A affinity.
+    config.activeCodexAccountId = "b";
+    clearAccountNeedsReauth("a");
+    clearCodexUpstreamHealthForAccount("a");
+    expect(resolveCodexAccountForThread(threadId, config)).toBe("b");
   });
 
   test("go and free plans use only the 30d quota window", () => {
     expect(computeCodexUsageScore({ weeklyPercent: 99, monthlyPercent: 12 }, "go")).toBe(12);
     expect(computeCodexUsageScore({ weeklyPercent: 99, monthlyPercent: 13 }, "free")).toBe(13);
+    expect(computeCodexUsageScore({ weeklyPercent: 99, monthlyPercent: 12, shortPercent: 14 }, "go")).toBe(14);
     expect(computeCodexUsageScore({ weeklyPercent: 1 }, "go")).toBe(CODEX_UNKNOWN_USAGE_SCORE);
+  });
+
+  test("usage score treats non-string plans as unknown weekly plans", () => {
+    expect(computeCodexUsageScore({ weeklyPercent: 27, monthlyPercent: 12 }, { tier: "go" })).toBe(27);
+    expect(computeCodexUsageScore({ weeklyPercent: 27, monthlyPercent: 12 }, 1)).toBe(27);
   });
 
   test("usage score treats unknown quota conservatively", () => {
     expect(computeCodexUsageScore(null)).toBe(CODEX_UNKNOWN_USAGE_SCORE);
     expect(computeCodexUsageScore({})).toBe(CODEX_UNKNOWN_USAGE_SCORE);
+    expect(computeCodexUsageScore({ weeklyPercent: 100 })).toBe(100);
+    expect(CODEX_UNKNOWN_USAGE_SCORE).toBeGreaterThan(100);
+  });
+
+  test("bulk pause exhaustion requires an explicit 100% relevant window", () => {
+    expect(isCodexQuotaExhausted(null, "plus")).toBe(false);
+    expect(isCodexQuotaExhausted({}, "plus")).toBe(false);
+    expect(isCodexQuotaExhausted({ weeklyPercent: 99.9 }, "plus")).toBe(false);
+    expect(isCodexQuotaExhausted({ weeklyPercent: 100 }, "plus")).toBe(true);
+    expect(isCodexQuotaExhausted({ monthlyPercent: 100 }, "plus")).toBe(true);
+    expect(isCodexQuotaExhausted({ weeklyPercent: 100, monthlyPercent: 20 }, "free")).toBe(false);
+    expect(isCodexQuotaExhausted({ weeklyPercent: 20, monthlyPercent: 100 }, "go")).toBe(true);
   });
 
   test("weekly threshold breach switches new threads", () => {
@@ -132,6 +223,25 @@ describe("codex routing", () => {
     updateAccountQuota("a", 85);
     updateAccountQuota("b", 20);
     expect(resolveCodexAccountForThread("new-thread", config)).toBe("b");
+  });
+
+  test("known 100% weekly usage is exhausted, not unknown, and switches accounts", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 100);
+    updateAccountQuota("b", 20);
+    expect(resolveCodexAccountForThread("known-100-weekly", config)).toBe("b");
+  });
+
+  test("known 100% Go monthly usage follows threshold switching", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "a", email: "a@test", plan: "go", isMain: false },
+        { id: "b", email: "b@test", plan: "go", isMain: false },
+      ],
+    });
+    updateAccountQuota("a", 1, undefined, 100);
+    updateAccountQuota("b", 99, undefined, 20);
+    expect(resolveCodexAccountForThread("known-100-go-monthly", config)).toBe("b");
   });
 
   test("missing OpenAI mode defaults to pool and rotates from hot main to a cool added account", () => {
@@ -158,6 +268,74 @@ describe("codex routing", () => {
     expect(config.activeCodexAccountId).toBe("a");
     recordCodexUpstreamOutcome(config, "a", 200);
     expect(resolveCodexAccountForThread("after-success", config)).toBe("a");
+  });
+
+  test("routes account-scoped Daybreak Blue through the exact main account without rewriting its wire id", () => {
+    const config = makeConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+      codexAccountNamespaces: { main: "@main" },
+    });
+
+    expect(routeModel(config, "main/gpt-daybreak-blue-latest")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-daybreak-blue-latest",
+      routeKind: "explicit-account",
+      routeReason: "account-namespace",
+      codexAccountMode: "pool",
+      codexAccountNamespace: "main",
+      codexAccountId: MAIN_CODEX_ACCOUNT_ID,
+      routeDecision: {
+        requestedModel: "main/gpt-daybreak-blue-latest",
+        selected: { model: "gpt-daybreak-blue-latest", accountRef: "main" },
+      },
+    });
+  });
+
+  test("routes the configured Codex-forward Daybreak selector without API alias rewriting", () => {
+    const config = makeConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+      customModels: [{
+        id: "daybreak-codex-forward",
+        provider: "openai",
+        modelId: "gpt-daybreak-blue-latest",
+      }],
+    });
+
+    expect(routeModel(config, "openai/gpt-daybreak-blue-latest")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-daybreak-blue-latest",
+      routeKind: "explicit-provider",
+      routeReason: "explicit-provider-namespace",
+    });
+  });
+
+  test("paused main account is excluded even when it is the active and lowest-usage candidate", () => {
+    writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-access", account_id: "main-chatgpt-id" },
+    }));
+    const config = makeConfig({
+      codexAccounts: [{ id: "a", email: "a@test", isMain: false }],
+      activeCodexAccountId: MAIN_CODEX_ACCOUNT_ID,
+      pausedCodexAccountIds: [MAIN_CODEX_ACCOUNT_ID],
+    });
+    updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 1);
+    updateAccountQuota("a", 20);
+
+    expect(resolveCodexAccountForThread("paused-main", config)).toBe("a");
   });
 
   test("go plan pool switching ignores the weekly window", () => {
@@ -192,11 +370,31 @@ describe("codex routing", () => {
     expect(pickLowestUsageCodexAccount(config)).toBe("b");
   });
 
+  test("paused accounts are excluded from new selection and existing affinity reuse", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+    expect(resolveCodexAccountForThread("paused-affinity", config)).toBe("a");
+
+    config.pausedCodexAccountIds = ["a"];
+
+    expect(pickLowestUsageCodexAccount(config)).toBe("b");
+    expect(resolveCodexAccountForThread("paused-affinity", config)).toBe("b");
+  });
+
+  test("all paused accounts fail closed instead of falling back to a configured account", () => {
+    const config = makeConfig({ pausedCodexAccountIds: ["a", "b"] });
+
+    expect(pickLowestUsageCodexAccount(config)).toBeNull();
+    expect(resolveCodexAccountForThread("all-paused", config)).toBeNull();
+  });
+
   test("upstream outcome classifier separates caller, credential, and transient failures", () => {
     expect(classifyCodexUpstreamOutcome(200)).toBe("success");
     expect(classifyCodexUpstreamOutcome(401)).toBe("credential");
     expect(classifyCodexUpstreamOutcome(403)).toBe("credential");
     expect(classifyCodexUpstreamOutcome(429)).toBe("quota");
+    expect(classifyCodexUpstreamOutcome(402)).toBe("quota");
     expect(classifyCodexUpstreamOutcome(422)).toBe("caller");
     expect(classifyCodexUpstreamOutcome(503)).toBe("transient");
     expect(classifyCodexUpstreamOutcome("connect_error")).toBe("transient");
@@ -243,6 +441,35 @@ describe("codex routing", () => {
     expect(resolveCodexAccountForThread("credential-next", config)).toBe("b");
   });
 
+
+  test("a workspace-denied 403 is not a credential failure (#1789)", () => {
+    // A K12 account whose credential validates and whose WHAM usage returns 200 still gets
+    // 403 codex_workspace_access_denied on a routed prompt. Quarantining it for reauth tells
+    // the user to re-login a credential that is already valid, and the loop repeats forever.
+    expect(classifyCodexUpstreamOutcome(403, "workspace")).toBe("workspace");
+    expect(classifyCodexUpstreamOutcome(403, "entitlement")).toBe("workspace");
+    // Without denial evidence the historical mapping stands, so the change fails safe.
+    expect(classifyCodexUpstreamOutcome(403)).toBe("credential");
+    expect(classifyCodexUpstreamOutcome(401, "workspace")).toBe("credential");
+  });
+
+  test("a workspace denial keeps the credential and does not sweep affinity (#1789)", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+    // Bind a thread to the account so we can prove its affinity is NOT swept.
+    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 403, { denial: "workspace" });
+
+    // The credential is valid: no reauth prompt.
+    expect(isAccountNeedsReauth("a")).toBe(false);
+    // The failure is still recorded so routing can prefer a healthier account.
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 403 });
+    // Credential quarantine sweeps thread affinity because reauth is account-wide;
+    // a workspace denial is not account-wide, so the existing binding survives.
+    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("a");
+  });
   test("403 credential outcome quarantines the account under the conservative policy", () => {
     const config = makeConfig();
     updateAccountQuota("a", 10);
@@ -311,6 +538,67 @@ describe("codex routing", () => {
     expect(config.activeCodexAccountId).toBe("b");
     expect(resolveCodexAccountForThread("quota-existing", config)).toBe("b");
     expect(resolveCodexAccountForThread("quota-next", config)).toBe("b");
+  });
+
+  test("shared native reset cooldown clears affinity and rotates the active account", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+    expect(resolveCodexAccountForThread("shared-quota-existing", config, now)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 429, {
+      now,
+      resetAt: Math.floor((now + 4 * 24 * 60 * 60_000) / 1_000),
+      modelId: "gpt-5.6-terra",
+    });
+
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(resolveCodexAccountForThread("shared-quota-existing", config, now + 1)).toBe("b");
+  });
+
+  test("independent native quota scopes keep separate thread affinities", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+
+    // A known shared-model request binds A for this thread.
+    expect(resolveCodexAccountForThread("scoped-thread", config, now, "shared")).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 429, {
+      now: now + 1,
+      resetAt: Math.floor((now + 4 * 24 * 60 * 60_000) / 1_000),
+      modelId: "gpt-5.3-codex-spark",
+    });
+
+    // Spark sees its scoped cooldown and binds B without moving the global
+    // active account or the same thread's shared-scope affinity.
+    expect(resolveCodexAccountForThread("scoped-thread", config, now + 2, "spark")).toBe("b");
+    expect(config.activeCodexAccountId).toBe("a");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+    expect(resolveCodexAccountForThread("scoped-thread", config, now + 3, "shared")).toBe("a");
+    expect(resolveCodexAccountForThread("scoped-thread", config, now + 4, "spark")).toBe("b");
+  });
+
+  test("429 fallback skips paused candidates", () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+      pausedCodexAccountIds: ["b"],
+    });
+    saveTestCredential("c");
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 1);
+    updateAccountQuota("c", 30);
+
+    recordCodexUpstreamOutcome(config, "a", 429, { retryAfter: "60" });
+
+    expect(config.activeCodexAccountId).toBe("c");
+    expect(resolveCodexAccountForThread("quota-skip-paused", config)).toBe("c");
   });
 
   test("2xx responses clear transient failures without clearing an unexpired cooldown", () => {
@@ -466,6 +754,28 @@ describe("codex routing", () => {
     // Clearing says "the quota window moved", not "this account is healthy":
     // failover must keep what it learned from the 429.
     expect(health?.lastFailureStatus).toBe(429);
+  });
+
+  test("clearCodexAccountCooldown lifts every live native-model cooldown", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    const resetAt = Math.floor((now + 4 * 24 * 60 * 60_000) / 1_000);
+    recordCodexUpstreamOutcome(config, "a", 429, {
+      now,
+      resetAt,
+      modelId: "gpt-5.3-codex-spark",
+    });
+    recordCodexUpstreamOutcome(config, "a", 429, {
+      now,
+      resetAt,
+      modelId: "gpt-5.6-terra",
+    });
+
+    expect(getCodexQuotaHealthSnapshot("a", "spark", now + 1)).not.toBeNull();
+    expect(getCodexQuotaHealthSnapshot("a", "shared", now + 1)).not.toBeNull();
+    expect(clearCodexAccountCooldown("a", now + 1)).toBe(true);
+    expect(getCodexQuotaHealthSnapshot("a", "spark", now + 1)).toBeNull();
+    expect(getCodexQuotaHealthSnapshot("a", "shared", now + 1)).toBeNull();
   });
 
   test("clearing is a no-op without a live cooldown", () => {
@@ -768,7 +1078,30 @@ describe("codex routing", () => {
 
     expect(resolveCodexAccountForThread("lru-1", config, now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 1)).toBe("a");
     expect(resolveCodexAccountForThread("lru-0", config, now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 2)).toBe("b");
-  });
+    // Filling the cap means persisting CODEX_THREAD_AFFINITY_MAX_ENTRIES real mappings;
+    // that store work IS the eviction proof, and it crosses Bun's 5s default on Windows.
+  }, STORE_BUDGET_MS);
+
+  test("thread affinity LRU cap includes legacy and native quota scopes", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    const threads = Math.floor(CODEX_THREAD_AFFINITY_MAX_ENTRIES / 3) + 1;
+
+    for (let i = 0; i < threads; i++) {
+      const threadId = `scoped-lru-${i}`;
+      expect(resolveCodexAccountForThread(threadId, config, now + i * 3)).toBe("a");
+      expect(resolveCodexAccountForThread(threadId, config, now + i * 3 + 1, "shared")).toBe("a");
+      expect(resolveCodexAccountForThread(threadId, config, now + i * 3 + 2, "spark")).toBe("a");
+    }
+
+    // The oldest legacy entry was evicted, while the same thread's later
+    // shared and Spark entries remain independently affined to A.
+    config.activeCodexAccountId = "b";
+    const after = now + threads * 3;
+    expect(resolveCodexAccountForThread("scoped-lru-0", config, after, "shared")).toBe("a");
+    expect(resolveCodexAccountForThread("scoped-lru-0", config, after + 1, "spark")).toBe("a");
+    expect(resolveCodexAccountForThread("scoped-lru-0", config, after + 2)).toBe("b");
+  }, STORE_BUDGET_MS);
 
   test("generation mismatch invalidates a mapped thread before reuse", () => {
     const config = makeConfig();
@@ -921,6 +1254,85 @@ describe("codex routing", () => {
     });
   });
 
+
+  test("a sub-day primary window does not masquerade as the weekly quota (#1791)", () => {
+    // K12 and similar plans send a 5-hour primary plus a 7-day secondary. Folding the primary
+    // into weeklyPercent reported the 5-hour bar as weekly and discarded the real weekly
+    // reading, so the dashboard showed a window resetting every few hours and routing never
+    // saw the limit that actually gates the account.
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 90, reset_at: 1, limit_window_seconds: 5 * 60 * 60 },
+        secondary_window: { used_percent: 20, reset_at: 2, limit_window_seconds: 7 * 24 * 60 * 60 },
+      },
+    })).toMatchObject({ weeklyPercent: 20, weeklyResetAt: 2 });
+  });
+
+  test("a sub-day primary window is KEPT as its own burst window (#1791)", () => {
+    // Not masquerading as weekly was only half the fix. The 5-hour reading is a real
+    // upstream-enforced limit -- the issue reports it at 99% remaining alongside a
+    // separate weekly limit -- so discarding it hides a window that genuinely gates
+    // the account. Both windows must survive parsing with independent resets.
+    expect(parseUsageQuota({
+      plan_type: "k12",
+      rate_limit: {
+        primary_window: { used_percent: 1, reset_at: 2000000000, limit_window_seconds: 18000 },
+        secondary_window: { used_percent: 0, reset_at: 2000586800, limit_window_seconds: 604800 },
+      },
+    })).toMatchObject({
+      shortPercent: 1,
+      shortResetAt: 2000000000,
+      shortWindowSeconds: 18000,
+      weeklyPercent: 0,
+      weeklyResetAt: 2000586800,
+    });
+  });
+
+  test("a zero-valued short-only WHAM snapshot remains known quota (#2047)", () => {
+    expect(parseUsageQuota({
+      plan_type: "k12",
+      rate_limit: {
+        primary_window: { used_percent: 0, reset_at: 2000000000, limit_window_seconds: 18000 },
+      },
+    })).toMatchObject({
+      shortPercent: 0,
+      shortResetAt: 2000000000,
+      shortWindowSeconds: 18000,
+    });
+  });
+
+  test("an exhausted burst window takes the account out of rotation (#1791)", () => {
+    // Upstream enforces the 5-hour window independently, so an account at 100% there is
+    // genuinely blocked even while its weekly quota is untouched. Reporting it as usable
+    // would route traffic straight into a 429.
+    const quota = parseUsageQuota({
+      plan_type: "k12",
+      rate_limit: {
+        primary_window: { used_percent: 100, reset_at: 2000000000, limit_window_seconds: 18000 },
+        secondary_window: { used_percent: 10, reset_at: 2000586800, limit_window_seconds: 604800 },
+      },
+    });
+    expect(isCodexQuotaExhausted(quota, "k12")).toBe(true);
+  });
+  test("a primary window with no declared duration is still treated as weekly (#1791)", () => {
+    // Older payloads omit limit_window_seconds entirely. Guessing there would reclassify
+    // every legacy account, so an undeclared duration keeps the historical behavior.
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 40, reset_at: 1 },
+        secondary_window: { used_percent: 20, reset_at: 2 },
+      },
+    })).toMatchObject({ weeklyPercent: 40, weeklyResetAt: 1 });
+  });
+
+  test("a declared 7-day primary window remains the weekly quota (#1791)", () => {
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 40, reset_at: 1, limit_window_seconds: 7 * 24 * 60 * 60 },
+        secondary_window: { used_percent: 20, reset_at: 2 },
+      },
+    })).toMatchObject({ weeklyPercent: 40, weeklyResetAt: 1 });
+  });
   test("WHAM primary window uses its explicit duration to distinguish weekly and monthly quotas", () => {
     expect(parseUsageQuota({
       plan_type: "team",
@@ -934,7 +1346,9 @@ describe("codex routing", () => {
       rate_limit: {
         primary_window: { used_percent: 39, reset_at: 3, limit_window_seconds: 2_628_000 },
       },
-    })).toEqual({ monthlyPercent: 39, monthlyResetAt: 3 });
+    // The provenance flag rides with the value: this monthly reading IS the primary window,
+    // which is what lets recovery tell it apart from a tertiary-only monthly figure (#967).
+    })).toEqual({ monthlyPercent: 39, monthlyResetAt: 3, monthlyIsPrimaryWindow: true });
   });
 
   test("WHAM monthly primary preserves a legacy secondary weekly window", () => {
@@ -949,6 +1363,7 @@ describe("codex routing", () => {
       weeklyResetAt: 7,
       monthlyPercent: 39,
       monthlyResetAt: 30,
+      monthlyIsPrimaryWindow: true,
     });
   });
 
@@ -1073,6 +1488,19 @@ describe("codex routing", () => {
     expect(config.activeCodexAccountId).toBe("b");
   });
 
+  test("bound thread over threshold switches immediately without waiting for re-eval (#584)", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    updateAccountQuota("a", 95);
+    updateAccountQuota("b", 5);
+    // Depleted primary must not stay pinned for up to 60s while a cooler account exists.
+    expect(resolveCodexAccountForThread("t1", config, now + 1_000)).toBe("b");
+    expect(config.activeCodexAccountId).toBe("b");
+  });
+
   test("bound thread under threshold stays even if a lower account exists", () => {
     const config = makeConfig();
     const now = 1_800_000_000_000;
@@ -1087,7 +1515,21 @@ describe("codex routing", () => {
     expect(config.activeCodexAccountId).toBe("a");
   });
 
-  test("bound thread does not flap within the re-eval interval, then switches once", () => {
+  test("bound thread under threshold does not flap within the re-eval interval", () => {
+    const config = makeConfig();
+    const now = 1_800_000_000_000;
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
+    // Still under threshold — must not rebind on every reuse.
+    updateAccountQuota("a", 50);
+    updateAccountQuota("b", 5);
+    expect(resolveCodexAccountForThread("t1", config, now + 1_000)).toBe("a");
+    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    expect(resolveCodexAccountForThread("t1", config, later)).toBe("a");
+  });
+
+  test("bound thread over threshold switches once and does not ping-pong", () => {
     const config = makeConfig();
     const now = 1_800_000_000_000;
     updateAccountQuota("a", 10);
@@ -1095,13 +1537,9 @@ describe("codex routing", () => {
     expect(resolveCodexAccountForThread("t1", config, now)).toBe("a");
     updateAccountQuota("a", 95);
     updateAccountQuota("b", 5);
-    // Within the interval: no rebind yet.
-    expect(resolveCodexAccountForThread("t1", config, now + 1_000)).toBe("a");
-    // After the interval: switches once.
-    const later = now + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
-    expect(resolveCodexAccountForThread("t1", config, later)).toBe("b");
+    expect(resolveCodexAccountForThread("t1", config, now + 1_000)).toBe("b");
     // A subsequent interval does not ping-pong back: b is now the lowest.
-    const later2 = later + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
+    const later2 = now + 1_000 + CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS + 1;
     expect(resolveCodexAccountForThread("t1", config, later2)).toBe("b");
   });
 
@@ -1250,5 +1688,250 @@ describe("codex routing", () => {
     // Both threads rebind to B.
     expect(resolveCodexAccountForThread("t1", config, now + 5)).toBe("b");
     expect(resolveCodexAccountForThread("t2", config, now + 6)).toBe("b");
+  });
+});
+
+describe("codex account selection order", () => {
+  beforeEach(() => {
+    previousOpencodexHome = process.env.OPENCODEX_HOME;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = TEST_DIR;
+    clearThreadAccountMap();
+    clearCodexUpstreamHealth();
+    clearAccountQuota();
+    clearPoolRotationState();
+    clearAccountNeedsReauth("a");
+    clearAccountNeedsReauth("b");
+    saveTestCredential("a");
+    saveTestCredential("b");
+  });
+
+  afterEach(() => {
+    clearAccountQuota();
+    clearCodexUpstreamHealth();
+    clearThreadAccountMap();
+    clearPoolRotationState();
+    clearAccountNeedsReauth("a");
+    clearAccountNeedsReauth("b");
+    if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousOpencodexHome;
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+  });
+
+  /** `a` is ordered above `b`; the persisted operator selection is the lower tier. */
+  function orderedConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
+    return makeConfig({
+      activeCodexAccountId: "b",
+      codexAccountPriorities: { a: 1 },
+      ...overrides,
+    } as Partial<OcxConfig>);
+  }
+
+  test("an unbound request moves back up to the higher tier even when it is hotter", () => {
+    const config = orderedConfig();
+    updateAccountQuota("a", 70);
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+  });
+
+  test("preemption keeps the operator's persisted selection intact", () => {
+    const config = orderedConfig();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+  });
+
+  test("falls through to the lower tier once the higher one is over threshold", () => {
+    const config = orderedConfig();
+    updateAccountQuota("a", 90);
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("b");
+  });
+
+  test("returns to the higher tier as soon as its quota window resets", () => {
+    const config = orderedConfig();
+    updateAccountQuota("a", 90);
+    updateAccountQuota("b", 10);
+    expect(resolveCodexAccountForThread(null, config)).toBe("b");
+
+    updateAccountQuota("a", 5);
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+  });
+
+  test("unknown usage never drains a tier", () => {
+    const config = orderedConfig();
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+  });
+
+  test("every tier over threshold reproduces the stay-put behaviour", () => {
+    const config = orderedConfig();
+    updateAccountQuota("a", 95);
+    updateAccountQuota("b", 95);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("b");
+  });
+
+  test("a disabled auto-switch threshold makes ordering strict", () => {
+    const config = orderedConfig({ autoSwitchThreshold: 0 });
+    updateAccountQuota("a", 99);
+    updateAccountQuota("b", 1);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+  });
+
+  test("preview and resolve agree under tiering", () => {
+    const config = orderedConfig();
+    updateAccountQuota("a", 70);
+    updateAccountQuota("b", 10);
+
+    expect(previewCodexAccountForRequest(null, config)).toBe("a");
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+  });
+
+  test("a manually pinned account outranks selection order", () => {
+    const config = orderedConfig({ activeCodexAccountPinned: "b" } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("b");
+    expect(previewCodexAccountForRequest(null, config)).toBe("b");
+  });
+
+  test("the pin is spent once the pinned account crosses the threshold", () => {
+    const config = orderedConfig({ activeCodexAccountPinned: "b" } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 90);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("a cooldown on the pinned account hands routing back to selection order", () => {
+    const config = orderedConfig({ activeCodexAccountPinned: "b" } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    recordCodexUpstreamOutcome(config, "b", 429, { retryAfter: "600" });
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  // Preview cannot clear a spent pin, so it has to reach the same account by testing
+  // pin liveness — the case the resolve-side release was built to converge with.
+  test("preview and resolve agree while a drained pin is still stored", () => {
+    const config = orderedConfig({ activeCodexAccountPinned: "b" } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 90);
+
+    const previewed = previewCodexAccountForRequest(null, config);
+    expect(config.activeCodexAccountPinned).toBe("b");
+    expect(previewed).toBe("a");
+    expect(resolveCodexAccountForThread(null, config)).toBe(previewed);
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("a pinned account holds fill-first on its own tier", () => {
+    const config = orderedConfig({
+      accountPoolStrategy: "fill-first",
+      activeCodexAccountPinned: "b",
+    } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+
+    const picks = Array.from({ length: 3 }, () => resolveCodexAccountForThread(null, config));
+    expect(picks).toEqual(["b", "b", "b"]);
+    expect(config.activeCodexAccountPinned).toBe("b");
+  });
+
+  test("fill-first descends to the next tier once the pinned account drains", () => {
+    const config = orderedConfig({
+      accountPoolStrategy: "fill-first",
+      activeCodexAccountPinned: "a",
+    } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    expect(resolveCodexAccountForThread(null, config)).toBe("a");
+
+    updateAccountQuota("a", 90);
+    expect(resolveCodexAccountForThread(null, config)).toBe("b");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("a 429 on the pinned account releases the pin under round-robin", () => {
+    const config = orderedConfig({
+      accountPoolStrategy: "round-robin",
+      accountPoolStickyLimit: 1,
+      activeCodexAccountPinned: "b",
+    } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    expect(resolveCodexAccountForThread(null, config)).toBe("b");
+
+    recordCodexUpstreamOutcome(config, "b", 429, { retryAfter: "600" });
+
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+    // Rotation promotes through the runtime cursor, so the release is in memory only.
+    expect(config.activeCodexAccountId).toBe("b");
+  });
+
+  test("a pin the request never moves off survives in config", () => {
+    const config = orderedConfig({ activeCodexAccountPinned: "b" } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThread(null, config)).toBe("b");
+    expect(config.activeCodexAccountPinned).toBe("b");
+  });
+
+  test("excluding the pinned account releases the pin", () => {
+    const config = orderedConfig({ activeCodexAccountPinned: "b" } as Partial<OcxConfig>);
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+
+    reconcileCodexActiveAfterExclusion(config, "b");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("a bound thread keeps its lower-tier account when ordering changes", () => {
+    const config = makeConfig({ activeCodexAccountId: "b" });
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    expect(resolveCodexAccountForThread("thread-1", config)).toBe("b");
+
+    config.codexAccountPriorities = { a: 1 };
+    expect(resolveCodexAccountForThread("thread-1", config)).toBe("b");
+  });
+
+  test("a bound thread over threshold moves to the highest tier with headroom", () => {
+    const config = makeConfig({ activeCodexAccountId: "b" });
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    expect(resolveCodexAccountForThread("thread-1", config)).toBe("b");
+
+    config.codexAccountPriorities = { a: 1 };
+    updateAccountQuota("b", 90);
+    expect(resolveCodexAccountForThread("thread-1", config)).toBe("a");
+  });
+
+  test("no stored order leaves the pick sequence untouched", () => {
+    const ordered = makeConfig({ activeCodexAccountId: "b" });
+    updateAccountQuota("a", 5);
+    updateAccountQuota("b", 50);
+
+    expect(resolveCodexAccountForThread(null, ordered)).toBe("b");
+    expect(pickLowestUsageCodexAccount(ordered)).toBe("a");
   });
 });

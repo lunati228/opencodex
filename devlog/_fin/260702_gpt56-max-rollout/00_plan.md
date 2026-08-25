@@ -17,9 +17,9 @@ catalog/parser acceptance, and upstream Codex now accepts `max`.
 
 - Local OpenAI Codex `main` is fast-forwarded to `origin/main`
   (`129ea2aaf5fb426d8ba683ee53f290742f41dd31`) in
-  `/Users/jun/Developer/codex/120_codex-cli`.
+  `<private-user-home>/Developer/codex/120_codex-cli`.
 - Local source proof:
-  `/Users/jun/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs`
+  `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs`
   now treats `max` as a first-class enum value: `ReasoningEffort::Max` is declared at
   `openai_models.rs:48`, serializes as `"max"` at `openai_models.rs:64`, and parses
   `"max"` at `openai_models.rs:130`. The same enum keeps `ReasoningEffort::Ultra` at

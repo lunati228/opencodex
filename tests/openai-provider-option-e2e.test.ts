@@ -1,4 +1,6 @@
+import { logsFromApiBody } from "./helpers/logs-api";
 import { describe, expect, test } from "bun:test";
+import { managementFetch as fetch } from "./helpers/management-auth";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -15,6 +17,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
+import { watchdogMs } from "./helpers/ci-watchdog";
 type Capture = {
   url: string;
   method: string;
@@ -344,7 +347,7 @@ describe("OpenAI provider-option integration spine", () => {
       });
       const wsTurn = (model: string) => new Promise<Capture>((resolve, reject) => {
         const before = captures.length;
-        const timer = setTimeout(() => reject(new Error(`fixture websocket timeout: ${model}`)), 2_000);
+        const timer = setTimeout(() => reject(new Error(`fixture websocket timeout: ${model}`)), watchdogMs(2_000));
         const onMessage = (event: MessageEvent) => {
           if (!String(event.data).includes('"type":"response.completed"')) return;
           clearTimeout(timer);
@@ -485,7 +488,7 @@ describe("OpenAI provider-option integration spine", () => {
       expect((await put("/api/injection-model", { model: selected, effort: "high" })).status).toBe(200);
       expect(await local("/api/injection-model").then(response => response.json())).toMatchObject({ model: selected, effort: "high" });
 
-      const logs = await local("/api/logs").then(response => response.json()) as Array<Record<string, unknown>>;
+      const logs = logsFromApiBody(await local("/api/logs").then(response => response.json()));
       expect(logs.some(row => row.provider === "openai-p123abc"
         && row.requestedModel === "gpt-5.6-sol"
         && row.resolvedModel === "gpt-5.6-sol")).toBe(true);

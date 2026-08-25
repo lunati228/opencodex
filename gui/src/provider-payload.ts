@@ -2,8 +2,10 @@ export interface ProviderPayloadForm {
   name: string;
   adapter: string;
   baseUrl: string;
+  responsesPath?: string;
   authMode: "key" | "forward" | "oauth" | "local";
   apiKey: string;
+  apiKeyTransport?: "x-api-key" | "bearer";
   defaultModel: string;
   allowPrivateNetwork?: boolean;
 }
@@ -69,7 +71,9 @@ export function codexPresetDescriptionKey(preset: ProviderPostPreset): CodexPres
 export interface ProviderPayload {
   adapter: string;
   baseUrl: string;
+  responsesPath?: string;
   apiKey?: string;
+  apiKeyTransport?: "x-api-key" | "bearer";
   defaultModel?: string;
   authMode?: "key" | "forward" | "oauth";
   codexAccountMode?: "pool" | "direct";
@@ -82,11 +86,17 @@ export function buildProviderPayload(form: ProviderPayloadForm): ProviderPayload
     baseUrl: form.baseUrl.trim(),
   };
 
+  if (form.responsesPath?.trim()) {
+    provider.responsesPath = form.responsesPath.trim();
+  }
   if (form.authMode === "key" || form.authMode === "forward") {
     provider.authMode = form.authMode;
   }
   if (form.authMode === "key" && form.apiKey.trim()) {
     provider.apiKey = form.apiKey.trim();
+  }
+  if (form.adapter.trim() === "anthropic" && form.authMode === "key" && form.apiKeyTransport === "bearer") {
+    provider.apiKeyTransport = "bearer";
   }
   if (form.defaultModel.trim()) {
     provider.defaultModel = form.defaultModel.trim();

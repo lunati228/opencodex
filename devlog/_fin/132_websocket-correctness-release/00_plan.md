@@ -13,12 +13,12 @@ advertisement, push/main merge state, and npm release behavior.
 - OpenAI WebSocket mode docs: `generate=false` warmup returns a response ID that may be chained
   with `previous_response_id`.
 - Current Codex RS local checkout:
-  `/Users/jun/Developer/codex/openai-codex/codex-rs/core/src/client.rs`
+  `<private-user-home>/Developer/codex/openai-codex/codex-rs/core/src/client.rs`
   - `responses_websocket_enabled()` gates on provider `supports_websockets`.
   - `prepare_websocket_request()` sends incremental `input` with `previous_response_id` only when
     the prior response id is nonempty; empty id forces a full request.
 - Current Codex RS local checkout:
-  `/Users/jun/Developer/codex/openai-codex/codex-rs/codex-api/src/endpoint/responses_websocket.rs`
+  `<private-user-home>/Developer/codex/openai-codex/codex-rs/codex-api/src/endpoint/responses_websocket.rs`
   - EOF or close before `response.completed` becomes a stream error.
   - Standalone `{ "type": "error", "status": ..., "headers": ... }` maps to HTTP-style transport
     errors.
@@ -43,13 +43,13 @@ advertisement, push/main merge state, and npm release behavior.
 
 Modify:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/.gitignore`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/config.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/types.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/codex-inject.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-inject.test.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/.gitignore`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/config.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-inject.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-inject.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
 
 Plan:
 
@@ -71,12 +71,12 @@ Acceptance:
 
 Modify:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/ws-bridge.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/types.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/ws-bridge.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
 
 Plan:
 
@@ -119,11 +119,11 @@ Acceptance:
 
 Modify:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
 
 New:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/devlog/132_websocket-correctness-release/10_verification.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/devlog/132_websocket-correctness-release/10_verification.md`
 
 Plan:
 
@@ -155,7 +155,7 @@ Acceptance:
 
 Modify:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/package.json`
+- `<private-user-home>/Developer/new/700_projects/opencodex/package.json`
 
 Plan:
 

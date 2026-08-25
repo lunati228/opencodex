@@ -3,7 +3,11 @@ import { LANE_PAGE, defaultCollapsedFamilies, laneView, rowStartsOpen } from "./
 import { makeCollapseStore, toggleInSet } from "./collapse-store";
 import { IconChevron } from "../icons";
 import { EmptyState, Notice } from "../ui";
-import { useT, type TFn, type TKey } from "../i18n";
+import { LOCALES, useI18n, type TFn, type TKey } from "../i18n/shared";
+import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
+import { readSessionListCacheEntry, writeSessionListCacheEntry } from "../session-list-cache";
+import { useDataSurface } from "../data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 
 const FAMILIES = ["opus", "fable", "sonnet", "haiku"] as const;
 type Family = typeof FAMILIES[number];
@@ -12,7 +16,7 @@ type Family = typeof FAMILIES[number];
  * Family collapse lives under its own key: the Models page collapses PROVIDERS, and a
  * shared key would make folding "opus" here fold a provider of the same name there.
  */
-const FAMILY_COLLAPSE = makeCollapseStore("ocx.claudeDesktop.collapsedFamilies.v1");
+const FAMILY_COLLAPSE = makeCollapseStore("ocx.claudeDesktop.collapsedFamilies.v2");
 
 interface Assignment {
   family: Family;
@@ -39,9 +43,16 @@ interface DesktopModel {
 }
 
 interface DesktopStatus {
+  desiredEnabled: boolean;
   applied: boolean;
   appliedAt: string | null;
   stale: boolean;
+  /**
+   * Whether Desktop's _meta.json appliedId actually points at our profile.
+   * Desktop serves only that one, so false means it is ignoring us even when
+   * `applied` (our saved fingerprint) says otherwise. null = undeterminable.
+   */
+  activeProfile?: boolean | null;
   health: { lastRequestAt: string | null; requestCount: number; errorCount: number };
 }
 
@@ -112,16 +123,50 @@ function formatContextWindow(value: number | undefined, t: TFn): string | null {
     : t("claudeDesktop.contextK", { n: Math.round(value / 1_000) });
 }
 
-export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
-  const t = useT();
-  const [status, setStatus] = useState<DesktopStatus | null>(null);
-  const [data, setData] = useState<DesktopResponse | null>(null);
-  const [profile, setProfile] = useState<DesktopProfile | null>(null);
-  const [savedProfile, setSavedProfile] = useState<DesktopProfile | null>(null);
-  const [destinations, setDestinations] = useState<Record<string, Family>>({});
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
-  const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+type CachedDesktop = { data: DesktopResponse; profile: DesktopProfile };
+
+function readDesktopCache(cacheKey: string): CachedDesktop | null {
+  return readSessionListCacheEntry<CachedDesktop>(cacheKey)?.data ?? null;
+}
+
+function readDesktopCachedAt(cacheKey: string): number | null {
+  return readSessionListCacheEntry<CachedDesktop>(cacheKey)?.cachedAt ?? null;
+}
+
+function seedDesktop(cacheKey: string) {
+  const cached = readDesktopCache(cacheKey);
+  return {
+    held: cached,
+    data: cached?.data ?? null,
+    profile: cached?.profile ?? null,
+    savedProfile: cached?.profile ? cloneProfile(cached.profile) : null,
+    destinations: cached?.data
+      ? Object.fromEntries(
+        cached.data.models.map(model => [model.route, cached.profile.assignments[model.route]?.family ?? "opus"]),
+      )
+      : {} as Record<string, Family>,
+  };
+}
+
+export default function ClaudeDesktop({
+  apiBase,
+  active = true,
+  onPortChange,
+}: {
+  apiBase: string;
+  active?: boolean;
+  /** Keeps the Claude page intro subtitle in sync once /api/claude-desktop settles (port or failure). */
+  onPortChange?: (port: number | null) => void;
+}) {
+  const { t, locale } = useI18n();
+  const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
+  const cacheKey = `ocx.claude-desktop.v1:${apiBase}`;
+  const resourceKey = `claude-desktop:${apiBase}`;
+  const cached = useMemo(() => seedDesktop(cacheKey), [cacheKey]);
+  const [draftProfile, setProfile] = useState<DesktopProfile | null>(() => cached.profile);
+  const [savedDraftProfile, setSavedProfile] = useState<DesktopProfile | null>(() => cached.savedProfile);
+  const [draftDestinations, setDestinations] = useState<Record<string, Family>>(() => cached.destinations);
+  const [message, setMessage] = useState<{ tone: "ok" | "err" | "warn"; text: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [pending, setPending] = useState<PendingAction>(null);
   // Lane density: search and paging are RENDER-ONLY. modelsByFamily and effectiveDefaults must
@@ -132,46 +177,72 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
   // Collapse is view state too. It is a plain user-owned Set rather than something
   // derived per render: modelsByFamily changes on every move, so deriving would fold a
   // section under the user's cursor the moment they moved the last model out of it.
-  const [collapsedFamilies, setCollapsedFamilies] = useState<Set<string>>(() => FAMILY_COLLAPSE.read() ?? new Set());
+  const [collapsedFamilies, setCollapsedFamilies] = useState<Set<string>>(() => FAMILY_COLLAPSE.read() ?? new Set(FAMILIES));
   // Which rows the user has explicitly opened or closed. Deliberately NOT persisted:
   // a family's fold is a durable preference, but which single model you were inspecting
   // is not, and restoring five open rows on reload would rebuild the wall this removes.
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
   const importRef = useRef<HTMLInputElement>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError("");
-    try {
-      const response = await fetch(`${apiBase}/api/claude-desktop`);
-      const payload = await response.json() as DesktopResponse | { error?: string };
-      if (!response.ok || !("profile" in payload) || !("models" in payload)) {
-        throw new Error(errorMessage(payload, t("claudeDesktop.loadFail")));
-      }
-      const normalized = normalizeProfile(payload);
-      setData(payload);
-      setProfile(normalized);
-      setSavedProfile(cloneProfile(normalized));
-      setDestinations(Object.fromEntries(payload.models.map(model => [model.route, normalized.assignments[model.route]?.family ?? "opus"])));
-      // Fold empty families on load, but only while the user has no stored preference.
-      // Doing it here rather than per render means a later move or import can never
-      // re-fold a section the user opened.
-      if (FAMILY_COLLAPSE.read() === null) {
-        const counts = Object.fromEntries(FAMILIES.map(family => [family, 0])) as Record<Family, number>;
-        for (const model of payload.models) counts[normalized.assignments[model.route]?.family ?? "opus"] += 1;
-        setCollapsedFamilies(defaultCollapsedFamilies(counts));
-      }
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : t("claudeDesktop.loadFail"));
-    } finally {
-      setLoading(false);
+  const fetchDesktop = useCallback(async (signal: AbortSignal): Promise<CachedDesktop> => {
+    const response = await fetch(`${apiBase}/api/claude-desktop`, { signal });
+    const payload = await readJsonOrThrow<DesktopResponse | { error?: string }>(
+      response,
+      t("claudeDesktop.loadFail"),
+    );
+    if (!payload || !("profile" in payload) || !("models" in payload)) {
+      throw new Error(errorMessage(payload, t("claudeDesktop.loadFail")));
     }
-  }, [apiBase, t]);
+    const normalized = normalizeProfile(payload);
+    const next = { data: payload, profile: normalized };
+    if (signal.aborted) throw new Error("Claude Desktop request aborted");
+    // A successful read is authoritative until the user edits again. Updating drafts here keeps
+    // the established save→reload contract without synchronizing resource data in an effect.
+    setProfile(normalized);
+    setSavedProfile(cloneProfile(normalized));
+    setDestinations(Object.fromEntries(payload.models.map(model => [model.route, normalized.assignments[model.route]?.family ?? "opus"])));
+    // Fold empty families on load, but only while the user has no stored preference.
+    // Doing it here rather than per render means a later move or import can never
+    // re-fold a section the user opened.
+    if (FAMILY_COLLAPSE.read() === null) {
+      const counts = Object.fromEntries(FAMILIES.map(family => [family, 0])) as Record<Family, number>;
+      for (const model of payload.models) counts[normalized.assignments[model.route]?.family ?? "opus"] += 1;
+      setCollapsedFamilies(defaultCollapsedFamilies(counts));
+    }
+    writeSessionListCacheEntry(cacheKey, next);
+    return next;
+  }, [apiBase, cacheKey, t, setDestinations, setProfile, setSavedProfile]);
+
+  const desktopResource = useDataSurface<CachedDesktop>(
+    resourceKey,
+    [apiBase],
+    fetchDesktop,
+    {
+      isEmpty: () => false,
+      enabled: active,
+      initialData: cached.held ?? undefined,
+      initialDataCachedAt: readDesktopCachedAt(cacheKey),
+      staleAfterMs: 60_000,
+    },
+  );
+  const loadState = desktopResource.state;
+  const resourceData = loadState.data ?? (cached.data && cached.profile ? { data: cached.data, profile: cached.profile } : null);
+  const data = resourceData?.data ?? null;
+  const profile = draftProfile ?? resourceData?.profile ?? null;
+  const savedProfile = savedDraftProfile ?? resourceData?.profile ?? null;
+  const resourceDestinations = resourceData
+    ? Object.fromEntries(resourceData.data.models.map(model => [model.route, resourceData.profile.assignments[model.route]?.family ?? "opus"]))
+    : {} as Record<string, Family>;
+  const destinations = Object.keys(draftDestinations).length > 0 ? draftDestinations : resourceDestinations;
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
+    if (!onPortChange) return;
+    if (typeof data?.port === "number") {
+      onPortChange(data.port);
+      return;
+    }
+    // Cold failure with no port: stop the parent subtitle from claiming "Loading…" forever.
+    if (loadState.kind === "failed-cold") onPortChange(null);
+  }, [data?.port, loadState.kind, onPortChange]);
 
   const dirty = useMemo(
     () => profile !== null && savedProfile !== null && JSON.stringify(profile) !== JSON.stringify(savedProfile),
@@ -195,14 +266,27 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
     return result;
   }, [modelsByFamily, profile]);
 
-  // Poll Desktop status every 5s for applied-state + health.
-  useEffect(() => {
-    let cancelled = false;
-    const poll = () => fetch(`${apiBase}/api/claude-desktop/status`).then(r => r.json()).then(d => { if (!cancelled) setStatus(d as DesktopStatus); }).catch(() => {});
-    poll();
-    const timer = setInterval(poll, 5000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [apiBase]);
+  // The status poll is a separate resource: visibility pauses it without unmounting the
+  // profile editor, which keeps its drafts intact across Code/Desktop tab switches.
+  const statusCacheKey = `ocx.claude-desktop.status.v1:${apiBase}`;
+  const statusResourceKey = `claude-desktop-status:${apiBase}`;
+  const cachedStatusEntry = readSessionListCacheEntry<DesktopStatus>(statusCacheKey);
+  const statusResource = useDataSurface<DesktopStatus>(
+    statusResourceKey,
+    [apiBase],
+    async (signal) => {
+      const response = await fetch(`${apiBase}/api/claude-desktop/status`, { signal });
+      const next = await readJsonIfOk<DesktopStatus>(response);
+      if (!next) throw new Error("Claude Desktop status unavailable");
+      writeSessionListCacheEntry(statusCacheKey, next);
+      return next;
+    },
+    // Polled, so no staleAfterMs: the cadence already keeps it fresh.
+    { isEmpty: () => false, pollMs: 5000, enabled: active, initialData: cachedStatusEntry?.data ?? undefined },
+  );
+  const statusState = statusResource.state;
+  const status = statusState.data ?? cachedStatusEntry?.data ?? null;
+  const statusFailed = statusState.showError;
 
   const moveModel = (route: string, family: Family) => {
     if (!profile || profile.assignments[route]?.family === family) return;
@@ -242,21 +326,32 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ profile }),
       });
-      const payload = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(errorMessage(payload, t("claudeDesktop.saveFailed")));
+      await readJsonOrThrow<{ error?: string }>(response, t("claudeDesktop.saveFailed"));
       setSavedProfile(cloneProfile(profile));
 
       if (applyAfter) {
         setPending("apply");
         const applyResponse = await fetch(`${apiBase}/api/claude-desktop/apply`, { method: "POST" });
-        const applyPayload = await applyResponse.json().catch(() => ({})) as { error?: string };
-        if (!applyResponse.ok) throw new Error(errorMessage(applyPayload, t("claudeDesktop.applyFailed")));
-        setMessage({ tone: "ok", text: t("claudeDesktop.savedApplied") });
-        setAnnouncement(t("claudeDesktop.savedAppliedAnnounce"));
+        const applyBody = await readJsonOrThrow<{ error?: string; saved?: boolean; warning?: string }>(
+          applyResponse,
+          t("claudeDesktop.applyFailed"),
+        );
+        // Partial success: Desktop WAS written, but the applied marker did not
+        // persist, so the saved-vs-applied strip will read stale. Say so rather
+        // than showing the clean success the user did not get.
+        if (applyBody?.saved === false) {
+          setMessage({ tone: "warn", text: t("claudeDesktop.appliedMarkerUnsaved") });
+          setAnnouncement(t("claudeDesktop.appliedMarkerUnsaved"));
+        } else {
+          setMessage({ tone: "ok", text: t("claudeDesktop.savedApplied") });
+          setAnnouncement(t("claudeDesktop.savedAppliedAnnounce"));
+        }
       } else {
         setMessage({ tone: "ok", text: t("claudeDesktop.saved") });
         setAnnouncement(t("claudeDesktop.savedAnnounce"));
       }
+      // Apply/save change the bar tone; do not wait for the 5s poll or the strip flips late.
+      void statusResource.refresh();
     } catch (error) {
       const text = error instanceof Error ? error.message : t("claudeDesktop.updateFailed");
       setMessage({ tone: "err", text });
@@ -302,23 +397,25 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
     if (route) moveModel(route, family);
   };
 
-  if (loading) return <div className="claude-desktop-loading" role="status">{t("claudeDesktop.loading")}</div>;
-  if (loadError || !data || !profile) {
+  if (loadState.kind === "disabled" && !resourceData) return null;
+  if (loadState.showSkeleton && !resourceData) {
+    return <DataSurfaceSkeleton label={t("claudeDesktop.loading")} rows={4} />;
+  }
+  if (loadState.kind === "failed-cold") {
+    const reason = loadState.error instanceof Error ? loadState.error.message : t("claudeDesktop.loadFail");
     return (
       <div className="claude-desktop-error">
-        <Notice tone="err">{loadError || t("claudeDesktop.loadFail")}</Notice>
-        <button type="button" className="btn btn-ghost" onClick={() => void load()}>{t("claudeDesktop.retry")}</button>
+        <Notice tone="err">{reason}</Notice>
+        <button type="button" className="btn btn-ghost" onClick={() => desktopResource.refresh()}>{t("claudeDesktop.retry")}</button>
       </div>
     );
   }
+  if (!data || !profile) return null;
 
   return (
     <>
-      <div className="page-head claude-desktop-head">
-        <div>
-          <h2>{t("claudeDesktop.title")}</h2>
-          <p className="page-sub">{t("claudeDesktop.subtitle", { port: data.port })}</p>
-        </div>
+      {/* Title/subtitle live on Claude.tsx above the Code/Desktop strip. */}
+      <div className="claude-desktop-toolbar">
         <div className="claude-profile-tools">
           <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={event => void importProfile(event)} />
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => importRef.current?.click()}>{t("claudeDesktop.importJson")}</button>
@@ -326,17 +423,61 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
         </div>
       </div>
 
-      {status && (
-        <div className={`claude-status-bar ${status.stale ? "stale" : status.applied ? "applied" : "not-applied"}`}>
-          <span className="claude-status-dot" />
-          <span>{status.stale ? t("claudeDesktop.status.stale") : status.applied ? t("claudeDesktop.status.applied") : t("claudeDesktop.status.notApplied")}</span>
-          {status.health.lastRequestAt && <span className="claude-status-health">{t("claudeDesktop.health.lastRequest")}: {new Date(status.health.lastRequestAt).toLocaleTimeString()}</span>}
-          {status.health.requestCount > 0 && <span className="claude-status-health">{t("claudeDesktop.health.stats", { count: status.health.requestCount, errors: status.health.errorCount })}</span>}
-        </div>
-      )}
+      {/* Always mount the bar (pending strut when status is still cold) so a late /status
+          response cannot insert a full row under the title and shove the lanes down. */}
+      <div
+        className={`claude-status-bar ${
+          statusFailed && !status
+            ? "not-applied"
+            : !status
+              ? "pending"
+              : !status.desiredEnabled
+                ? "not-applied"
+              : status.activeProfile === false
+                ? "not-applied"
+                : status.stale
+                  ? "stale"
+                  : status.applied
+                    ? "applied"
+                    : "not-applied"
+        }`}
+        aria-busy={(!status && !statusFailed) || undefined}
+      >
+        <span className="claude-status-dot" />
+        {/* Desktop serving another profile outranks content drift: stale config that is
+            read still works, a config that is never read does not. */}
+        <span>
+          {statusFailed && !status
+            ? t("claudeDesktop.loadFail")
+            : !status
+              ? t("claudeDesktop.loading")
+              : !status.desiredEnabled
+                ? t("claudeDesktop.status.disabled")
+              : status.activeProfile === false
+                ? t("claudeDesktop.status.notActiveProfile")
+                : status.stale
+                  ? t("claudeDesktop.status.stale")
+                  : status.applied
+                    ? t("claudeDesktop.status.applied")
+                    : t("claudeDesktop.status.notApplied")}
+        </span>
+        {status?.health.lastRequestAt && (
+          <span className="claude-status-health">
+            {t("claudeDesktop.health.lastRequest")}:{" "}
+            {new Date(status.health.lastRequestAt).toLocaleTimeString(localeTag)}
+          </span>
+        )}
+        {status && status.health.requestCount > 0 && (
+          <span className="claude-status-health">
+            {t("claudeDesktop.health.stats", { count: status.health.requestCount, errors: status.health.errorCount })}
+          </span>
+        )}
+      </div>
 
       <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
+      {loadState.showError && <Notice tone="err">{t("claudeDesktop.loadFail")}</Notice>}
+      {statusFailed && status && <Notice tone="err">{t("claudeDesktop.loadFail")}</Notice>}
 
       <div className="claude-profile-bar">
         <span className={`claude-dirty${dirty ? " active" : ""}`}>{dirty ? t("claudeDesktop.unsaved") : t("claudeDesktop.upToDate")}</span>
@@ -345,7 +486,7 @@ export default function ClaudeDesktop({ apiBase }: { apiBase: string }) {
             {pending === "save" ? t("claudeDesktop.saving") : t("common.save")}
           </button>
           <button type="button" className="btn btn-primary" disabled={pending !== null} onClick={() => void save(true)}>
-            {pending === "apply" ? t("claudeDesktop.applying") : pending === "save" ? t("claudeDesktop.saving") : t("claudeDesktop.saveApply")}
+            {pending === "apply" ? t("claudeDesktop.applying") : pending === "save" ? t("claudeDesktop.saving") : status?.desiredEnabled === false ? t("claudeDesktop.enableApply") : t("claudeDesktop.saveApply")}
           </button>
         </div>
       </div>

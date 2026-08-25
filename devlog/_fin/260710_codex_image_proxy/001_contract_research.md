@@ -7,13 +7,13 @@ Scope: research only; no implementation diffs
 
 Current Codex does not expose the Responses hosted `image_generation` tool for this path. It advertises the local namespaced function `image_gen.imagegen`, dispatches that function inside Codex, then makes a second Images API call:
 
-1. Tool declaration and direct exposure: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/ext/image-generation/src/tool.rs:110-129`.
+1. Tool declaration and direct exposure: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/ext/image-generation/src/tool.rs:110-129`.
 2. Generate-vs-edit dispatch: the same file at `132-164`.
 3. No references yields `gpt-image-2`, `background:auto`, `quality:auto`, `size:auto`: the same file at `259-280`.
 4. References yield the JSON edit request with `images[].image_url`: the same file at `281-327`.
-5. The client posts relative `images/generations` or `images/edits`: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/codex-api/src/endpoint/images.rs:33-70`.
-6. Relative paths append to the active provider base: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/codex-api/src/provider.rs:52-85`.
-7. Codex expects an Images response whose `data` entries contain required `b64_json`: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/codex-api/src/images.rs:55-70`.
+5. The client posts relative `images/generations` or `images/edits`: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/codex-api/src/endpoint/images.rs:33-70`.
+6. Relative paths append to the active provider base: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/codex-api/src/provider.rs:52-85`.
+7. Codex expects an Images response whose `data` entries contain required `b64_json`: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/codex-api/src/images.rs:55-70`.
 
 opencodex injects `openai_base_url = http://<host>:<port>/v1` and an equivalent provider table (`src/codex/inject.ts:76-96`). The relative call therefore becomes `/v1/images/generations` or `/v1/images/edits`. Neither route exists before the generic guard (`src/server/index.ts:292-350`).
 
@@ -41,7 +41,7 @@ Supported. `ImagesClient` appends exactly `images/generations` or `images/edits`
 
 `ima2-gen` is a deliberately different image path:
 
-- It sends `POST /v1/responses` with hosted `{type:"image_generation"}` and forces that tool (`/Users/jun/Developer/new/700_projects/ima2-gen/lib/responsesTools.ts:11-26`, `lib/responsesImageAdapter.ts:294-324`).
+- It sends `POST /v1/responses` with hosted `{type:"image_generation"}` and forces that tool (`<private-user-home>/Developer/new/700_projects/ima2-gen/lib/responsesTools.ts:11-26`, `lib/responsesImageAdapter.ts:294-324`).
 - It parses `image_generation_call.result` from Responses SSE/JSON (`lib/responsesParse.ts:326-349,430+`).
 - Its direct `/v1/images/generations` route belongs to a different provider pipeline, not GPT OAuth (`structure/03-server-api.md:70`).
 

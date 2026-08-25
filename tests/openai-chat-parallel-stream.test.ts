@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { createOpenAIChatAdapter as createOpenAIChatAdapterProduction } from "../src/adapters/openai-chat";
 import type { AdapterEvent } from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
+
+const createOpenAIChatAdapter = (...args: Parameters<typeof createOpenAIChatAdapterProduction>) =>
+  withTestTranslatorBudget(createOpenAIChatAdapterProduction(...args));
 
 const provider = { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "key" };
 
@@ -44,6 +48,24 @@ function assembled(events: AdapterEvent[]): AssembledCall[] {
 }
 
 describe("openai-chat parallel tool call stream assembly", () => {
+  test("24 interleaved OpenAI Chat tool calls complete without reordering", async () => {
+    const starts = Array.from({ length: 24 }, (_, index) => chunkOf([{
+      index,
+      id: `call_${index}`,
+      function: { name: `tool_${index}`, arguments: `{"index":` },
+    }]));
+    const finishes = Array.from({ length: 24 }, (_, reverseIndex) => {
+      const index = 23 - reverseIndex;
+      return chunkOf([{ index, function: { arguments: `${index}}` } }]);
+    });
+    const events = await collect(sse([...starts, ...finishes, chunkOf([], "tool_calls")]));
+    expect(assembled(events)).toEqual(Array.from({ length: 24 }, (_, index) => ({
+      id: `call_${index}`,
+      name: `tool_${index}`,
+      args: `{"index":${index}}`,
+    })));
+  });
+
   test("T1: interleaved index-keyed deltas assemble without cross-contamination", async () => {
     const events = await collect(sse([
       chunkOf([{ index: 0, id: "call_a", function: { name: "shell", arguments: "{\"cmd\"" } }]),
@@ -73,6 +95,20 @@ describe("openai-chat parallel tool call stream assembly", () => {
       { id: "call_1", name: "a", args: "{\"x\":1}" },
       { id: "call_2", name: "b", args: "{\"y\":2}" },
     ]);
+  });
+
+  test("T2b: null-padded continuation fields preserve the earlier tool call", async () => {
+    const events = await collect(sse([
+      chunkOf([{ index: 0, id: "call_null_padding", function: { name: "shell", arguments: "{\"x\":" } }]),
+      chunkOf([{ index: 0, id: null, function: { name: null, arguments: "1}" } }]),
+      chunkOf([{ index: 0, id: null, function: { name: null, arguments: null } }]),
+      chunkOf([], "tool_calls"),
+    ]));
+    expect(assembled(events)).toEqual([{
+      id: "call_null_padding",
+      name: "shell",
+      args: "{\"x\":1}",
+    }]);
   });
 
   test("T3: whole-chunk multi-call (xAI style) emits both calls", async () => {
@@ -119,12 +155,21 @@ describe("openai-chat parallel tool call stream assembly", () => {
     expect(assembled(events)).toEqual([{ id: "late", name: "late_name", args: "{\"z\":9}" }]);
   });
 
-  test("T7: name never arrives - call still flushed with empty name (parity, no silent drop)", async () => {
+  // Previously this asserted the call was flushed with an empty name, on a "no silent drop"
+  // rationale. That invariant still holds and is now stronger: an unnamed call cannot vanish
+  // silently, because the turn fails loudly instead. What changed is the mechanism — emitting
+  // a call the Codex tool-call contract cannot dispatch was never a usable outcome (#1514).
+  test("T7: name never arrives - turn fails closed instead of emitting an undispatchable call", async () => {
     const events = await collect(sse([
-      chunkOf([{ index: 0, id: "anon", function: { arguments: "{\"q\":1}" } }]),
+      chunkOf([{ index: 0, id: "anon", function: { name: null, arguments: "{\"q\":1}" } }]),
       chunkOf([], "tool_calls"),
     ]));
-    expect(assembled(events)).toEqual([{ id: "anon", name: "", args: "{\"q\":1}" }]);
+    expect(assembled(events)).toEqual([]);
+    expect(events.some(e => e.type === "tool_call_start")).toBe(false);
+    const last = events.at(-1);
+    expect(last?.type).toBe("error");
+    expect(last && last.type === "error" ? last.message : "").toContain("without a function name");
+    expect(events.some(e => e.type === "done")).toBe(false);
   });
 
   test("T8: text deltas interleaved mid-assembly pass through and never split a call", async () => {

@@ -4,7 +4,7 @@
 Investigate the user report that Google Antigravity caching appears not to work, prove the actual runtime behavior from local usage logs, and make per-request cached-token counts visible in the dashboard table instead of hiding them in a tooltip.
 
 ## Findings before edit
-- Local `/Users/jun/.opencodex/usage.jsonl` contains 222 `google-antigravity-*` rows.
+- Local `<private-user-home>/.opencodex/usage.jsonl` contains 222 `google-antigravity-*` rows.
 - 149 rows include numeric `usage.cachedInputTokens`; recent examples include `inputTokens=159132`, `cachedInputTokens=154663`.
 - Recent failed Antigravity rows are 429/502 rate/upstream failures and one Claude-on-Antigravity 400, not missing cache parsing.
 - `src/adapters/google.ts` maps Gemini/Antigravity `usageMetadata.cachedContentTokenCount` to `OcxUsage.cachedInputTokens` for both streaming and non-streaming paths.

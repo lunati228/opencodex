@@ -31,7 +31,7 @@ metadata and are not used to infer undocumented endpoint overrides.
 
 Repository:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc`
 
 Branch:
 
@@ -39,9 +39,9 @@ Branch:
 
 Modified:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/provider-models/openai-compat.ts`
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/test/issue-887-repro.test.ts`
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/models.json`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/provider-models/openai-compat.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/test/issue-887-repro.test.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_upstream_gjc/packages/ai/src/models.json`
 
 Verification:
 
@@ -56,18 +56,18 @@ Verification:
 
 Repository:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract`
 
 Branch:
 
 - `codex/opencode-go-contract`, based on `origin/dev` in a separate worktree to preserve
-  unrelated dirty files in `/Users/jun/Developer/new/700_projects/jawcode`.
+  unrelated dirty files in `<private-user-home>/Developer/new/700_projects/jawcode`.
 
 Modified:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/provider-models/openai-compat.ts`
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/test/issue-887-repro.test.ts`
-- `/Users/jun/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/models.json`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/provider-models/openai-compat.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/test/issue-887-repro.test.ts`
+- `<private-user-home>/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/models.json`
 
 Verification:
 
@@ -82,15 +82,15 @@ Verification:
 
 Existing dirty files preserved outside the worktree:
 
-- `/Users/jun/Developer/new/700_projects/jawcode/AGENTS.md`
-- `/Users/jun/Developer/new/700_projects/jawcode/.agents/`
-- `/Users/jun/Developer/new/700_projects/jawcode/.claude/`
+- `<private-user-home>/Developer/new/700_projects/jawcode/AGENTS.md`
+- `<private-user-home>/Developer/new/700_projects/jawcode/.agents/`
+- `<private-user-home>/Developer/new/700_projects/jawcode/.claude/`
 
 ## opencodex
 
 Repository:
 
-- `/Users/jun/Developer/new/700_projects/opencodex`
+- `<private-user-home>/Developer/new/700_projects/opencodex`
 
 Branch:
 
@@ -98,7 +98,7 @@ Branch:
 
 Implementation result:
 
-- `JAWCODE_MODELS_JSON=/Users/jun/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/models.json bun run generate:jawcode-metadata`
+- `JAWCODE_MODELS_JSON=<private-user-home>/Developer/new/700_projects/jawcode/devlog/_worktrees/opencode-go-contract/packages/ai/src/models.json bun run generate:jawcode-metadata`
   was executed and verified. It introduced no `opencode-go` metadata delta because opencodex
   stores context/output/modalities only; endpoint and price changes live in GJC/jawcode.
 - The generated-file diff was intentionally reduced back to zero to avoid unrelated dynamic

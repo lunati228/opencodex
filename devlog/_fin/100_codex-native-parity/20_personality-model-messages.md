@@ -50,13 +50,13 @@ Relevant upstream paths:
 Routed entries are cloned from a native template in:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
 ```
 
 For namespaced routed models, opencodex currently rewrites `base_instructions` identity text:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:122
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:122
 ```
 
 It does not rewrite `model_messages.instructions_template`.
@@ -108,7 +108,7 @@ investigation supersedes that: routed non-OpenAI models should strip `model_mess
 See:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/devlog/100_codex-native-parity/21_model-messages-strip-first.md
+<private-user-home>/Developer/new/700_projects/opencodex/devlog/100_codex-native-parity/21_model-messages-strip-first.md
 ```
 
 Reason: `model_messages.instructions_template` is not a cosmetic field. Codex uses it before

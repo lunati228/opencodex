@@ -51,7 +51,7 @@ provider/model capability flag, not a copied native template value.
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
 ```
 
 Add:
@@ -68,7 +68,7 @@ Call it from `normalizeRoutedCatalogEntry()` after native-only selector strippin
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
 ```
 
 Extend the native-like template to include `web_search_tool_type = "text_and_image"` and
@@ -83,7 +83,7 @@ Add tests proving:
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/web-search.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/web-search.test.ts
 ```
 
 Add request-time tests proving:

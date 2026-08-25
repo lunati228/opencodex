@@ -51,7 +51,7 @@ bun install
 bun test tests/oauth-reauth-bind.test.ts tests/provider-workspace-auth.test.ts \
   tests/codex-auth-api.test.ts tests/codex-auth-collision.test.ts
 cd gui && bun x tsc --noEmit && bun run lint
-cd /Users/jun/developer/new/700_projects/opencodex
+cd <private-user-home>/developer/new/700_projects/opencodex
 git worktree remove --force /tmp/ocx-pr171
 ```
 

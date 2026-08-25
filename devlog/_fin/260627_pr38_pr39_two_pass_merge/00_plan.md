@@ -9,7 +9,7 @@ Integrate incoming PRs onto `dev` in two full PABCD work-phases:
 
 ## Current State
 
-- Project root: `/Users/jun/Developer/new/700_projects/opencodex`
+- Project root: `<private-user-home>/Developer/new/700_projects/opencodex`
 - Current branch: `dev`
 - Local status before plan: `dev...origin/dev [ahead 1]`
 - Local commit to preserve: `c560b54 fix(oauth): classify stale provider config`

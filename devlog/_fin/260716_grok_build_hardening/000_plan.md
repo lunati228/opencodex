@@ -2,7 +2,7 @@
 
 ## Objective
 
-공개된 공식 Grok Build 클라이언트(로컬 미러: `/Users/jun/Developer/codex/180_grok-build`)의
+공개된 공식 Grok Build 클라이언트(로컬 미러: `<private-user-home>/Developer/codex/180_grok-build`)의
 auth/wire/cache 계약을 기준으로, OpenCodex의 xAI 서빙 경로에서 확인된 4개 High + 2개
 Medium 격차를 닫는다. 근거는 2026-07-16 두 SOL 독립 감사(소스 인용 기반, verdict FAIL)와
 실제 프록시 스모크(GROK_SMOKE_OK, cached_tokens=128)이다.

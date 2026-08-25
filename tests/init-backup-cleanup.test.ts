@@ -1,9 +1,15 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupOpenAiTierBackupAfterInit } from "../src/cli/init";
-import { classifyOpenAiTierBackup } from "../src/config";
+import { classifyOpenAiTierBackup, OpenAiTierRollbackPreserveError, preserveOpenAiTierRollbackSnapshot } from "../src/config";
+import {
+  resetHardenedStateForTests,
+  setIcaclsRunnerForTests,
+  setPlatformForTests,
+} from "../src/lib/windows-secret-acl";
+import { setWindowsPrincipalRunnerForTests } from "../src/lib/windows-user-principal";
 
 describe("cleanupOpenAiTierBackupAfterInit", () => {
   const dirs: string[] = [];
@@ -12,8 +18,16 @@ describe("cleanupOpenAiTierBackupAfterInit", () => {
     dirs.push(dir);
     return dir;
   };
+  beforeEach(() => {
+    setPlatformForTests("linux");
+    resetHardenedStateForTests();
+  });
   afterEach(() => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+    setIcaclsRunnerForTests(null);
+    setWindowsPrincipalRunnerForTests(null);
+    setPlatformForTests(null);
+    resetHardenedStateForTests();
   });
 
   test("no-op when no backup exists", () => {
@@ -40,6 +54,29 @@ describe("cleanupOpenAiTierBackupAfterInit", () => {
     writeFileSync(backup, "not-json{{{");
     cleanupOpenAiTierBackupAfterInit(configPath);
     expect(existsSync(backup)).toBe(false);
+  });
+
+  test("keeps the authoritative rollback bytes when an existing backup ACL is unverified", () => {
+    const dir = makeDir();
+    const configPath = join(dir, "config.json");
+    const backup = `${configPath}.pre-openai-tiers-v2.bak`;
+    const v1 = JSON.stringify({ openaiProviderTierVersion: 1, providers: {} });
+    writeFileSync(backup, v1);
+    setPlatformForTests("win32");
+    setWindowsPrincipalRunnerForTests(() => ({
+      success: true,
+      exitCode: 0,
+      timedOut: false,
+      stdout: "S-1-5-21-1000",
+    }));
+    setIcaclsRunnerForTests(args => args[0] === backup
+      ? { success: false, exitCode: null, timedOut: true, stdout: "" }
+      : { success: true, exitCode: 0, timedOut: false, stdout: "" });
+
+    cleanupOpenAiTierBackupAfterInit(configPath);
+
+    expect(readFileSync(backup, "utf8")).toBe(v1);
+    expect(readdirSync(dir).filter(name => name.includes("v1-rollback"))).toEqual([]);
   });
 
   test("preserves a valid pre-migration (v1) rollback snapshot by renaming it", () => {
@@ -87,5 +124,44 @@ describe("cleanupOpenAiTierBackupAfterInit", () => {
     expect(classifyOpenAiTierBackup(enc("garbage"))).toBe("stale");
     expect(classifyOpenAiTierBackup(enc(JSON.stringify({ openaiProviderTierVersion: 1 })))).toBe("rollback");
     expect(classifyOpenAiTierBackup(enc(JSON.stringify({})))).toBe("rollback");
+  });
+
+  test("preserveOpenAiTierRollbackSnapshot copy failure keeps the v2 backup", () => {
+    const dir = makeDir();
+    const configPath = join(dir, "config.json");
+    const backup = `${configPath}.pre-openai-tiers-v2.bak`;
+    const v1 = JSON.stringify({ openaiProviderTierVersion: 1, port: 10100, defaultProvider: "openai", providers: {} });
+    writeFileSync(backup, v1);
+    expect(() => preserveOpenAiTierRollbackSnapshot(configPath, {
+      exists: existsSync,
+      read: path => readFileSync(path),
+      copyExclusive: () => { throw new Error("copy failed"); },
+      unlink: () => { throw new Error("unlink must not run"); },
+    })).toThrow("copy failed");
+    expect(readFileSync(backup, "utf8")).toBe(v1);
+    expect(readdirSync(dir).filter(name => name.includes("pre-openai-tiers-v1-rollback"))).toEqual([]);
+  });
+
+  test("preserveOpenAiTierRollbackSnapshot does not overwrite occupied destinations and keeps source on exhaustion", () => {
+    const dir = makeDir();
+    const configPath = join(dir, "config.json");
+    const backup = `${configPath}.pre-openai-tiers-v2.bak`;
+    const v1 = JSON.stringify({ openaiProviderTierVersion: 1, port: 10100, defaultProvider: "openai", providers: {} });
+    writeFileSync(backup, v1);
+    const now = Date.now();
+    writeFileSync(`${configPath}.pre-openai-tiers-v1-rollback.${now}.bak`, "occupied");
+    for (let attempt = 1; attempt < 16; attempt++) {
+      writeFileSync(`${configPath}.pre-openai-tiers-v1-rollback.${now}-${attempt}.bak`, "occupied");
+    }
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      expect(() => preserveOpenAiTierRollbackSnapshot(configPath)).toThrow(OpenAiTierRollbackPreserveError);
+    } finally {
+      Date.now = realNow;
+    }
+    expect(readFileSync(backup, "utf8")).toBe(v1);
+    expect(readFileSync(`${configPath}.pre-openai-tiers-v1-rollback.${now}.bak`, "utf8")).toBe("occupied");
+    expect(readFileSync(`${configPath}.pre-openai-tiers-v1-rollback.${now}-1.bak`, "utf8")).toBe("occupied");
   });
 });

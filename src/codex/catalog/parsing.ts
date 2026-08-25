@@ -9,7 +9,7 @@ import { buildModelsRequest, resolveModelsAuthToken } from "../../oauth";
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
-import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../../generated/jawcode-model-metadata";
+import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
@@ -31,7 +31,9 @@ import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 
-import { NATIVE_OPENAI_CONTEXT_OVERRIDES, SUPPORTED_NATIVE_OPENAI_SLUGS, UPSTREAM_NATIVE_ENTRIES } from "./metadata";
+import { NATIVE_OPENAI_CONTEXT_OVERRIDES, SUPPORTED_NATIVE_OPENAI_SLUGS, UPSTREAM_NATIVE_ENTRIES, isNativeOpenAiCapabilityAliasModel, nativeMultiAgentVersion, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type NativeContextLimitsInput } from "./metadata";
+import { trustedAccountBoundNativeCatalogSlug } from "./account-models";
+import { CODEX_NATIVE_ALIAS_CATALOG_KIND } from "./kinds";
 
 export function legacyCatalogBackupPath(): string {
   return join(getConfigDir(), "catalog-backup.json");
@@ -84,11 +86,18 @@ export function isDefaultCatalogPath(path: string): boolean {
   return samePath(path, activeDefaultCatalogPath());
 }
 
+/** Stable nonsemantic ownership marker for rows projected from config.customModels. */
+export const CODEX_CUSTOM_MODEL_CATALOG_KIND = "custom-model-v1";
+/** A formerly ambiguous slug was authoritatively observed as an ordinary provider row. */
+export const CODEX_PROVIDER_MODEL_CATALOG_KIND = "provider-model-v1";
+
 export interface CatalogModel {
   id: string;
   provider: string;
   /** Public Codex-facing slug override (used by combo aliases). */
   alias?: string;
+  /** Explicit combo takeover of a bare OpenAI-native catalog id. */
+  nativeAlias?: boolean;
   /**
    * Display-only Codex catalog `display_name` override. Relabels the picker row ONLY — it never
    * affects the routing slug, alias-collision order, native marketing-name precedence, or provider
@@ -107,16 +116,33 @@ export interface CatalogModel {
   inputModalities?: string[];
   /** Provider opted into parallel tool calls (OcxProviderConfig.parallelToolCalls). */
   parallelToolCalls?: boolean;
+  /**
+   * This routed row is an explicitly configured account-native alias on the canonical ChatGPT
+   * forward provider. It may inherit pinned native Codex metadata without changing its wire id.
+   */
+  codexForwardNativeCapabilityAlias?: boolean;
   /** Whether Codex may send Responses text.verbosity for this routed model. */
   supportsVerbosity?: boolean;
+  /** Whether this exact routed model has a verified OpenAI-compatible service tier. */
+  supportsServiceTier?: boolean;
   supportsReasoningSummaries?: boolean;
+  /**
+   * Codex tool calling mode for this routed model.
+   * "code_mode_only" (default) sets entry.tool_mode = "code_mode_only".
+   * "shell" leaves tool_mode unset so Codex declares top-level shell tools (exec_command).
+   */
+  codexToolMode?: "code_mode_only" | "shell";
+  /** Normalized upstream capability names retained for management/API consumers (#485 follow-up). */
+  capabilities?: string[];
+  /** OpenCodex-only catalog ownership marker; Codex ignores the serialized extension field. */
+  catalogKind?: typeof CODEX_CUSTOM_MODEL_CATALOG_KIND | typeof CODEX_PROVIDER_MODEL_CATALOG_KIND;
 }
 
 export type RawEntry = Record<string, unknown>;
 
 export type RawCatalog = { models?: RawEntry[]; [k: string]: unknown };
 
-export const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go"]);
+export const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go", "deepseek"]);
 
 export const ROUTED_MODEL_COMPATIBILITY_EXCLUSIONS = new Set([
   // Issue #82: Zen Go /models advertises HY3, but Console Go rejects it as outside the lite list.
@@ -141,9 +167,24 @@ export function isMediaGenerationModelId(id: string): boolean {
   return MEDIA_GEN_ID_RE.test(id);
 }
 
+/**
+ * Gemini image-capable chat models produce inline images within text responses
+ * via the Responses API. Explicit allowlist only — a broad `/gemini/ && /image/`
+ * heuristic resurrects standalone media-gen IDs (e.g. gemini-3-pro-image).
+ */
+const GEMINI_IMAGE_CHAT_MODEL_IDS = new Set([
+  "gemini-3.1-flash-image",
+  "gemini-2.0-flash-preview-image-generation",
+  "gemini-3-pro-image-preview",
+]);
+
+function isGeminiImageChatModel(id: string): boolean {
+  return GEMINI_IMAGE_CHAT_MODEL_IDS.has(id);
+}
+
 export function shouldExposeRoutedModel(model: CatalogModel): boolean {
   if (isRoutedModelCompatibilityExcluded(`${model.provider}/${model.id}`)) return false;
-  if (model.provider === "cursor" && model.id === "gemini-3-pro-image-preview") return true;
+  if (isGeminiImageChatModel(model.id)) return true;
   return !isMediaGenerationModelId(model.id);
 }
 
@@ -175,7 +216,12 @@ export function readCatalog(path: string): RawCatalog | null {
 
 export function findNativeTemplate(catalog: RawCatalog | null): RawEntry | null {
   return catalog?.models?.find(
-    m => typeof m.slug === "string" && !m.slug.includes("/") && "base_instructions" in m,
+    m => typeof m.slug === "string"
+      && !m.slug.includes("/")
+      && "base_instructions" in m
+      && m.opencodex_catalog_kind !== CODEX_NATIVE_ALIAS_CATALOG_KIND
+      && m.owned_by !== COMBO_NAMESPACE
+      && !(typeof m.description === "string" && m.description.startsWith("Routed via opencodex → ")),
   ) ?? null;
 }
 
@@ -211,13 +257,39 @@ export function normalizeServiceTiers(entry: RawEntry): RawEntry {
   return entry;
 }
 
+/**
+ * Fraction of a catalog `context_window` at which compaction should fire, chosen to REPRODUCE
+ * native Codex rather than to be independently clever.
+ *
+ * Measured from 1,122 real compaction events in local Codex rollouts:
+ *
+ *  - Codex does not work with the catalog number directly. The `model_context_window` it reports
+ *    in every `token_count` event is exactly **0.95x** the catalog `context_window` — verified on
+ *    every entry in the pinned snapshot (372000 -> 353400, 272000 -> 258400). It reserves 5%.
+ *  - Against THAT window, native compaction fires at a median of ~90%
+ *    (gpt-5.6-sol n=816 median 90.3%, gpt-5.5 n=128 median 89.1%, gpt-5.6-luna n=24 83.5%).
+ *
+ * So native behaviour is 0.95 * 0.90 = 0.855 of the catalog window. A flat 0.9 of the catalog
+ * window — what this used to be — sits at ~94.7% of the window Codex actually works with, i.e.
+ * LATER than native. The symptom is visible in the same data: gpt-5.6-sol compactions were
+ * observed as high as 100.7% of the reported window, meaning the turn had already overflowed.
+ *
+ * The observed spread (73.6%-100.7%) is expected: crossing the threshold only triggers
+ * compaction at the next turn boundary, and turn sizes vary.
+ */
+export const AUTO_COMPACT_WINDOW_FRACTION = 0.855;
+
+export function autoCompactLimitFor(contextWindow: number): number {
+  return Math.floor(contextWindow * AUTO_COMPACT_WINDOW_FRACTION);
+}
+
 export function ensureAutoCompactTokenLimit(entry: RawEntry): RawEntry {
   if (
     typeof entry.context_window === "number"
     && entry.context_window > 0
     && typeof entry.auto_compact_token_limit !== "number"
   ) {
-    entry.auto_compact_token_limit = Math.floor(entry.context_window * 0.9);
+    entry.auto_compact_token_limit = autoCompactLimitFor(entry.context_window);
   }
   return entry;
 }
@@ -226,16 +298,83 @@ export function isNativeOpenAiEntry(entry: RawEntry): boolean {
   return typeof entry.slug === "string" && !entry.slug.includes("/");
 }
 
-export function applyNativeOpenAiContextOverride(entry: RawEntry): void {
-  if (!isNativeOpenAiEntry(entry)) return;
-  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[entry.slug as string];
-  if (!override) return;
-  if (typeof override.contextWindow === "number") {
-    entry.context_window = override.contextWindow;
-    entry.auto_compact_token_limit = Math.floor(override.contextWindow * 0.9);
+/**
+ * Auto-compaction threshold for a native row.
+ *
+ * The fork's native-parity rule is 85.5% of the catalog window, but a row whose input ceiling
+ * sits below that has to clamp to the ceiling instead — otherwise the client keeps filling
+ * until upstream answers `context_length_exceeded` and compaction never gets a chance to run.
+ * The max-input clamp remains authoritative even when a future model's ceiling falls below
+ * the 85.5% trigger.
+ */
+function nativeAutoCompactLimit(contextWindow: number, maxInputTokens: number | undefined, contextCap?: number): number {
+  const compactLimit = autoCompactLimitFor(contextWindow);
+  if (typeof maxInputTokens !== "number" || maxInputTokens <= 0) return compactLimit;
+  const cappedMaxInput = applyProviderContextCap(maxInputTokens, contextCap) ?? maxInputTokens;
+  return Math.min(compactLimit, cappedMaxInput, contextWindow);
+}
+
+/**
+ * Narrow any already-resolved native window by the user levers.
+ *
+ * Used for the fields the accessors do not own (`max_context_window`, and preserved rows
+ * that carry no static override) so every field on a row lands at the same width.
+ */
+function narrowNativeMaxContextWindow(
+  slug: string,
+  value: number | undefined,
+  limits?: NativeContextLimitsInput,
+): number | undefined {
+  if (typeof value !== "number" || value <= 0) return value;
+  const resolved = nativeOpenAiContextWindow(slug, limits);
+  const authoritative = nativeOpenAiContextWindow(slug);
+  // The accessor pair tells us how far the levers moved this slug; apply the same delta to a
+  // field the accessor does not model, without ever raising it.
+  if (resolved === undefined || authoritative === undefined) return value;
+  return Math.min(value, Math.max(resolved, 1));
+}
+
+export function applyNativeOpenAiContextOverride(entry: RawEntry, limits?: NativeContextLimitsInput): void {
+  const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry)
+    ?? (isNativeOpenAiEntry(entry) ? entry.slug as string : undefined);
+  if (!nativeSlug) return;
+  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[nativeSlug];
+  if (override) {
+    // Read the effective values through the accessors rather than re-deriving them from the
+    // static table: this function used to apply only the provider cap, so a per-model window
+    // the dashboard had already accepted was silently written back at full width here.
+    if (typeof override.contextWindow === "number") {
+      const contextWindow = nativeOpenAiContextWindow(nativeSlug, limits) ?? override.contextWindow;
+      entry.context_window = contextWindow;
+      entry.auto_compact_token_limit = nativeAutoCompactLimit(
+        contextWindow,
+        nativeOpenAiMaxInputTokens(nativeSlug, limits) ?? override.maxInputTokens,
+        undefined,
+      );
+    }
+    if (typeof override.maxContextWindow === "number") {
+      const maxContextWindow = narrowNativeMaxContextWindow(nativeSlug, override.maxContextWindow, limits);
+      entry.max_context_window = maxContextWindow;
+    }
   }
-  if (typeof override.maxContextWindow === "number") {
-    entry.max_context_window = override.maxContextWindow;
+  // providerContextCaps.openai is a ceiling for native OpenAI rows regardless of where the
+  // advertised window came from (#1430): preserved rows without a hardcoded override (e.g.
+  // gpt-5.4-mini) must stay under the cap too, and auto-compaction follows the capped window.
+  // The per-model window narrows the same rows for the same reason.
+  const currentContext = typeof entry.context_window === "number" ? entry.context_window : undefined;
+  const cappedContext = narrowNativeMaxContextWindow(nativeSlug, currentContext, limits);
+  if (cappedContext !== currentContext && typeof cappedContext === "number") {
+    entry.context_window = cappedContext;
+    entry.auto_compact_token_limit = nativeAutoCompactLimit(
+      cappedContext,
+      nativeOpenAiMaxInputTokens(nativeSlug, limits) ?? override?.maxInputTokens,
+      undefined,
+    );
+  }
+  const currentMax = typeof entry.max_context_window === "number" ? entry.max_context_window : undefined;
+  const cappedMax = narrowNativeMaxContextWindow(nativeSlug, currentMax, limits);
+  if (cappedMax !== currentMax) {
+    entry.max_context_window = cappedMax;
   }
 }
 
@@ -257,6 +396,16 @@ export function ensureStrictCatalogFields(
   if (!Array.isArray(entry.input_modalities) && !options.preserveExactInputModalities) {
     entry.input_modalities = ["text"];
   }
+  // Codex parses `input_modalities` as a closed enum. One out-of-enum value (zenmux advertises
+  // "video") makes its config loader reject the entire catalog, which takes down plugins, apps and
+  // MCP servers — not just that model. Normalize at the single point every entry passes through,
+  // because provider metadata, jawcode metadata and effort sync each write this field.
+  if (Array.isArray(entry.input_modalities)) {
+    const accepted = entry.input_modalities.filter(value =>
+      value === "text" || value === "image" || value === "audio");
+    // Never leave it empty: an entry with no modality at all is worse than a text-only one.
+    entry.input_modalities = accepted.length > 0 ? accepted : ["text"];
+  }
   const contextWindow = typeof entry.context_window === "number" && entry.context_window > 0 ? entry.context_window : 128000;
   entry.context_window = contextWindow;
   if (
@@ -273,16 +422,101 @@ export function ensureStrictCatalogFields(
 
 export type MultiAgentMode = "v1" | "default" | "v2";
 
-export function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode): RawEntry[] {
+export interface MultiAgentModeOptions {
+  /**
+   * When the catalog is in v2 mode, stamp ChatGPT-native rows as v1 instead.
+   * Routed parents get v2 (plaintext child tasks). Native Sol/Terra stay on v1
+   * so they can still spawn Grok/Claude — ChatGPT encrypts v2 NEW_TASK bodies.
+   */
+  keepNativeChatGptOnV1?: boolean;
+}
+
+/** Catalog rows that run on the ChatGPT backend (encrypt v2 child tasks). */
+export function catalogEntryIsNativeChatGpt(entry: RawEntry): boolean {
+  const slug = typeof entry.slug === "string" ? entry.slug : "";
+  // combo-native-alias-v1 occupies a bare native slug but is routed through
+  // OpenCodex. Keep those on v2 unless the row still carries the ChatGPT-forward
+  // contract (`use_responses_lite`).
+  if (entry.opencodex_catalog_kind === CODEX_NATIVE_ALIAS_CATALOG_KIND) {
+    return entry.use_responses_lite === true;
+  }
+  if (trustedAccountBoundNativeCatalogSlug(entry)) return true;
+  const routedNativeSlug = slug.startsWith(`${OPENAI_CODEX_PROVIDER_ID}/`)
+    ? slug.slice(OPENAI_CODEX_PROVIDER_ID.length + 1)
+    : "";
+  if (
+    entry.opencodex_catalog_kind === CODEX_CUSTOM_MODEL_CATALOG_KIND
+    && entry.use_responses_lite === true
+    && isNativeOpenAiCapabilityAliasModel(routedNativeSlug)
+  ) return true;
+  if (UPSTREAM_NATIVE_ENTRIES.has(slug) || SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) return true;
+  return false;
+}
+
+export const ROUTED_CODEX_TOOL_MODE = "code_mode_only";
+
+export function applyRoutedCodexToolMode(
+  entry: RawEntry,
+  toolMode?: "code_mode_only" | "shell" | string,
+): RawEntry {
+  if (toolMode === "shell") {
+    delete entry.tool_mode;
+    return entry;
+  }
+  entry.tool_mode = ROUTED_CODEX_TOOL_MODE;
+  return entry;
+}
+
+/**
+ * @param v2FeatureEnabled When the native multi_agent_v2 feature is on, "default"
+ *   mode stamps unpinned entries as "v2" instead of deleting the key. The native
+ *   binary validates spawn_agent models against THIS catalog with its own
+ *   `multi_agent_version == Some(V2)` test (codex-rs multi_agents_common.rs), so an
+ *   absent pin means a clean refusal at spawn time — exactly the cross-provider
+ *   spawns opencodex exists to enable (option B, devlog
+ *   260730_codex_rs_upstream_v2_live_handoff/060). Upstream pins are always
+ *   preserved: a genuine "v1" pin is a real capability statement and stays excluded.
+ *   With the feature off the output is byte-identical to the historical behavior.
+ *
+ * `keepNativeChatGptOnV1` only applies when `mode === "v2"`. It leaves Sol/Terra
+ * (and other ChatGPT-native rows) on v1 so a native parent can still spawn a
+ * routed child. See issue #92.
+ */
+export function applyMultiAgentMode(
+  entries: RawEntry[],
+  mode: MultiAgentMode,
+  v2FeatureEnabled = false,
+  options: MultiAgentModeOptions = {},
+): RawEntry[] {
+  if (mode === "v2" && options.keepNativeChatGptOnV1 === true) {
+    for (const entry of entries) {
+      entry.multi_agent_version = catalogEntryIsNativeChatGpt(entry) ? "v1" : "v2";
+    }
+    return entries;
+  }
   if (mode === "default") {
     // Restore upstream defaults: clear any stale forced multi_agent_version and
     // re-apply upstream pins from the snapshot for native entries that have one.
     for (const entry of entries) {
       const slug = typeof entry.slug === "string" ? entry.slug : "";
-      const upstream = UPSTREAM_NATIVE_ENTRIES.get(slug);
-      const upstreamPin = upstream?.multi_agent_version;
+      const nativeAlias = entry.opencodex_catalog_kind === CODEX_NATIVE_ALIAS_CATALOG_KIND;
+      const routedNativeSlug = slug.startsWith(`${OPENAI_CODEX_PROVIDER_ID}/`)
+        ? slug.slice(OPENAI_CODEX_PROVIDER_ID.length + 1)
+        : "";
+      const codexForwardCapabilityAlias = entry.opencodex_catalog_kind === CODEX_CUSTOM_MODEL_CATALOG_KIND
+        && entry.use_responses_lite === true
+        && isNativeOpenAiCapabilityAliasModel(routedNativeSlug)
+        ? routedNativeSlug
+        : undefined;
+      const upstreamPin = nativeAlias
+        ? nativeMultiAgentVersion(slug)
+        : codexForwardCapabilityAlias
+          ? nativeMultiAgentVersion(codexForwardCapabilityAlias)
+          : UPSTREAM_NATIVE_ENTRIES.get(trustedAccountBoundNativeCatalogSlug(entry) ?? slug)?.multi_agent_version;
       if (typeof upstreamPin === "string") {
         entry.multi_agent_version = upstreamPin;
+      } else if (v2FeatureEnabled) {
+        entry.multi_agent_version = "v2";
       } else {
         delete entry.multi_agent_version;
       }
@@ -295,9 +529,14 @@ export function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode): 
   return entries;
 }
 
-export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls = false): RawEntry {
+export function normalizeRoutedCatalogEntry(
+  entry: RawEntry,
+  parallelToolCalls = false,
+  toolMode?: "code_mode_only" | "shell" | string,
+): RawEntry {
   delete entry.model_messages;
   delete entry.tool_mode;
+  applyRoutedCodexToolMode(entry, toolMode);
   delete entry.multi_agent_version;
   delete entry.use_responses_lite;
   delete entry.supports_websockets;
@@ -306,20 +545,24 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   delete entry.service_tiers;
   delete entry.default_service_tier;
   // Routed rows cloned from native templates must not inherit OpenAI-only summary delivery.
-  // Per-model routed opt-ins can be added once provider metadata exposes this capability.
+  // Explicit provider/model metadata is re-applied after this normalization step.
   delete entry.supports_reasoning_summaries;
   const isCursorEntry = typeof entry.slug === "string" && entry.slug.startsWith("cursor/");
-  // Routed providers use opencodex sidecars and client-executed tool discovery. The sidecar
-  // runs through native gpt-5.4-mini, so image search is available and verbalized for text-only
-  // models. EXCEPT cursor: its runTurn transport bypasses the web-search plan entirely and
-  // rejects server search queries — advertising the tool would make models call into a void.
+  // `supports_search_tool` selects Codex's deferred tool-discovery surface; it is not the hosted
+  // web-search capability. Routed rows also carry tool_mode=code_mode_only (below), and under code
+  // mode DEFERRED MCP tools remain callable through exec's `tools` global / ALL_TOOLS without any
+  // tool_search round-trip (upstream codex-rs code_mode suite; live canary 2026-08-13: routed
+  // kimi/k3 called tools.mcp__node_repl__js → isError:false). Stamping false here instead forces
+  // every MCP declaration into exec.description — a measured 2.7x turn-1 payload regression
+  // (96,699 → 258,929 chars; devlog/_plan/260813_tool_catalog_deferral/010). So every routed
+  // code-mode row advertises deferred discovery. Cursor still omits hosted web-search metadata below,
+  // but disabling this separate exposure bit can inflate `exec` past Cursor's 120 KB wire cap (#1830).
   if (isCursorEntry) {
     delete entry.web_search_tool_type;
-    entry.supports_search_tool = false;
   } else {
     entry.web_search_tool_type = "text_and_image";
-    entry.supports_search_tool = true;
   }
+  entry.supports_search_tool = true;
   // Cursor's transport already serializes overlapping tool calls into atomic Responses tool events.
   // Advertising parallel calls lets Codex send the same native capability bit it sends for OpenAI.
   // Opt-in providers (OcxProviderConfig.parallelToolCalls, e.g. xAI) advertise it too: the
@@ -349,17 +592,31 @@ export function catalogModelSupportsReasoningSummaries(modelId: string): boolean
   return values.size === 1 ? values.values().next().value : undefined;
 }
 
-export function applyJawcodeCatalogMetadata(entry: RawEntry, provider: string, modelId: string, contextCap?: number): void {
-  const jawcodeProvider = resolveJawcodeProvider(provider);
-  if (!jawcodeProvider) return;
-  const meta = getJawcodeModelMetadata(jawcodeProvider, modelId)
-    ?? (shouldCaseFoldMetadataModelId(provider) ? getJawcodeModelMetadataCaseInsensitive(jawcodeProvider, modelId) : undefined);
+/**
+ * Resolve the generated jawcode metadata row for a provider/model pair.
+ *
+ * Exported because it is the SECOND source of real capability assertions:
+ * `applyCatalogMetadata` writes context/modalities from it without ever
+ * touching a `CatalogModel`, so the routing-evidence provenance stamp in
+ * `applyCatalogModelMetadata` has to consult the same table. Both callers share
+ * this one lookup rather than duplicating the resolve/case-fold rules, which is
+ * what keeps the serialized entry and its provenance from drifting apart.
+ */
+export function generatedModelMetadata(provider: string, modelId: string) {
+  const jawcodeProvider = resolveMetadataProvider(provider);
+  if (!jawcodeProvider) return undefined;
+  return getModelMetadata(jawcodeProvider, modelId)
+    ?? (shouldCaseFoldMetadataModelId(provider) ? getModelMetadataCaseInsensitive(jawcodeProvider, modelId) : undefined);
+}
+
+export function applyCatalogMetadata(entry: RawEntry, provider: string, modelId: string, contextCap?: number): void {
+  const meta = generatedModelMetadata(provider, modelId);
   if (!meta) return;
   if (typeof meta.contextWindow === "number" && meta.contextWindow > 0) {
     const contextWindow = applyProviderContextCap(meta.contextWindow, contextCap) ?? meta.contextWindow;
     entry.context_window = contextWindow;
     entry.max_context_window = contextWindow;
-    entry.auto_compact_token_limit = Math.floor(contextWindow * 0.9);
+    entry.auto_compact_token_limit = autoCompactLimitFor(contextWindow);
   }
   if (Array.isArray(meta.input) && meta.input.length > 0) {
     entry.input_modalities = meta.input;
@@ -382,7 +639,8 @@ export function readCatalogBackup(catalogPath: string): RawCatalog | null {
 }
 
 export function catalogHasRoutedEntries(catalog: RawCatalog | null): boolean {
-  return (catalog?.models ?? []).some(m => typeof m.slug === "string" && m.slug.includes("/"));
+  return (catalog?.models ?? []).some(m => typeof m.slug === "string"
+    && (m.slug.includes("/") || m.opencodex_catalog_kind === CODEX_NATIVE_ALIAS_CATALOG_KIND));
 }
 
 export function writePristineCatalogBackup(backupPath: string, catalogPath: string, catalog: RawCatalog): void {

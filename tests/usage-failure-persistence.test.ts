@@ -67,3 +67,24 @@ test("successful entry keeps the existing persisted shape (no diagnostic fields)
   expect(row.closeReason).toBeUndefined();
   expect(row.upstreamError).toBeUndefined();
 });
+
+test("helper provenance survives in usage.jsonl for post-hoc inspection", () => {
+  addRequestLog({
+    requestId: "ocx-test-helper",
+    timestamp: Date.now(),
+    model: "gemini-3.7-flash",
+    provider: "google-antigravity",
+    status: 200,
+    durationMs: 321,
+    usageStatus: "reported",
+    helperTurn: "auto-compact",
+    helperSourceModel: "qwen-local/huihui-qwen3.8-27b-abliterated-q6-k-l",
+    helperReasoningEffort: "high",
+    usage: { inputTokens: 20, outputTokens: 4 },
+  });
+  expect(lastPersistedLine()).toMatchObject({
+    helperTurn: "auto-compact",
+    helperSourceModel: "qwen-local/huihui-qwen3.8-27b-abliterated-q6-k-l",
+    helperReasoningEffort: "high",
+  });
+});

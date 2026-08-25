@@ -1,5 +1,11 @@
 # Codex App Model Catalog Integration
 
+> **Fork update (2026-07-29):** KAT context choices are six distinct catalog
+> model rows, not service tiers, because Codex binds one context and one
+> auto-compaction limit to each catalog entry. Routed rows may carry the
+> external-review alias; native rows do not. See ADR 0008 and
+> `docs/local-integration/CURRENT-STATE.md` for the accepted fork policy.
+
 Date: 2026-06-20
 
 > **Archive note.** This is a dated design-rationale record, not current behavior

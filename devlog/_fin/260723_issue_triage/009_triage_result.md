@@ -68,7 +68,7 @@ anchors, including an independent re-run of `codex debug models --bundled`.
 | 297 | reply + close (not-repro; reopen on version evidence) | https://github.com/lidge-jun/opencodex/issues/297#issuecomment-5053493027 |
 
 Extra evidence captured for #297 before closing: this machine's synced
-`/Users/jun/.codex/opencodex-catalog.json` retains `max`/`ultra` on
+`<private-user-home>/.codex/opencodex-catalog.json` retains `max`/`ultra` on
 gpt-5.6-sol, gpt-5.6-terra, AND gpt-5.5 — the clamp is a no-op under
 codex-cli 0.144.5, consistent with the six-rung bundled-catalog union.
 

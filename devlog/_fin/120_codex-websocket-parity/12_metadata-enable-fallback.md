@@ -12,13 +12,13 @@ safety net.
 ## Evidence
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:78        routed strip (delete supports_websockets)
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:145-154   deriveEntry — native clone (no strip → latent leak)
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:195       buildCatalogEntries(template, gptSlugs, goModels, featured)
-/Users/jun/Developer/codex/codex-cli/codex-rs/core/src/client.rs:772            Codex WS selection on supports_websockets
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:78        routed strip (delete supports_websockets)
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:145-154   deriveEntry — native clone (no strip → latent leak)
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:195       buildCatalogEntries(template, gptSlugs, goModels, featured)
+<private-user-home>/Developer/codex/codex-cli/codex-rs/core/src/client.rs:772            Codex WS selection on supports_websockets
 ```
 
-Verified current state: served catalog `/Users/jun/.codex/opencodex-catalog.json` has zero
+Verified current state: served catalog `<private-user-home>/.codex/opencodex-catalog.json` has zero
 `supports_websockets` (so Codex attempts no WS today).
 
 ## Design
@@ -38,7 +38,7 @@ leak):
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts   (or wherever OcxConfig is defined)
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts   (or wherever OcxConfig is defined)
 ```
 
 ```diff
@@ -52,7 +52,7 @@ leak):
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
 ```
 
 Thread a `wsEnabled` flag into `buildCatalogEntries` and apply the central override:
@@ -79,8 +79,8 @@ is authoritative.)
 Both `buildCatalogEntries` call sites (verified):
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:537       (/v1/models codex catalog response)
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:330 (on-disk catalog injection, goEntries)
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:537       (/v1/models codex catalog response)
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:330 (on-disk catalog injection, goEntries)
 ```
 
 ```diff
@@ -107,7 +107,7 @@ Add catalog tests:
 
 **Live fallback check (the safety net):**
 
-1. `websockets: false`, regenerate the served catalog → confirm `/Users/jun/.codex/opencodex-catalog.json`
+1. `websockets: false`, regenerate the served catalog → confirm `<private-user-home>/.codex/opencodex-catalog.json`
    has no flag and Codex uses HTTP (no WS attempt).
 2. `websockets: true` with the `10_` endpoint running → Codex opens WS and a turn completes.
 3. `websockets: true` with the endpoint **stopped** → confirm Codex falls back to HTTP (or fails

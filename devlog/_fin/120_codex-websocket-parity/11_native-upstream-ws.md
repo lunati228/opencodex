@@ -54,7 +54,7 @@ A Bun WebSocket **client** mirroring `ResponsesWebsocketClient`:
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-responses-ws.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-responses-ws.ts
 ```
 
 An upstream WS client: `connect(provider, authHeaders) → { send(frame), events: AsyncIterable }`,
@@ -65,7 +65,7 @@ preconditions are captured — the handshake headers are the only unknowns; the 
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts
 ```
 
 In the WS `message` handler (`10_`), branch native vs routed: native + WS-upstream-available →

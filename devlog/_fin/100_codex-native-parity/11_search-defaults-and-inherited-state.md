@@ -92,7 +92,7 @@ cloning.
 Observed from:
 
 ```text
-/Users/jun/.codex/opencodex-catalog.json
+<private-user-home>/.codex/opencodex-catalog.json
 ```
 
 Representative entries:
@@ -113,7 +113,7 @@ passes routed models a synthetic search tool plus textual summaries of any image
 Local source:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:73-88
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:73-88
 ```
 
 ## Decision

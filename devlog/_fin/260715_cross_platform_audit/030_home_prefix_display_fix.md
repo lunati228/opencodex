@@ -1,7 +1,7 @@
 # 030 — `relPath()` home-prefix containment fix (D5, wp3)
 
 Display-only defect in warning rendering: naive lowercase prefix match has no component
-boundary (`C:\Users\bob2\x` renders as inside `~` for home `C:\Users\bob`) and applies
+boundary (`R:\profiles\example2\x` renders as inside `~` for home `R:\profiles\example`) and applies
 case-insensitive comparison on case-sensitive POSIX filesystems.
 
 ## Change map
@@ -35,23 +35,23 @@ case-insensitive comparison on case-sensitive POSIX filesystems.
 
 (+ `import path from "node:path";` if not already imported in a compatible form.)
 
-Behavior table (home `C:\Users\bob`, `pathApi = path.win32`):
+Behavior table (home `R:\profiles\example`, `pathApi = path.win32`):
 
 | `abs` | old | new |
 |-------|-----|-----|
-| `C:\Users\bob\proj\.codex\config.toml` | `~/proj/.codex/config.toml` | same |
-| `C:\Users\bob2\proj\config.toml` | `~2/proj/config.toml` (WRONG) | `C:\Users\bob2\proj\config.toml` |
-| `C:\Users\bob` | `~` | `~` |
-| `C:\Users` (parent) | unchanged | unchanged (`rel === ".."`) |
-| `D:\work\config.toml` (cross-drive) | unchanged | unchanged (`isAbsolute(rel)`) |
-| posix home `/home/Bob`, abs `/home/bob/x` | `~/x` (WRONG case-fold) | `/home/bob/x` |
+| `R:\profiles\example\proj\.codex\config.toml` | `~/proj/.codex/config.toml` | same |
+| `R:\profiles\example2\proj\config.toml` | `~2/proj/config.toml` (WRONG) | `R:\profiles\example2\proj\config.toml` |
+| `R:\profiles\example` | `~` | `~` |
+| `R:\profiles` (parent) | unchanged | unchanged (`rel === ".."`) |
+| `S:\work\config.toml` (cross-drive) | unchanged | unchanged (`isAbsolute(rel)`) |
+| posix home `/srv/profiles/Example`, abs `/srv/profiles/example/x` | `~/x` (WRONG case-fold) | `/srv/profiles/example/x` |
 
 ## Tests
 
 Owner test file for project-config-warnings (locate at implementation P; create a
 `describe("relPath containment")` block): six fixtures above, driven by injected
 `path.win32` / `path.posix` and env `USERPROFILE`/`HOME` set-reset. Activation scenario
-(C-ACTIVATION-GROUNDING-01): the `bob` vs `bob2` fixture drives the rejected-prefix
+(C-ACTIVATION-GROUNDING-01): the `example` vs `example2` fixture drives the rejected-prefix
 branch; cross-drive fixture drives the `isAbsolute` branch.
 
 ## Accept criteria

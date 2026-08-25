@@ -11,7 +11,7 @@
 - **Memory artifact:** this unit (`devlog/_plan/260709_ultra_reasoning_spec/`), goalplan ledger.
 - **Expected terminal outcomes:** DONE / NOOP (disproven by G1-G3 evidence) / BLOCKED / NEEDS_HUMAN.
 - **Escalation:** LOOP-REPAIR-01 — 2 same-failure repairs -> root-cause mode; 3 -> replan.
-- **HOTL resource bounds:** writes confined to this repo; read-only git on /Users/jun/Developer/codex/120_codex-cli; subagents = read-only explorer/reviewer (gpt-5.5), fan-out <= 3; wall-clock ~40 min tool time.
+- **HOTL resource bounds:** writes confined to this repo; read-only git on <private-user-home>/Developer/codex/120_codex-cli; subagents = read-only explorer/reviewer (gpt-5.5), fan-out <= 3; wall-clock ~40 min tool time.
 
 ## Upstream contract (evidence, origin/main = a09a7c41d)
 

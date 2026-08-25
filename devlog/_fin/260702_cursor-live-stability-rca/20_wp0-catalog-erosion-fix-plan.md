@@ -199,4 +199,4 @@ Verification:
 - Real catalog before/after final full-suite run:
   `stat -f "%Sm"` stayed `Jul  2 20:41:40 2026`;
   `shasum` stayed
-  `7be0d990236deda2c409b608942159cdb4f62a5c  /Users/jun/.codex/opencodex-catalog.json`.
+  `7be0d990236deda2c409b608942159cdb4f62a5c  <private-user-home>/.codex/opencodex-catalog.json`.

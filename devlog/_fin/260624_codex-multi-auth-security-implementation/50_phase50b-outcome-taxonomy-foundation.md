@@ -6,7 +6,7 @@ Status: implemented, focused-verified.
 
 ## Objective
 
-Continue Patch 5 from `/Users/jun/Developer/new/700_projects/opencodex/devlog/280_codex-multi-auth-security-patch-plan/00_patch_plan.md` by replacing the current "every non-2xx is an account failure" behavior with a small explicit outcome taxonomy.
+Continue Patch 5 from `<private-user-home>/Developer/new/700_projects/opencodex/devlog/280_codex-multi-auth-security-patch-plan/00_patch_plan.md` by replacing the current "every non-2xx is an account failure" behavior with a small explicit outcome taxonomy.
 
 This phase is intentionally narrow:
 
@@ -38,7 +38,7 @@ References checked:
 
 ## File Plan
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/codex-routing.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-routing.ts`
 
 Add a small exported taxonomy:
 
@@ -79,7 +79,7 @@ Change `recordCodexUpstreamOutcome()` to:
 
 The `upstreamHealth.lastFailureStatus` field can remain numeric for statuses and use `0` for connect/timeout sentinels to avoid widening unrelated API shapes in this slice.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
 
 In passthrough `fetchWithHeaderTimeout()` catch:
 
@@ -89,9 +89,9 @@ In passthrough `fetchWithHeaderTimeout()` catch:
 
 Keep the response body and status unchanged.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
 
-Import `clearAccountNeedsReauth` from `/Users/jun/Developer/new/700_projects/opencodex/src/codex-auth-api.ts` and clear reauth state for test pool ids in `beforeEach()` and `afterEach()` because credential-outcome tests intentionally mark accounts as reauth-needed.
+Import `clearAccountNeedsReauth` from `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-auth-api.ts` and clear reauth state for test pool ids in `beforeEach()` and `afterEach()` because credential-outcome tests intentionally mark accounts as reauth-needed.
 
 Update the old test named `three consecutive non-200 responses fail over future new threads` to `three consecutive transient failures fail over future new threads`.
 
@@ -103,7 +103,7 @@ Add tests:
 - connect failures contribute to failover;
 - classifier returns the expected labels for representative status codes and connect sentinels.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
 
 Add a server integration test:
 
@@ -118,7 +118,7 @@ Add a server integration test:
 
 This avoids exporting `handleResponses()` only for tests.
 
-### OPTIONAL MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-auth-context.test.ts`
+### OPTIONAL MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-auth-context.test.ts`
 
 No planned change unless focused routing tests expose reauth-state cleanup needs.
 
@@ -148,10 +148,10 @@ Independent verification:
 
 Changed files:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/codex-routing.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-routing.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-routing.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
 
 Implemented:
 
@@ -175,7 +175,7 @@ bun test tests/codex-routing.test.ts tests/server-auth.test.ts
 - 429 cooldown window using `Retry-After` or quota reset metadata.
 - Time-bounded failure streak expiry using `lastFailureAt`.
 - Recording terminal SSE or WebSocket `response.failed` / `response.incomplete` after stream completion.
-- Selected-pool sidecar outcome recording for web-search and vision sidecars; this needs a separate hook across `/Users/jun/Developer/new/700_projects/opencodex/src/web-search/executor.ts` and `/Users/jun/Developer/new/700_projects/opencodex/src/vision/describe.ts` and will be handled as a follow-up Patch 5 slice.
+- Selected-pool sidecar outcome recording for web-search and vision sidecars; this needs a separate hook across `<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/executor.ts` and `<private-user-home>/Developer/new/700_projects/opencodex/src/vision/describe.ts` and will be handled as a follow-up Patch 5 slice.
 - WebSocket auth-context consistency beyond already-merged fail-closed handling.
 
 ## Plan Audit Fixes

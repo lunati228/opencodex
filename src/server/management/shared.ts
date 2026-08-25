@@ -28,17 +28,16 @@ import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
-import { scanStorage } from "../../storage/scanner";
 import { readUsageEntries } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
-import { getProviderRegistryEntry } from "../../providers/registry";
+import { getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
@@ -52,7 +51,7 @@ import type { OcxClaudeCodeConfig, OcxClaudeDesktopProfile, OcxConfig, OcxCustom
 import type { DesktopProfileModel } from "../../claude/desktop-profile";
 import { drainAndShutdown } from "../lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
-import { estimateComboCost, estimateRequestCost, effectiveServiceTier, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
+import { estimateComboCost, estimateRequestCost, serviceTierContext, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
@@ -83,13 +82,18 @@ export type TokPerSecondResult =
   | { kind: "value"; value: number; estimated: boolean }
   | { kind: "unavailable"; reason: MetricUnavailableReason };
 
-export type CostEstimateReason = "usage_estimated" | "cache_detail_missing" | "expected_price_overlay";
+export type CostEstimateReason =
+  | "usage_estimated"
+  | "cache_detail_missing"
+  | "expected_price_overlay"
+  | "provider_cost_overlay"
+  | "priority_lower_bound";
 
 export type CostResult =
   | { kind: "value"; estimate: NonNullable<ReturnType<typeof estimateRequestCost>>; estimateReasons: CostEstimateReason[] }
   | { kind: "unavailable"; reason: MetricUnavailableReason };
 
-export type MetricSource = Pick<RequestLogEntry, "provider" | "model" | "durationMs" | "usageStatus" | "usage" | "requestedServiceTier" | "configuredServiceTier" | "responseServiceTier"> & {
+export type MetricSource = Pick<RequestLogEntry, "provider" | "model" | "durationMs" | "usageStatus" | "usage" | "requestedServiceTier" | "configuredServiceTier" | "responseServiceTier" | "tierOutcome"> & {
   attempts?: readonly PersistedUsageAttempt[];
 };
 
@@ -124,8 +128,9 @@ export function unavailableCostReason(entry: MetricSource): MetricUnavailableRea
   return "price_unmatched";
 }
 
+/** Display-time cost estimate for one log entry (or its attempt list), including the reasons that qualify the estimate. */
 export function costResult(entry: MetricSource): CostResult {
-  const tier = effectiveServiceTier(entry);
+  const tier = serviceTierContext(entry);
   const estimate = entry.attempts?.length
     ? estimateComboCost(entry.attempts, undefined, tier)
     : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus, serviceTier: tier });
@@ -137,6 +142,9 @@ export function costResult(entry: MetricSource): CostResult {
       && entry.usage.cacheCreationInputTokens === undefined ? "cache_detail_missing" as const : undefined,
     estimate.price?.source === "expected" || estimate.attempts?.some(a => a.price.source === "expected")
       ? "expected_price_overlay" as const : undefined,
+    estimate.price?.source === "user" || estimate.attempts?.some(a => a.price.source === "user")
+      ? "provider_cost_overlay" as const : undefined,
+    estimate.priorityLowerBound ? "priority_lower_bound" as const : undefined,
   ].filter((reason): reason is CostEstimateReason => reason !== undefined);
   return { kind: "value", estimate, estimateReasons };
 }
@@ -186,11 +194,11 @@ export interface GrokCandidateModel {
  * from the same two sources as the sync so the two can never disagree.
  */
 export async function fetchGrokCandidateModels(config: OcxConfig): Promise<GrokCandidateModel[]> {
-  const { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
+  const { filterCatalogVisibleModels, nativeContextLimits, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
   const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
   return [
     ...visibleNativeSlugs(config).map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id);
+      const contextWindow = nativeOpenAiContextWindow(id, nativeContextLimits(config));
       return { id, native: true, ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),
     ...routed.map(m => ({
@@ -202,7 +210,7 @@ export async function fetchGrokCandidateModels(config: OcxConfig): Promise<GrokC
 }
 
 export function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProviderConfig): OcxProviderConfig {
-  const entry = getProviderRegistryEntry(name);
+  const entry = providerMatchesRegistryTransport(name, provider) ? getProviderRegistryEntry(name) : undefined;
   if (!entry?.staticHeaders || !provider.headers) return provider;
   const headerEntries = Object.entries(provider.headers);
   const staticEntries = Object.entries(entry.staticHeaders);
@@ -215,15 +223,15 @@ export function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProvid
 
 /** Shared Desktop profile DTO builder for the management API and CLI. */
 export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxClaudeDesktopProfile) {
-  const { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
+  const { filterCatalogVisibleModels, nativeContextLimits, nativeOpenAiContextWindow, desktopVisibleNativeSlugs } = await import("../../codex/catalog");
   const { DESKTOP_SUPPORTS_1M_THRESHOLD } = await import("../../claude/desktop-3p");
   const { reconcileDesktopProfile, renderDesktopProfile } = await import("../../claude/desktop-profile");
   const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
   const profileModels: DesktopProfileModel[] = [
     // Native rows carry their real context window from the same accessor the Grok sync
     // uses — otherwise Sol's 372k and gpt-5.5's 272k render as blank on Desktop.
-    ...visibleNativeSlugs(config).map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id);
+    ...desktopVisibleNativeSlugs(config).map(id => {
+      const contextWindow = nativeOpenAiContextWindow(id, nativeContextLimits(config));
       return { route: `native/${id}`, label: `${id} (native)`,
         ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),
@@ -234,6 +242,19 @@ export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxCla
     })),
   ];
   const profile = reconcileDesktopProfile(stored ?? config.claudeCode?.desktopProfile, profileModels);
+  if (config.claudeCode?.desktopNativeModels === false) {
+    for (const route of Object.keys(profile.assignments)) {
+      if (route.startsWith("native/")) delete profile.assignments[route];
+    }
+    for (const family of ["opus", "fable", "sonnet", "haiku"] as const) {
+      const current = profile.defaults[family];
+      if (current?.startsWith("native/")) {
+        profile.defaults[family] = Object.keys(profile.assignments)
+          .filter(route => profile.assignments[route]?.family === family)
+          .sort()[0] ?? null;
+      }
+    }
+  }
   const available = new Set(profileModels.map(model => model.route));
   const modelByRoute = new Map(profileModels.map(model => [model.route, model]));
   // Effort support: routed models with a non-empty reasoningEfforts ladder support effort;
@@ -242,7 +263,7 @@ export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxCla
   for (const m of routed) {
     effortByRoute.set(`${m.provider}/${m.id}`, Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length > 0);
   }
-  for (const id of visibleNativeSlugs(config)) {
+  for (const id of desktopVisibleNativeSlugs(config)) {
     effortByRoute.set(`native/${id}`, true);
   }
   const models = Object.keys(profile.assignments).sort().map(route => ({

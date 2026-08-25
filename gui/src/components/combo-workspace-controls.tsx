@@ -1,8 +1,11 @@
 import { useState } from "react";
 import type { ComboEffort, ComboStrategy, ComboTarget } from "../combo-workspace-data";
+import { comboImagesSupported } from "../combo-capabilities";
 import { COMBO_EFFORTS, newComboTarget } from "../combo-workspace-data";
 import { IconArrowDown, IconArrowUp, IconGrip, IconPlus, IconTrash } from "../icons";
 import { useT } from "../i18n/shared";
+import { Switch } from "../ui";
+import { formatProviderDisplayName } from "../provider-icons";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
 import { clampedNumberInput, enabledProviders, modelsForProvider } from "./combo-workspace-utils";
 
@@ -43,27 +46,85 @@ export function EffortSelect({
   value,
   onChange,
   disabled,
+  allowedEfforts,
 }: {
   id: string;
   value: ComboEffort | null;
   onChange: (next: ComboEffort | null) => void;
   disabled?: boolean;
+  /** When set, only these efforts (plus None) are offered. */
+  allowedEfforts?: readonly ComboEffort[];
 }) {
   const t = useT();
+  const options = allowedEfforts ?? COMBO_EFFORTS;
+  const unsupported = value !== null && !options.includes(value);
   return (
-    <select
-      id={id}
-      className="input"
-      value={value ?? ""}
-      disabled={disabled}
-      aria-label={t("cws.field.defaultEffort")}
-      onChange={(e) => onChange(e.target.value === "" ? null : e.target.value as ComboEffort)}
-    >
-      <option value="">{t("cws.field.defaultEffortNone")}</option>
-      {COMBO_EFFORTS.map((effort) => (
-        <option key={effort} value={effort}>{effort}</option>
-      ))}
-    </select>
+    <>
+      <select
+        id={id}
+        className="input"
+        value={value ?? ""}
+        disabled={disabled}
+        aria-label={t("cws.field.defaultEffort")}
+        onChange={(e) => onChange(e.target.value === "" ? null : e.target.value as ComboEffort)}
+      >
+        <option value="">{t("cws.field.defaultEffortNone")}</option>
+        {unsupported && value ? (
+          <option value={value}>{value} ({t("cws.field.defaultEffortUnsupportedOption")})</option>
+        ) : null}
+        {options.map((effort) => (
+          <option key={effort} value={effort}>{effort}</option>
+        ))}
+      </select>
+      {unsupported ? (
+        <p className="muted" style={{ fontSize: 12, margin: "4px 0 0", color: "var(--danger, #b42318)" }}>
+          {t("cws.field.defaultEffortUnsupported")}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+
+export function ComboCapabilities({
+  targets,
+  models,
+  imageInput,
+  disabled,
+  onChange,
+}: {
+  targets: ComboTarget[];
+  models: ModelOption[];
+  imageInput: "auto" | "disabled";
+  disabled?: boolean;
+  onChange: (patch: { imageInput?: "auto" | "disabled" }) => void;
+}) {
+  const t = useT();
+  const imagesSupported = comboImagesSupported(targets, models);
+  // Default: checked (auto) when supported; force off when any target lacks image.
+  const effectiveOn = imagesSupported && imageInput !== "disabled";
+
+  return (
+    <section className="cwi-capabilities" aria-label={t("cws.capabilities")}>
+      <span className="field-label">{t("cws.capabilities")}</span>
+      <div className="cwi-capability-row">
+        <div>
+          <span className="cwi-capability-label">{t("cws.capability.imageInput")}</span>
+          <p className="muted cwi-capability-hint">
+            {imagesSupported ? t("cws.capability.imageInputHint") : t("cws.capability.imageInputUnavailable")}
+          </p>
+        </div>
+        <Switch
+          on={effectiveOn}
+          onClick={() => {
+            if (!imagesSupported) return;
+            onChange({ imageInput: imageInput === "auto" ? "disabled" : "auto" });
+          }}
+          disabled={disabled || !imagesSupported}
+          label={t("cws.capability.imageInput")}
+        />
+      </div>
+    </section>
   );
 }
 
@@ -184,7 +245,7 @@ export function TargetEditor({
               <option value="">{t("cws.target.pickProvider")}</option>
               {providerOptions.map((p) => (
                 <option key={p.name} value={p.name}>
-                  {p.disabled ? t("cws.target.disabled", { name: p.name }) : p.name}
+                  {p.disabled ? t("cws.target.disabled", { name: formatProviderDisplayName(p.name, t) }) : formatProviderDisplayName(p.name, t)}
                 </option>
               ))}
             </select>

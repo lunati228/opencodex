@@ -51,7 +51,7 @@ implemented at one or both hops. Two strategies, not mutually exclusive:
 
 ## Integration point (feasibility)
 
-opencodex runs on `Bun.serve({ fetch })` (`/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:508-510`),
+opencodex runs on `Bun.serve({ fetch })` (`<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:508-510`),
 routing `POST /v1/responses` at `:547`. Bun's native WS support plugs in here without a new
 dependency:
 

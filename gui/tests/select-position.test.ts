@@ -57,7 +57,7 @@ test("right placement opens beside the trigger", () => {
     width: 200,
     height: 36,
   }, { placement: "right", menuHeight: 120 });
-  expect(style.left).toBe(326);
+  expect(style.left).toBe(332);
   expect(style.top).toBe(120);
   expect(style.minWidth).toBe(160);
 });
@@ -71,7 +71,7 @@ test("right placement flips above when the trigger is near the bottom edge", () 
     width: 200,
     height: 36,
   }, { placement: "right", menuHeight: 220 });
-  expect(style.left).toBe(326);
+  expect(style.left).toBe(332);
   expect(style.bottom).toBe(108);
   expect(style.top).toBeUndefined();
 });
@@ -98,7 +98,7 @@ test("right placement flips above when the menu would overflow vertically below 
     width: 200,
     height: 36,
   }, { placement: "right", menuHeight: 280 });
-  expect(style.left).toBe(326);
+  expect(style.left).toBe(332);
   expect(style.bottom).toBe(108);
   expect(style.top).toBeUndefined();
 });
@@ -115,3 +115,17 @@ test("right alignment anchors the menu to the trigger's right edge", () => {
   expect(style.right).toBe(704);
   expect(style.left).toBeUndefined();
 });
+
+test("automatically defaults to right alignment when trigger sits in right half of viewport", () => {
+  const style = computeSelectMenuStyle({
+    top: 120,
+    bottom: 156,
+    left: 800,
+    right: 960,
+    width: 160,
+    height: 36,
+  }, { menuHeight: 120 });
+  expect(style.right).toBe(64);
+  expect(style.left).toBeUndefined();
+});
+

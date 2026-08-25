@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { commandInvocation } from "../src/lib/win-exec";
 
 setDefaultTimeout(30_000);
 
@@ -17,6 +18,8 @@ interface LoggedCall {
 
 interface ReleaseScenario {
   branch?: string;
+  npmLatest?: string;
+  npmPreview?: string;
   headSha?: string;
   remoteHeadSha?: string;
   privacyExitCode?: number;
@@ -103,6 +106,14 @@ process.exit(1);
 
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_RELEASE_LOG, JSON.stringify({ name: "npm", args }) + "\\n");
+
+if (args[0] === "view" && args.includes("dist-tags")) {
+  process.stdout.write(JSON.stringify({
+    latest: process.env.FAKE_NPM_LATEST ?? "0.0.1",
+    preview: process.env.FAKE_NPM_PREVIEW ?? "0.0.1-preview.0",
+  }) + "\\n");
+  process.exit(0);
+}
 
 if (args[0] === "view") {
   console.error("npm ERR! code E404");
@@ -191,11 +202,23 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
     installCommandShim(shimDir, name);
   }
 
+  // Windows names the variable `Path`, and `...process.env` copies it in under
+  // that spelling. Adding a separate `PATH` key leaves BOTH present, and which
+  // one wins is not something this test should be gambling on — the child saw
+  // the real git instead of the shim, so the branch guard read `dev` and the
+  // script aborted before logging a single call. Strip every case variant, then
+  // set exactly one.
+  const inheritedEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"),
+  );
+  const pathKey = process.platform === "win32" ? "Path" : "PATH";
+  const pathValue = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
+
   const result = spawnSync(process.execPath, [releaseScriptPath, version], {
     cwd: repoRoot,
     env: {
-      ...process.env,
-      PATH: `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
+      ...inheritedEnv,
+      [pathKey]: pathValue,
       FAKE_RELEASE_LOG: logPath,
       FAKE_GIT_BRANCH: scenario.branch ?? "main",
       FAKE_GIT_HEAD_SHA: scenario.headSha ?? "abc123def456",
@@ -203,6 +226,8 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
       FAKE_BUN_TSC_EXIT_CODE: String(scenario.typecheckExitCode ?? 0),
       FAKE_BUN_TEST_EXIT_CODE: String(scenario.testExitCode ?? 0),
       FAKE_BUN_PRIVACY_EXIT_CODE: String(scenario.privacyExitCode ?? 0),
+      ...(scenario.npmLatest ? { FAKE_NPM_LATEST: scenario.npmLatest } : {}),
+      ...(scenario.npmPreview ? { FAKE_NPM_PREVIEW: scenario.npmPreview } : {}),
     },
     encoding: "utf8",
   });
@@ -213,11 +238,15 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
 }
 
 describe("release helper", () => {
-  test("preflight runs typecheck, test suite, and privacy scan before version bump on main dry-runs", () => {
+  test("preflight runs the shared audit, typecheck, test suite, and privacy scan before version bump", () => {
     const { calls, result } = runRelease("9.9.9");
 
-    expect(result.status).toBe(0);
+    // Report what the script actually said. A bare status assertion turned a
+    // Windows-only spawn failure into "Expected: 0 Received: 1" with no cause,
+    // which cost a full CI round to diagnose.
+    expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
 
+    const auditIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "run audit:high");
     const typecheckIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "x tsc --noEmit");
     const testIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "test --isolate tests");
     const privacyIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "run privacy:scan");
@@ -230,11 +259,34 @@ describe("release helper", () => {
       && call.args.includes("dry-run=true"),
     );
 
-    expect(typecheckIndex).toBeGreaterThanOrEqual(0);
+    expect(auditIndex).toBeGreaterThanOrEqual(0);
+    expect(typecheckIndex).toBeGreaterThan(auditIndex);
     expect(testIndex).toBeGreaterThan(typecheckIndex);
     expect(privacyIndex).toBeGreaterThan(testIndex);
     expect(versionIndex).toBeGreaterThan(privacyIndex);
     expect(dispatchIndex).toBeGreaterThan(versionIndex);
+  });
+
+  test("an obsolete version that would move latest backwards aborts before the bump", () => {
+    const { calls, result } = runRelease("9.9.8", { npmLatest: "9.9.9" });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr ?? "").toContain("does not move the 'latest' channel forward");
+    expect(findCallIndex(calls, "npm", call => call.args[0] === "version")).toBe(-1);
+    expect(findCallIndex(calls, "git", call => call.args[0] === "commit")).toBe(-1);
+  });
+
+  test("a version newer than the channel tip passes the forward guard", () => {
+    const { calls, result } = runRelease("9.9.10", { npmLatest: "9.9.9" });
+
+    expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
+    expect(findCallIndex(calls, "npm", call => call.args.join(" ") === "version 9.9.10 --no-git-tag-version")).toBeGreaterThanOrEqual(0);
+  });
+
+  test("preview releases compare against the preview channel, not latest", () => {
+    const { result } = runRelease("9.9.9-preview.2", { branch: "preview", npmLatest: "10.0.0", npmPreview: "9.9.9-preview.1" });
+
+    expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
   });
 
   test("failed privacy scan aborts before version bump, commit, and push", () => {
@@ -281,5 +333,87 @@ describe("release helper", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr + result.stdout).toContain("moved while waiting for CI");
     expect(findCallIndex(calls, "gh", call => call.args[0] === "workflow" && call.args[1] === "run")).toBe(-1);
+  });
+
+  /**
+   * The preflight's `runQuiet` callers (`npm view`, `git ls-remote`, `gh release
+   * view`) are the first commands a release runs. On Windows they are `.cmd`
+   * shims, and a shell-less spawn of a bare `npm` neither consults PATHEXT nor
+   * accepts a `.cmd` target — so the script died before invoking anything and
+   * the four tests above failed with an empty call log on windows-latest only.
+   *
+   * The rest of this suite runs on the host platform, so on macOS/Linux it can
+   * never exercise that path. Pin the win32 resolution directly instead of
+   * waiting for CI to tell us.
+   */
+  test("preflight commands resolve through the Windows .cmd launcher", () => {
+    const env = { PATH: "C:\\shims", PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+    const cmdShim = (name: string) => (path: string) => path.toLowerCase() === `c:\\shims\\${name}.cmd`;
+
+    const npm = commandInvocation("npm", ["view", "pkg@9.9.9", "version"], "win32", { env, exists: cmdShim("npm") });
+    expect(npm.file).toBe("cmd.exe");
+    expect(npm.options.windowsVerbatimArguments).toBe(true);
+    expect(npm.args.join(" ")).toContain("npm.cmd");
+    // A bare name would have survived unresolved and ENOENT'd at spawn time.
+    expect(npm.args.join(" ")).not.toBe("npm");
+
+    const gh = commandInvocation("gh", ["release", "view", "v9.9.9"], "win32", { env, exists: cmdShim("gh") });
+    expect(gh.file).toBe("cmd.exe");
+    expect(gh.args.join(" ")).toContain("gh.cmd");
+
+    // A real `.exe` (git) must NOT be wrapped: direct spawn keeps arg boundaries.
+    const git = commandInvocation("git", ["ls-remote", "origin"], "win32", {
+      env,
+      exists: (path: string) => path.toLowerCase() === "c:\\shims\\git.exe",
+    });
+    expect(git.file.toLowerCase()).toBe("c:\\shims\\git.exe");
+    expect(git.options.windowsVerbatimArguments).toBeUndefined();
+  });
+
+  /**
+   * The test above proves the LAUNCHER is correct; this one proves the release
+   * script actually uses it. That distinction is not academic: `runQuiet` was
+   * already routed through `commandInvocation` while every `git`/`bun`/`npm`
+   * call still went through `Bun.$`, and the suite stayed green on macOS while
+   * windows-latest failed. The built-in shell resolved PATH itself, walked past
+   * the extension-less shim it could not execute, and reached the real `git` —
+   * so the branch guard saw `dev` rather than the faked `main` and aborted
+   * before logging a single call.
+   *
+   * A source assertion is the honest check here: the failure is "which resolver
+   * ran", and no host-platform execution can observe that.
+   */
+  test("every external command goes through the shared launcher, not the built-in shell", () => {
+    const source = readFileSync(releaseScriptPath, "utf8");
+    const withoutComments = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+
+    // Bun.$ resolves PATH with its own shell; that is exactly the bypass.
+    expect(withoutComments).not.toMatch(/\$`/);
+    expect(withoutComments).not.toMatch(/from\s+"bun"/);
+
+    // And the launcher must still be the thing it reaches for.
+    expect(withoutComments).toContain("commandInvocation");
+  });
+
+  // #1753 review follow-up: build metadata on the channel tip is valid semver
+  // and compares by precedence only; an unparseable tip must fail CLOSED
+  // (Number() on a garbage core used to yield NaN and pass any candidate).
+  test("channel tip with build metadata compares by precedence, not NaN", () => {
+    const { result } = runRelease("2.19.4", { npmLatest: "2.19.3+build.1" });
+    expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
+  });
+
+  test("channel tip equal after stripping build metadata does not move forward", () => {
+    const { result } = runRelease("2.19.3", { npmLatest: "2.19.3+build.1" });
+    expect(result.status).toBe(1);
+    expect(result.stderr ?? "").toContain("does not move");
+  });
+
+  test("unparseable channel tip fails closed", () => {
+    const { result } = runRelease("2.19.4", { npmLatest: "not-a-version" });
+    expect(result.status).toBe(1);
+    expect(result.stderr ?? "").toContain("cannot compare release versions");
   });
 });

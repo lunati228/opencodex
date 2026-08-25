@@ -112,7 +112,7 @@
   helper takes an explicit env map so new tests inject fake prefixes deterministically.
 - NEW `tests/win-paths.test.ts`: longest-prefix selection, case-insensitive drive/letter
   compare, non-matching paths pass through, no partial-component match
-  (`C:\Users\junk` ≠ `C:\Users\jun`).
+  (`<private-user-home>` ≠ `<private-user-home>`).
 - NEW `tests/process-control-graceful.test.ts`: `stopProxyGracefully` with injected fetch +
   runtime-port reader (dependency-injected); asserts API-first ordering and fallback.
 - NEW `tests/ocx-launcher-source.test.ts`: source-scan regression — npm spawnSync sites in

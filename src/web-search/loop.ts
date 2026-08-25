@@ -1,13 +1,25 @@
-import type { ProviderAdapter } from "../adapters/base";
-import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxThinkingContent, OcxUsage } from "../types";
-import { namespacedToolName } from "../types";
+import type { AdapterRequest, IncomingMeta, ProviderAdapter } from "../adapters/base";
+import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxProviderOpaqueToolCallMetadata, OcxThinkingContent, OcxUsage, RateLimitRetryPolicy } from "../types";
+import { namespacedToolName, toolChoiceToolPredicate } from "../types";
+import { cloneProviderOpaqueToolCallMetadata } from "../responses/provider-opaque-metadata";
+import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { runAnthropicWebSearch } from "./anthropic-executor";
+import { runXaiWebSearch, type XaiSearchOptions } from "./xai-executor";
+import { runGeminiWebSearch } from "./gemini-executor";
+import { runExaWebSearch } from "./exa-executor";
+import type { WebSearchBackendId } from "./index";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry } from "../lib/upstream-retry";
+import { fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
+import { rateLimitRetryDelayMs } from "../providers/key-failover";
+import {
+  isTranslatorBudgetExceededError,
+  TRANSLATOR_MAX_TURN_BYTES,
+  TranslatorBudgetExceededError,
+} from "../lib/translator-budget";
 import { formatWebSearchResults } from "./format-result";
 import { parseStreamWithProgress, RoutedModelInactivityError, WebSearchStreamProtocolError } from "./progress-stream";
 import { WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
@@ -25,6 +37,11 @@ interface WebSearchCall {
   // empty array means the model called the tool with neither `query` nor `queries` (handled as an
   // empty-query placeholder).
   queries: string[];
+  /**
+   * Provider-opaque metadata from the originating part (issue #1735). Stored PER CALL so a
+   * signature can never migrate to a different call when the model batches several.
+   */
+  providerMetadata?: OcxProviderOpaqueToolCallMetadata;
 }
 
 /**
@@ -56,40 +73,68 @@ export function scanEventsForWebSearch(events: AdapterEvent[]): {
   calls: WebSearchCall[];
   passthrough: AdapterEvent[];
   hasRealToolCall: boolean;
+  hasMalformedToolCall: boolean;
 } {
   const calls: WebSearchCall[] = [];
   const passthrough: AdapterEvent[] = [];
   let hasRealToolCall = false;
-  let pending: { name: string; id: string; argsBuf: string; events: AdapterEvent[] } | null = null;
+  let hasMalformedToolCall = false;
+  let pending: { name: string; id: string; argsBuf: string; closed: boolean; events: AdapterEvent[]; providerMetadata?: OcxProviderOpaqueToolCallMetadata } | null = null;
+  const isBlank = (value: string): boolean => value.trim().length === 0;
   const flushPending = (): void => {
+    // A pending call that never saw tool_call_end is structurally malformed.
+    if (pending && !pending.closed) hasMalformedToolCall = true;
     if (pending && pending.name !== WEB_SEARCH_TOOL_NAME) {
       passthrough.push(...pending.events);
-      hasRealToolCall = true;
+      if (pending.closed && !isBlank(pending.id) && !isBlank(pending.name)) hasRealToolCall = true;
     }
     pending = null;
   };
   for (const e of events) {
     if (e.type === "tool_call_start") {
       flushPending();
-      pending = { name: e.name, id: e.id, argsBuf: "", events: [e] };
-    } else if (e.type === "tool_call_delta" && pending) {
-      pending.argsBuf += e.arguments;
-      pending.events.push(e);
-    } else if (e.type === "tool_call_end" && pending) {
-      pending.events.push(e);
-      if (pending.name === WEB_SEARCH_TOOL_NAME) {
-        calls.push({ id: pending.id, queries: parseQueries(pending.argsBuf) });
-      } else {
-        passthrough.push(...pending.events);
-        hasRealToolCall = true;
+      if (isBlank(e.id) || isBlank(e.name)) hasMalformedToolCall = true;
+      pending = { name: e.name, id: e.id, argsBuf: "", closed: false, events: [e], providerMetadata: e.providerMetadata };
+    } else if (e.type === "tool_call_delta") {
+      // Orphan delta (no open call) is malformed.
+      if (!pending) hasMalformedToolCall = true;
+      else {
+        pending.argsBuf += e.arguments;
+        pending.events.push(e);
       }
-      pending = null;
+    } else if (e.type === "tool_call_end") {
+      // Orphan end (no open call) is malformed.
+      if (!pending) {
+        hasMalformedToolCall = true;
+      } else {
+        pending.events.push(e);
+        pending.closed = true;
+        if (pending.name === WEB_SEARCH_TOOL_NAME) {
+          calls.push({ id: pending.id, queries: parseQueries(pending.argsBuf), providerMetadata: pending.providerMetadata });
+        } else {
+          passthrough.push(...pending.events);
+          if (!isBlank(pending.id) && !isBlank(pending.name)) hasRealToolCall = true;
+        }
+        pending = null;
+      }
     } else {
       passthrough.push(e);
     }
   }
   flushPending();
-  return { calls, passthrough, hasRealToolCall };
+  return { calls, passthrough, hasRealToolCall, hasMalformedToolCall };
+}
+
+/**
+ * Visible final-answer text: a non-whitespace text_delta that is NOT commentary
+ * (#1001). Commentary streams early for progress and must not satisfy the
+ * forced-answer output check; thinking alone never counts either.
+ */
+export function hasVisibleAssistantText(events: AdapterEvent[]): boolean {
+  return events.some(event =>
+    event.type === "text_delta"
+    && event.phase !== "commentary"
+    && event.text.trim().length > 0);
 }
 
 async function* replay(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
@@ -103,23 +148,63 @@ async function* replay(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
  * replaying a bare toolCall 400s ("Expected `thinking` or `redacted_thinking`, but found
  * `tool_use`"). The signature validity gate stays in the anthropic adapter; other adapters
  * ignore or serialize the part harmlessly.
+ *
+ * Each signed block keeps its OWN signature and text, mirroring src/images/loop.ts: a signature
+ * authenticates the exact block it closed, so flattening two blocks under the last signature
+ * 400s on replay just as it does there.
+ *
+ * Raw reasoning (`reasoning_raw_delta`, what OpenAI-compatible providers emit instead of signed
+ * thinking) accumulates into a SEPARATE UNSIGNED part. It must never join a signed block: the
+ * anthropic serializer skips signature-less parts, while openai-chat serializes their text as
+ * `reasoning_content` — which DeepSeek V4 thinking mode requires back alongside the replayed
+ * tool_calls, and whose absence ended the turn as a provider 400 (issue #688).
+ *
+ * This assumes raw reasoning never interleaves INSIDE an unfinished signed block: Anthropic-family
+ * adapters emit thinking_delta/signature and OpenAI-compatible ones emit reasoning_raw_delta, and
+ * the two never share a stream. Honoring a genuinely mixed stream would need per-segment state,
+ * not another accumulator.
  */
-function extractIterationThinking(events: AdapterEvent[]): OcxThinkingContent | null {
+function extractIterationThinking(events: AdapterEvent[]): OcxThinkingContent[] {
+  const parts: OcxThinkingContent[] = [];
   let thinking = "";
   let signature: string | undefined;
-  const redacted: string[] = [];
-  for (const e of events) {
-    if (e.type === "thinking_delta") thinking += e.thinking;
-    else if (e.type === "thinking_signature") signature = e.signature;
-    else if (e.type === "redacted_thinking") redacted.push(e.data);
-  }
-  if (!thinking && !signature && redacted.length === 0) return null;
-  return {
-    type: "thinking",
-    thinking,
-    ...(signature ? { signature } : {}),
-    ...(redacted.length > 0 ? { redacted } : {}),
+  let rawReasoning = "";
+
+  const flushVisible = () => {
+    if (!thinking && !signature) return;
+    parts.push({
+      type: "thinking",
+      thinking,
+      ...(signature ? { signature } : {}),
+    });
+    thinking = "";
+    signature = undefined;
   };
+  const flushRaw = () => {
+    if (!rawReasoning) return;
+    parts.push({ type: "thinking", thinking: rawReasoning });
+    rawReasoning = "";
+  };
+
+  for (const e of events) {
+    if (e.type === "thinking_delta") {
+      flushRaw();
+      thinking += e.thinking;
+    } else if (e.type === "reasoning_raw_delta") {
+      flushVisible();
+      rawReasoning += e.text;
+    } else if (e.type === "thinking_signature") {
+      signature = e.signature;
+      flushVisible();
+    } else if (e.type === "redacted_thinking") {
+      flushVisible();
+      flushRaw();
+      parts.push({ type: "thinking", thinking: "", redacted: [e.data] });
+    }
+  }
+  flushVisible();
+  flushRaw();
+  return parts;
 }
 
 /** Normalize a query for failed-query de-duplication (case/whitespace-insensitive). */
@@ -161,15 +246,32 @@ class LoopError extends Error {
   }
 }
 
+/**
+ * Dependencies for one web-search loop iteration: parsed request, active adapter,
+ * incoming metadata, and the configured search executor.
+ */
 export interface WebSearchLoopDeps {
   parsed: OcxParsedRequest;
   adapter: ProviderAdapter;
-  /** Which executor runs searches. Defaults to "openai" so existing callers keep the ChatGPT path (audit F4). */
-  backend?: "openai" | "anthropic";
+  incomingMeta: IncomingMeta;
+  /**
+   * Which executor runs searches. Defaults to "openai" so existing callers keep the ChatGPT path
+   * (audit F4). The widened ids (xai/gemini/exa) cannot reach the loop yet: planWebSearch returns
+   * no plan for them (inert 060 arms), and the dispatch below only branches on "anthropic".
+   */
+  backend?: WebSearchBackendId;
   /** Required for the openai backend; unused (and typically undefined) for the anthropic backend. */
   forwardProvider?: OcxProviderConfig;
   /** Required for the anthropic backend: the stored-OAuth provider that runs web_search_20250305. */
   anthropicSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the xai backend: the stored Grok OAuth provider (L7). */
+  xaiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the gemini backend: the stored Antigravity CCA provider (L8). */
+  geminiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the exa backend: the operator key, read from config at plan unpack (L9). */
+  exaApiKey?: string;
+  /** Opt-in x_search options for the xai backend. */
+  xaiSearchOptions?: XaiSearchOptions;
   hostedTool: Record<string, unknown>;
   selectedForwardHeaders: Headers;
   settings: SidecarSettings;
@@ -187,15 +289,29 @@ export interface WebSearchLoopDeps {
    * sidecar search, so a legitimately slow-but-progressing unit never trips the bridge watchdog.
    */
   stallTimeoutSec?: number;
+  /**
+   * Opt-in: stream the routed model's leading text/thinking deltas live instead of holding the whole
+   * iteration back. The live window closes at the first buffer-only event (tool calls above all) so
+   * the web_search interception decision stays atomic; everything after replays in order at the end.
+   */
+  streamRoutedModelOutput?: boolean;
   /** One-shot TTFT callback: first non-empty model output observed (WP4). */
   onFirstOutput?: () => void;
   /** Raw adapter usage at the terminal event, pre wire-normalization (see bridgeToResponsesSSE onUsage). */
   onUsage?: (usage: OcxUsage | undefined) => void;
+  /** Observe the exact adapter request selected for each routed-model iteration. */
+  onRequestBuilt?: (request: AdapterRequest) => void;
+  /** Called before each routed-model dispatch in the loop, for attempt telemetry. Same-target 429 replays pass the `rate-limit-429` recovery kind. */
+  onAttemptSend?: (recovery?: AttemptRecoveryKind) => void;
   /**
    * 429 key-failover hook: rotate the provider's active pool key and return a rebuilt adapter,
    * or null when the pool is exhausted (same semantics as the normal routed path).
    */
   on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
+  /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
+  retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
+  /** Called only when the final bridged Responses stream reaches completed or incomplete. */
+  onCompletedResponse?: (response: Record<string, unknown>) => void;
 }
 
 /**
@@ -205,11 +321,18 @@ export interface WebSearchLoopDeps {
  * inject the answer as a tool_result, and loop (bounded by `maxSearches`).
  */
 export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Response> {
+  const translatorBudget = deps.incomingMeta.translatorBudget;
   const { parsed, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
   const backend = deps.backend ?? "openai";
   const anthropicSidecar = deps.anthropicSidecar;
   // Mutable: 429 key-failover (deps.on429) can swap in a rebuilt adapter mid-loop.
   let adapter = deps.adapter;
+
+  // Bridge stall budget (seconds of silence before upstream_stall_timeout); the retry backoff
+  // heartbeat interval is derived from it so the watchdog is always fed during deliberate waits.
+  const stallTimeoutMs = typeof deps.stallTimeoutSec === "number" && Number.isFinite(deps.stallTimeoutSec) && deps.stallTimeoutSec > 0
+    ? Math.floor(deps.stallTimeoutSec * 1000)
+    : 300_000;
 
   const messages: OcxMessage[] = [...parsed.context.messages];
   const loopT0 = Date.now();
@@ -243,11 +366,29 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     response: Response;
     responseAdapter: ProviderAdapter;
   }
-  type IterationSplit = ReturnType<typeof scanEventsForWebSearch>;
+  type IterationSplit = ReturnType<typeof scanEventsForWebSearch> & {
+    /**
+     * How many leading passthrough events were already delivered live this iteration. They are
+     * exactly the first N passthrough entries (live delivery stops before the first event that
+     * scanEventsForWebSearch could group or reorder), so the terminal replay skips them by count.
+     */
+    streamedPassthroughCount: number;
+  };
+
+  // Same-target 429 budget is per REQUEST, not per model iteration: later search rounds inherit
+  // what earlier rounds left of `attempts`, so a bounded multi-round turn can never exceed the
+  // configured replay count in total (a per-round reset would multiply it by maxSearches).
+  const rateLimitRetryPolicy = deps.retryOn429Policy ?? null;
+  let rateLimitRetries = 0;
 
   // Acquire one iteration's final response headers. The first call is drained eagerly so an initial
   // connect/header/HTTP failure stays a non-2xx JSON response. Its successful BODY is deliberately
   // left unread until the downstream Responses SSE bridge exists.
+  /**
+   * Fetch one web-search iteration's final response headers, applying the response-header
+   * deadline and the same-target 429 retry policy (with awaited body release and deadline
+   * restart) before the `on429` key rotation.
+   */
   const prepareIterationEvents = async function* (forceAnswer: boolean): AsyncGenerator<AdapterEvent, IterationResponse> {
     // On the forced-answer pass the synthetic web_search tool is gone, so the model MUST answer
     // from the results already in `messages`. A weak model can still produce a thin answer that
@@ -264,22 +405,55 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     // One cumulative header deadline spans every pool-key 429 rotation in this model iteration.
     // clear() stops only its timer after final headers; the direct turn signal remains attached to
     // the returned response body through AbortSignal.any().
-    const headerDeadline = clearableDeadline(connectTimeoutMs, signal);
+    let headerDeadline = clearableDeadline(connectTimeoutMs, signal);
     try {
-      const fetchOnce = async (requestAdapter: ProviderAdapter): Promise<IterationResponse> => {
-        const request = await requestAdapter.buildRequest(iterParsed, {
-          headers: selectedForwardHeaders,
-          abortSignal: headerDeadline.signal,
-        });
-        const response = requestAdapter.fetchResponse
-          ? await requestAdapter.fetchResponse(request, {
+      /**
+       * Build and fetch one web-search iteration on the given adapter, under the iteration
+       * header deadline. The caller owns same-target 429 replays and key rotation around it.
+       * The outbound request is cached per adapter so a same-target replay reuses the EXACT
+       * URL, serialized body, and headers (builder runs once per target sequence).
+       */
+      let cachedRequest: AdapterRequest | undefined;
+      let cachedAdapter: ProviderAdapter | undefined;
+      /**
+       * Build and fetch one web-search iteration on the given adapter, under the iteration
+       * header deadline. The caller owns same-target 429 replays and key rotation around it.
+       */
+      const fetchOnce = async (requestAdapter: ProviderAdapter, recovery?: AttemptRecoveryKind): Promise<IterationResponse> => {
+        let request: AdapterRequest;
+        if (cachedRequest !== undefined && cachedAdapter === requestAdapter) {
+          request = cachedRequest;
+        } else {
+          request = await requestAdapter.buildRequest(iterParsed, {
+            headers: selectedForwardHeaders,
+            abortSignal: headerDeadline.signal,
+            translatorBudget,
+          });
+          try {
+            deps.onRequestBuilt?.(request);
+          } catch {
+            // Diagnostics are best-effort and must never abort a web-search iteration.
+          }
+          cachedRequest = request;
+          cachedAdapter = requestAdapter;
+        }
+        let response: Response;
+        try {
+          if (requestAdapter.fetchResponse) {
+            deps.onAttemptSend?.(recovery);
+            response = await requestAdapter.fetchResponse(request, {
               abortSignal: headerDeadline.signal,
               timeoutMs: connectTimeoutMs,
               returnRawErrors: true,
               stream: true,
-            })
-          : await fetchWithResetRetry(
-              () => {
+            });
+          } else {
+            response = await fetchWithResetRetry(
+              (retryRecovery) => {
+                // Record every helper-driven send (the callback runs for the first attempt and
+                // each connection-reset replay); preserve the caller's recovery kind
+                // (rate-limit-429 / key-429) when the retry layer supplies none.
+                deps.onAttemptSend?.(retryRecovery ?? recovery);
                 const h = new Headers(request.headers);
                 if (!h.has("accept-encoding")) h.set("accept-encoding", "identity");
                 return fetch(request.url, {
@@ -291,10 +465,47 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
               },
               { abortSignal: headerDeadline.signal, label: "web-search-loop" },
             );
+          }
+        } finally {
+          request.releaseBodyObservation?.();
+        }
         return { response, responseAdapter: requestAdapter };
       };
 
       let prepared = await fetchOnce(adapter);
+      // Same-target 429 wait-and-retry (opt-in `retryOn429`) BEFORE key rotation: a primary-key
+      // rate-limit blip replays on the SAME key; rotation only runs after attempts exhaust.
+      while (
+        prepared.response.status === 429
+        && rateLimitRetryPolicy !== null
+        && rateLimitRetries < rateLimitRetryPolicy.attempts
+      ) {
+        rateLimitRetries += 1;
+        // Release unread body + heartbeat-fed wait via the shared same-target helper.
+        const retryAfterHeader = prepared.response.headers.get("retry-after");
+        // The old header deadline must not stay armed across the deliberate wait: clear it
+        // before sleeping so a stale expiry can never race the client-cancel path.
+        headerDeadline.clear();
+        try {
+          yield* prepareSameTarget429Wait({
+            body: prepared.response.body,
+            signal,
+            delayMs: rateLimitRetryDelayMs(rateLimitRetryPolicy, retryAfterHeader, Date.now()),
+            heartbeatIntervalMs: Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
+          });
+        } catch {
+          throw new LoopError(499, "client closed request during web-search");
+        }
+        // Client cancellation wins over any stale-deadline edge: re-check before telemetry/replay.
+        if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
+        // The deliberate backoff must not consume the cumulative response-header deadline:
+        // start a fresh one so the replay gets a new connect budget (504 stays reserved for real
+        // upstream latency).
+        headerDeadline = clearableDeadline(connectTimeoutMs, signal);
+        // Stall-watchdog seam between bounded retry fetches.
+        yield { type: "heartbeat" };
+        prepared = await fetchOnce(adapter, "rate-limit-429");
+      }
       // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
       // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
       while (prepared.response.status === 429 && deps.on429) {
@@ -306,7 +517,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         adapter = rotated;
         // Stall-watchdog seam between bounded retry fetches (audit 011 B3).
         yield { type: "heartbeat" };
-        prepared = await fetchOnce(adapter);
+        prepared = await fetchOnce(adapter, "key-429");
       }
 
       // Final headers have arrived. Clear only the deadline timer before ANY body read.
@@ -338,6 +549,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       }
       return prepared;
     } catch (error) {
+      if (isTranslatorBudgetExceededError(error)) throw error;
       if (headerDeadline.didExpire()) {
         throw new LoopError(504, `Provider response-header timeout after ${connectTimeoutMs}ms during web-search`);
       }
@@ -356,15 +568,29 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     return r.value;
   };
 
+  // Event types that may leave the live window before the first tool-call boundary: pure
+  // text/thinking output the native (sidecar-less) path would deliver identically. Everything
+  // else — tool calls above all, and any type scanEventsForWebSearch could group or a future
+  // adapter could add — closes the window so live delivery can never reorder against the replay.
+  const LIVE_STREAMABLE = new Set<AdapterEvent["type"]>([
+    "text_delta", "thinking_delta", "reasoning_raw_delta",
+    "thinking_signature", "redacted_thinking", "kiro_redacted_reasoning",
+  ]);
+
   // Consume and validate one successful response body under a resettable raw-byte inactivity guard.
-  // Only invisible heartbeat events escape while semantic output remains buffered for safe scanning.
+  // By default only invisible heartbeat events escape while semantic output remains buffered for
+  // safe scanning; with `streamRoutedModelOutput` the leading text/thinking deltas stream live and
+  // the live window closes permanently at the first buffer-only event (see LIVE_STREAMABLE).
   const consumeIterationEvents = async function* (prepared: IterationResponse): AsyncGenerator<AdapterEvent, IterationSplit> {
     const events: AdapterEvent[] = [];
+    let liveWindowOpen = deps.streamRoutedModelOutput === true;
+    let streamedPassthroughCount = 0;
     try {
       const parse = prepared.responseAdapter.parseStream.bind(prepared.responseAdapter);
       for await (const event of parseStreamWithProgress(prepared.response, parse, {
         signal,
         inactivityTimeoutMs: routedModelStallTimeoutMs,
+        translatorBudget,
       })) {
         if (event.type === "heartbeat") yield event;
         // Kiro's explicit-completion protocol marks ordinary assistant text as commentary while
@@ -374,9 +600,19 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         // Tool events remain buffered below, so the decision to invoke the hosted sidecar is still
         // atomic and no search call can escape before its stream has validated successfully.
         else if (event.type === "text_delta" && event.phase === "commentary") yield event;
-        else events.push(event);
+        else if (liveWindowOpen && LIVE_STREAMABLE.has(event.type)) {
+          // Live events are ALSO buffered: the scanner still needs them for thinking extraction
+          // and the forced-answer output check; only the terminal replay skips them (by count).
+          yield event;
+          streamedPassthroughCount++;
+          events.push(event);
+        } else {
+          liveWindowOpen = false;
+          events.push(event);
+        }
       }
     } catch (error) {
+      if (isTranslatorBudgetExceededError(error)) throw error;
       if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
       if (error instanceof RoutedModelInactivityError) throw new LoopError(504, error.message);
       if (error instanceof WebSearchStreamProtocolError) throw new LoopError(502, error.message);
@@ -389,8 +625,13 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       throw new LoopError(502, `Web-search adapter stream protocol error: expected one final terminal event, received ${terminalIndexes.length}`);
     }
     const terminal = events[terminalIndexes[0]!];
-    if (terminal.type === "error") throw new LoopError(502, terminal.message);
-    return scanEventsForWebSearch(events);
+    if (terminal.type === "error") {
+      if (terminal.code === "translation_buffer_limit") {
+        throw new TranslatorBudgetExceededError("retained_collectors", TRANSLATOR_MAX_TURN_BYTES);
+      }
+      throw new LoopError(502, terminal.message);
+    }
+    return { ...scanEventsForWebSearch(events), streamedPassthroughCount };
   };
 
   // Execute one model-requested web_search call. The call may batch several queries (native
@@ -399,7 +640,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   // valid, and surface as ONE search cell carrying every attempted query. A real search (one that
   // hits the sidecar) shows the spinner WHILE the batch runs. Empty/limit/repeat placeholders never
   // emit a cell (matching the prior single-query behavior).
-  async function* runSearchCall(call: WebSearchCall, precedingThinking?: OcxThinkingContent | null): AsyncGenerator<AdapterEvent> {
+  async function* runSearchCall(call: WebSearchCall, precedingThinking: OcxThinkingContent[] = []): AsyncGenerator<AdapterEvent> {
     const results: { query: string; outcome: SidecarOutcome }[] = [];
     let beganCell = false;
     if (call.queries.length === 0) {
@@ -433,9 +674,30 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         // signal.aborted both after the await and in the catch (a fulfilled {error} on an aborted
         // signal would otherwise look like an ordinary degradable failure).
         try {
-          outcome = backend === "anthropic" && anthropicSidecar
-            ? await runAnthropicWebSearch(query, anthropicSidecar.providerName, anthropicSidecar.provider, settings, signal)
-            : await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+          if (backend === "anthropic" && anthropicSidecar) {
+            outcome = await runAnthropicWebSearch(query, anthropicSidecar.providerName, anthropicSidecar.provider, settings, signal);
+          } else if (backend === "xai") {
+            // L7: stored Grok OAuth to the pinned api.x.ai Responses endpoint; same
+            // never-throws contract and no Codex/OpenAI pool outcome recording (F5 parity).
+            // A missing xaiSidecar is an invariant violation — fail CLOSED with an error
+            // outcome rather than falling through to the forward-header OpenAI executor
+            // (review High: that fallthrough would be credential-sensitive).
+            outcome = deps.xaiSidecar
+              ? await runXaiWebSearch(query, deps.xaiSidecar.providerName, deps.xaiSidecar.provider, settings, deps.xaiSearchOptions ?? {}, signal)
+              : { text: "", sources: [], error: "xai backend selected without a resolved Grok OAuth provider" };
+          } else if (backend === "gemini") {
+            // L8: Antigravity CCA grounding; same fail-closed invariant stance as xai.
+            outcome = deps.geminiSidecar
+              ? await runGeminiWebSearch(query, deps.geminiSidecar.providerName, deps.geminiSidecar.provider, settings, signal)
+              : { text: "", sources: [], error: "gemini backend selected without a resolved Antigravity provider" };
+          } else if (backend === "exa") {
+            // L9: non-LLM lane; key comes from the loop deps, never the plan. Fail closed.
+            outcome = deps.exaApiKey
+              ? await runExaWebSearch(query, deps.exaApiKey, settings, signal)
+              : { text: "", sources: [], error: "exa backend selected without an exaApiKey" };
+          } else {
+            outcome = await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+          }
           if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
         } catch (e) {
           if (e instanceof LoopError) throw e;
@@ -458,9 +720,20 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     messages.push({
       role: "assistant",
       content: [
-        // Signed thinking must precede tool_use on replay (Anthropic extended thinking).
-        ...(precedingThinking ? [precedingThinking] : []),
-        { type: "toolCall" as const, id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: callArgs },
+        // Signed thinking must precede tool_use on replay (Anthropic extended thinking), and
+        // unsigned raw reasoning has to ride along for providers that require it back (#688).
+        ...precedingThinking,
+        {
+          type: "toolCall" as const,
+          id: call.id,
+          name: WEB_SEARCH_TOOL_NAME,
+          arguments: callArgs,
+          // Re-attach the signature to the rebuilt call so a sidecar turn keeps Gemini
+          // reasoning continuity instead of relying on the same-process replay cache.
+          ...(cloneProviderOpaqueToolCallMetadata(call.providerMetadata)
+            ? { providerMetadata: cloneProviderOpaqueToolCallMetadata(call.providerMetadata) }
+            : {}),
+        },
       ],
       timestamp: now,
     });
@@ -507,11 +780,20 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
     throw e;
   }
 
-  const toolNsMap = new Map<string, { namespace: string; name: string }>();
+  const toolNsMap = new Map<string, { namespace: string; name: string; freeform?: true }>();
   const freeform = new Set<string>();
   const toolSearch = new Set<string>();
-  for (const t of parsed.context.tools ?? []) {
-    if (t.namespace) toolNsMap.set(namespacedToolName(t.namespace, t.name), { namespace: t.namespace, name: t.name });
+  const requestedTools = parsed.context.tools ?? [];
+  const toolAllowed = toolChoiceToolPredicate(parsed.options.toolChoice, requestedTools);
+  for (const t of requestedTools) {
+    if (!toolAllowed(t)) continue;
+    if (t.namespace) {
+      toolNsMap.set(namespacedToolName(t.namespace, t.name), {
+        namespace: t.namespace,
+        name: t.name,
+        ...(t.freeform ? { freeform: true } : {}),
+      });
+    }
     if (t.freeform) freeform.add(t.name);
     if (t.toolSearch) toolSearch.add(t.name);
   }
@@ -538,6 +820,18 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
           // calls reach Codex. forceAnswer also finalizes.
           const shouldLoop = split.calls.length > 0 && !split.hasRealToolCall && !forceAnswer;
           if (!shouldLoop) {
+            // #1001: a forced-answer pass that ends `done` must have produced
+            // usable output — never a malformed tool call, and never silence.
+            if (forceAnswer) {
+              // An unterminated call flushes AFTER the terminal event, so find
+              // the terminal rather than assuming it is last (#1001).
+              const terminalEvent = split.passthrough.find(event => event.type === "done");
+              if (terminalEvent?.type === "done"
+                && (split.hasMalformedToolCall
+                  || (!split.hasRealToolCall && !hasVisibleAssistantText(split.passthrough)))) {
+                throw new LoopError(502, "forced-answer pass produced no usable assistant output");
+              }
+            }
             if (executedSearchCount > 0) {
               const failedCount = failedQueries.size;
               console.warn(
@@ -546,16 +840,28 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
                 + `, ${i + 1} iteration${i > 0 ? "s" : ""}, ${Date.now() - loopT0}ms`,
               );
             }
-            yield* replay(split.passthrough);
+            // Live-streamed leading events are exactly the first N passthrough entries — replay
+            // only the buffered tail so nothing reaches the client twice.
+            yield* replay(split.passthrough.slice(split.streamedPassthroughCount));
             return;
           }
           // The thinking that led to the search belongs to the FIRST call's assistant replay turn.
           const iterationThinking = extractIterationThinking(split.passthrough);
           for (const [callIndex, call] of split.calls.entries()) {
-            yield* runSearchCall(call, callIndex === 0 ? iterationThinking : null);
+            yield* runSearchCall(call, callIndex === 0 ? iterationThinking : []);
           }
         } catch (e) {
-          yield { type: "error", message: e instanceof LoopError ? e.message : (e instanceof Error ? e.message : String(e)) };
+          if (isTranslatorBudgetExceededError(e)) {
+            yield {
+              type: "error",
+              status: 502,
+              errorType: "upstream_error",
+              code: e.code,
+              message: "upstream translation buffer exceeded the safe limit",
+            };
+          } else {
+            yield { type: "error", message: e instanceof LoopError ? e.message : (e instanceof Error ? e.message : String(e)) };
+          }
           return;
         }
       }
@@ -565,7 +871,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   }
 
   const sse = bridgeToResponsesSSE(
-    produce(), parsed.modelId, toolNsMap, freeform, toolSearch, () => {
+    produce(), parsed._responseModelId ?? parsed.modelId, toolNsMap, freeform, toolSearch, () => {
       const elapsed = Date.now() - loopT0;
       if (executedSearchCount > 0 || searchesExecuted > 0) {
         console.warn(`[web-search-loop] cancelled — ${executedSearchCount} real searches, ${searchesExecuted - executedSearchCount} placeholders, ${elapsed}ms`);
@@ -573,11 +879,14 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       internalAbort.abort("client closed responses stream");
     }, undefined,
     {
+      translatorBudget,
+      replayCacheScope: parsed._reasoningReplayScope,
       ...(deps.forceEmptyResponseId ? { responseId: "" } : {}),
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       ...(deps.stallTimeoutSec !== undefined ? { stallTimeoutSec: deps.stallTimeoutSec } : {}),
       ...(deps.onFirstOutput ? { onFirstOutput: deps.onFirstOutput } : {}),
       ...(deps.onUsage ? { onUsage: deps.onUsage } : {}),
+      ...(deps.onCompletedResponse ? { onCompletedResponse: deps.onCompletedResponse } : {}),
     },
   );
   return new Response(sse, { headers: SSE_HEADERS });

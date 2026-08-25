@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { STORE_BUDGET_MS } from "./helpers/test-budget";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendUsageEntry,
   currentUsageLogRevision,
+  normalizeUsageEntryForTest,
   readRecentUsageEntries,
   readUsageEntries,
   readUsageEntriesForManagement,
@@ -16,6 +18,7 @@ import {
   usageTotalTokens,
   usageReadCacheStatsForTests,
   usageLogRevisionKey,
+  type PersistedUsageEntry,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -35,6 +38,132 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  test("preserves explicitly empty attempts through normalization", () => {
+    const normalized = normalizeUsageEntryForTest({
+      requestId: "ocx-empty-attempts",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-test",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "unreported",
+      attempts: [],
+    });
+
+    expect(normalized.attempts).toEqual([]);
+  });
+
+  test("preserves only valid non-PII Codex account log labels", () => {
+    const normalized = normalizeUsageEntryForTest({
+      requestId: "ocx-account-label",
+      timestamp: 1,
+      provider: "openai-pabc123",
+      model: "gpt-test",
+      accountLogLabel: "pabc123",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "openai-pabc123",
+        model: "gpt-test",
+        adapter: "openai-responses",
+        accountLogLabel: "pabc123",
+        status: 200,
+        durationMs: 1,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "reported",
+      }],
+    });
+    expect(normalized.accountLogLabel).toBe("pabc123");
+    expect(normalized.attempts?.[0]?.accountLogLabel).toBe("pabc123");
+
+    const rejected = normalizeUsageEntryForTest({
+      ...normalized,
+      accountLogLabel: "raw-account-id",
+      attempts: [{ ...normalized.attempts![0]!, accountLogLabel: "person@example.test" }],
+    });
+    expect(rejected.accountLogLabel).toBeUndefined();
+    expect(rejected.attempts?.[0]?.accountLogLabel).toBeUndefined();
+  });
+
+  test("persists the rate-limit-429 recovery kind on attempts", () => {
+    const entry: PersistedUsageEntry = {
+      requestId: "ocx-ratelimit-kind",
+      timestamp: 1,
+      provider: "blsc",
+      model: "blsc/DeepSeek-V4-Flash",
+      status: 429,
+      durationMs: 4,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "blsc",
+        model: "blsc/DeepSeek-V4-Flash",
+        adapter: "openai-chat",
+        status: 429,
+        durationMs: 4,
+        sendCount: 2,
+        recoveryKinds: ["rate-limit-429", "rate-limit-429"],
+        usageStatus: "reported",
+      }],
+    };
+    appendUsageEntry(entry);
+    expect(readUsageEntries()[0]?.attempts?.[0]?.recoveryKinds).toEqual(["rate-limit-429"]);
+  });
+
+  test("persists the empty-completion recovery kind on attempts", () => {
+    const entry: PersistedUsageEntry = {
+      requestId: "ocx-empty-completion-kind",
+      timestamp: 1,
+      provider: "fixture",
+      model: "fixture/model",
+      status: 200,
+      durationMs: 4,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "fixture",
+        model: "fixture/model",
+        adapter: "openai-chat",
+        status: 200,
+        durationMs: 4,
+        sendCount: 2,
+        recoveryKinds: ["empty-completion", "empty-completion"],
+        usageStatus: "reported",
+      }],
+    };
+    appendUsageEntry(entry);
+    expect(readUsageEntries()[0]?.attempts?.[0]?.recoveryKinds).toEqual(["empty-completion"]);
+  });
+
+  test("persists the opaque-blob rejection recovery kind on attempts", () => {
+    const entry: PersistedUsageEntry = {
+      requestId: "ocx-opaque-blob-kind",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      status: 200,
+      durationMs: 4,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        adapter: "openai-responses",
+        status: 200,
+        durationMs: 4,
+        sendCount: 2,
+        recoveryKinds: ["opaque-blob-rejection", "opaque-blob-rejection"],
+        usageStatus: "reported",
+      }],
+    };
+    appendUsageEntry(entry);
+    expect(readUsageEntries()[0]?.attempts?.[0]?.recoveryKinds).toEqual(["opaque-blob-rejection"]);
+  });
+
+  /** Build one minimal persisted-usage JSONL line for the given request id. */
   const persistedLine = (requestId: string) => JSON.stringify({
     requestId,
     timestamp: 1,
@@ -68,6 +197,67 @@ describe("usage log", () => {
     expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2_100 });
   });
 
+  test("usage reader never requests more than 64 MiB from an oversized log", async () => {
+    const path = usageLogPath();
+    const fd = openSync(path, "w");
+    try {
+      truncateSync(fd, 64 * 1024 * 1024 + 1024);
+      const tail = Buffer.from(`${persistedLine("tail")}\n`);
+      const tailPosition = 64 * 1024 * 1024 + 1024 - tail.byteLength;
+      writeSync(fd, Buffer.from("\n"), 0, 1, tailPosition - 1);
+      writeSync(fd, tail, 0, tail.byteLength, tailPosition);
+    } finally {
+      closeSync(fd);
+    }
+    const snapshot = await readUsageSnapshotForManagement();
+    expect(snapshot.truncatedPrefixBytes).toBeGreaterThan(0);
+    expect(snapshot.entries.map(entry => entry.requestId)).toEqual(["tail"]);
+  }, STORE_BUDGET_MS); // sparse >64 MiB fixture IO is intrinsic; Windows self-hosted measured 7.193s against Bun's 5s default.
+
+  test("usage tail exact row boundary keeps the complete newest row", async () => {
+    const newest = Buffer.from(`${persistedLine("newest")}\n`);
+    writeFileSync(usageLogPath(), `${persistedLine("older")}\n${newest.toString("utf-8")}`);
+
+    const snapshot = await readUsageSnapshotForManagement(newest.byteLength);
+
+    expect(snapshot.entries.map(entry => entry.requestId)).toEqual(["newest"]);
+  });
+
+  test("usage byte-prefix truncation and entry-count truncation report independent metadata", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 500_001 }, (_, index) => JSON.stringify({ requestId: String(index) })).join("\n")}\n`,
+    );
+    const snapshot = await readUsageSnapshotForManagement();
+    expect(snapshot.entries).toHaveLength(500_000);
+    expect(snapshot.entries[0]?.requestId).toBe("1");
+    expect(snapshot.entries.at(-1)?.requestId).toBe("500000");
+    expect(snapshot.truncatedPrefixBytes).toBe(0);
+    expect(snapshot.entriesTruncated).toBe(true);
+    expect(snapshot.entriesDropped).toBe(1);
+  }, STORE_BUDGET_MS); // parsing 500,001 rows IS the entry-cap assertion; the 200k-row variant measured ~5.05s on windows-latest against Bun's 5s default.
+
+  test("stale usage-read flight is replaced and old completion cannot clear new owner", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 5_000 }, (_, index) => persistedLine(`stale-${index}`)).join("\n")}\n`,
+    );
+    const first = readUsageSnapshotForManagement();
+    await Promise.resolve();
+    const originalNow = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(originalNow + 30_001);
+    try {
+      const replacement = readUsageSnapshotForManagement();
+      const joiner = readUsageSnapshotForManagement();
+      await expect(first).rejects.toThrow("management usage read superseded");
+      const [second, third] = await Promise.all([replacement, joiner]);
+      expect(third.entries).toEqual(second.entries);
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test("a replacement does not join an in-flight read for the previous file revision", async () => {
     writeFileSync(
       usageLogPath(),
@@ -77,10 +267,73 @@ describe("usage log", () => {
     await new Promise<void>(resolve => setTimeout(resolve, 0));
     writeFileSync(usageLogPath(), `${persistedLine("replacement")}\n`);
     const newRead = readUsageSnapshotForManagement();
-    const [oldSnapshot, newSnapshot] = await Promise.all([oldRead, newRead]);
-    expect(oldSnapshot.entries).toHaveLength(2_100);
+    await expect(oldRead).rejects.toThrow("management usage read superseded");
+    const newSnapshot = await newRead;
     expect(newSnapshot.entries.map(entry => entry.requestId)).toEqual(["replacement"]);
-    expect(usageLogRevisionKey(newSnapshot.revision)).not.toBe(usageLogRevisionKey(oldSnapshot.revision));
+  });
+
+  test("persists conversationId for Logs session correlation", () => {
+    appendUsageEntry({
+      requestId: "ocx-conversation",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      conversationId: "thread-abc",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    });
+    expect(readUsageEntries()).toEqual([expect.objectContaining({
+      requestId: "ocx-conversation",
+      conversationId: "thread-abc",
+    })]);
+  });
+
+  test("persists an absolute context checkpoint for stateful providers", () => {
+    // Kiro reports per-attempt usage only, so contextTotalTokens is the sole carrier of the
+    // cumulative context figure once the log stores raw adapter usage (usageFromBridge).
+    // Dropping it here erased Kiro context growth from every persisted row.
+    appendUsageEntry({
+      requestId: "ocx-context-checkpoint",
+      timestamp: 1,
+      provider: "kiro",
+      model: "claude-opus-5",
+      status: 200,
+      durationMs: 10,
+      usageStatus: "estimated",
+      usage: { inputTokens: 220, outputTokens: 252, contextTotalTokens: 127_000, estimated: true },
+      totalTokens: 472,
+    });
+    expect(readUsageEntries()).toEqual([expect.objectContaining({
+      requestId: "ocx-context-checkpoint",
+      usage: expect.objectContaining({
+        inputTokens: 220,
+        outputTokens: 252,
+        contextTotalTokens: 127_000,
+        estimated: true,
+      }),
+      // The checkpoint must NOT be folded into the per-request total.
+      totalTokens: 472,
+    })]);
+  });
+
+  test("never invents a context checkpoint when the adapter reported none", () => {
+    appendUsageEntry({
+      requestId: "ocx-no-checkpoint",
+      timestamp: 1,
+      provider: "kiro",
+      model: "claude-opus-5",
+      status: 200,
+      durationMs: 10,
+      usageStatus: "estimated",
+      usage: { inputTokens: 61, outputTokens: 48, estimated: true },
+      totalTokens: 109,
+    });
+    const [entry] = readUsageEntries();
+    expect(entry?.usage).toBeDefined();
+    expect(entry?.usage && "contextTotalTokens" in entry.usage).toBe(false);
   });
 
   test("persists only canonical ordered attempt fields", () => {
@@ -109,6 +362,10 @@ describe("usage log", () => {
         inputTokenEstimate: 5,
         usage: { inputTokens: 5, outputTokens: 0, estimated: true },
         totalTokens: 5,
+        requestedEffort: "max",
+        effectiveEffort: "high",
+        reasoningWireField: "reasoning_effort",
+        reasoningWireValue: "high",
         headers: { authorization: "Bearer attempt-token" },
         body: "attempt body secret",
         messages: ["attempt message secret"],
@@ -141,7 +398,93 @@ describe("usage log", () => {
       inputTokenEstimate: 5,
       usage: { inputTokens: 5, outputTokens: 0, estimated: true },
       totalTokens: 5,
+      requestedEffort: "max",
+      effectiveEffort: "high",
+      reasoningWireField: "reasoning_effort",
+      reasoningWireValue: "high",
     }]);
+  });
+
+  test("omits malformed optional attempt reasoning metadata without dropping the attempt", () => {
+    appendUsageEntry({
+      requestId: "ocx-attempt-reasoning",
+      timestamp: 1,
+      provider: "combo",
+      model: "combo/free",
+      status: 200,
+      durationMs: 4,
+      usageStatus: "unreported",
+      attempts: [{
+        ordinal: 1,
+        provider: "a",
+        model: "m1",
+        adapter: "openai-chat",
+        status: 200,
+        durationMs: 3,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "unreported",
+        requestedEffort: 123,
+        effectiveEffort: null,
+        reasoningWireField: {},
+        reasoningWireValue: -1,
+      } as never],
+    });
+
+    const attempt = readUsageEntries()[0]?.attempts?.[0];
+    expect(attempt?.ordinal).toBe(1);
+    expect(attempt).not.toHaveProperty("requestedEffort");
+    expect(attempt).not.toHaveProperty("effectiveEffort");
+    expect(attempt).not.toHaveProperty("reasoningWireField");
+    expect(attempt).not.toHaveProperty("reasoningWireValue");
+  });
+
+  test("keeps boolean reasoning values only for reasoning.enabled", () => {
+    const base = {
+      requestId: "ocx-boolean-reasoning",
+      timestamp: 1,
+      provider: "combo",
+      model: "combo/free",
+      status: 200,
+      durationMs: 4,
+      usageStatus: "unreported",
+      attempts: [{
+        ordinal: 1,
+        provider: "a",
+        model: "m1",
+        adapter: "openai-chat",
+        status: 200,
+        durationMs: 3,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "unreported",
+      }],
+    } as const;
+    const mismatched = normalizeUsageEntryForTest({
+      ...base,
+      reasoningWireField: "reasoning_effort",
+      reasoningWireValue: true,
+      attempts: [{
+        ...base.attempts[0],
+        reasoningWireField: "reasoning_effort",
+        reasoningWireValue: true,
+      }],
+    });
+    const valid = normalizeUsageEntryForTest({
+      ...base,
+      reasoningWireField: "reasoning.enabled",
+      reasoningWireValue: false,
+      attempts: [{
+        ...base.attempts[0],
+        reasoningWireField: "reasoning.enabled",
+        reasoningWireValue: false,
+      }],
+    });
+
+    expect(mismatched).not.toHaveProperty("reasoningWireValue");
+    expect(mismatched.attempts?.[0]).not.toHaveProperty("reasoningWireValue");
+    expect(valid.reasoningWireValue).toBe(false);
+    expect(valid.attempts?.[0]?.reasoningWireValue).toBe(false);
   });
 
   test("drops only malformed persisted attempts while preserving valid siblings", () => {
@@ -476,7 +819,10 @@ describe("usage log", () => {
       provider: "openai",
       model: "gpt-5.6-sol",
       requestedModel: "gpt-5.6-sol",
-      requestedEffort: "high",
+      requestedEffort: "xhigh",
+      effectiveEffort: "high",
+      reasoningWireField: "reasoning_effort",
+      reasoningWireValue: "high",
       requestedServiceTier: "priority",
       requestedSpeedLabel: "fast",
       configuredServiceTier: "auto",
@@ -488,7 +834,10 @@ describe("usage log", () => {
     });
     expect(readUsageEntries()[0]).toMatchObject({
       requestId: "ocx-effort",
-      requestedEffort: "high",
+      requestedEffort: "xhigh",
+      effectiveEffort: "high",
+      reasoningWireField: "reasoning_effort",
+      reasoningWireValue: "high",
       requestedServiceTier: "priority",
       requestedSpeedLabel: "fast",
       configuredServiceTier: "auto",
@@ -519,4 +868,18 @@ describe("usage log", () => {
     expect(readRecentUsageEntries(0)).toEqual([]);
     expect(readRecentUsageEntries(-1)).toEqual([]);
   });
+
+  test("readRecentUsageEntries does not expand beyond its bounded tail window", () => {
+    const path = usageLogPath();
+    const fd = openSync(path, "w");
+    try {
+      const older = Buffer.from(`${persistedLine("outside-tail")}\n`);
+      writeSync(fd, older, 0, older.byteLength, 0);
+      truncateSync(fd, 64 * 1024 * 1024 + older.byteLength + 1);
+    } finally {
+      closeSync(fd);
+    }
+
+    expect(readRecentUsageEntries(1)).toEqual([]);
+  }, STORE_BUDGET_MS);
 });

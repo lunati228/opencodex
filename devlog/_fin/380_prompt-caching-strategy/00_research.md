@@ -139,12 +139,12 @@ codex-rs is already cache-aware for OpenAI Responses requests.
 
 Evidence:
 
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/codex-api/src/common.rs` declares `prompt_cache_key` on `ResponsesApiRequest`.
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/codex-api/src/common.rs` declares `prompt_cache_key` on `ResponsesApiRequest`.
 - The same file declares `prompt_cache_key` on `ResponseCreateWsRequest`.
 - `impl From<&ResponsesApiRequest> for ResponseCreateWsRequest` copies `request.prompt_cache_key`, so WebSocket creation preserves the field.
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/core/src/client.rs` sets `let prompt_cache_key = Some(self.state.thread_id.to_string());` in `build_responses_request`.
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/core/tests/suite/client.rs` asserts the outgoing `/v1/responses` body has `prompt_cache_key == thread_id`.
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/core/tests/suite/prompt_caching.rs` asserts `prompt_cache_key` remains constant across overrides and per-turn overrides.
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/core/src/client.rs` sets `let prompt_cache_key = Some(self.state.thread_id.to_string());` in `build_responses_request`.
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/core/tests/suite/client.rs` asserts the outgoing `/v1/responses` body has `prompt_cache_key == thread_id`.
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/core/tests/suite/prompt_caching.rs` asserts `prompt_cache_key` remains constant across overrides and per-turn overrides.
 
 Implication: the normal Codex client already follows the key rule that OpenAI-style caching wants: a stable session/thread cache key with a stable prefix. opencodex should treat that field as a protocol-critical passthrough field.
 

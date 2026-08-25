@@ -41,6 +41,7 @@ export default function ProviderCatalog({
   onLogin,
   onCancelLogin,
   onLogout,
+  onManage,
 }: {
   presets: CatalogPreset[];
   usageRank?: Record<string, number>;
@@ -52,9 +53,11 @@ export default function ProviderCatalog({
   accountRows?: AccountLoginRow[];
   accountStatus?: Record<string, AccountLoginStatus>;
   busyProvider?: string | null;
-  onLogin?: (provider: string) => void;
+  onLogin?: (provider: string, addAccount?: boolean) => void;
   onCancelLogin?: (provider: string) => void;
   onLogout?: (provider: string) => void;
+  /** Jump to the provider's Accounts surface in the workspace. */
+  onManage?: (provider: string) => void;
 }) {
   const t = useT();
   const [tier, setTier] = useState<CatalogTier>(initialTier);
@@ -62,13 +65,19 @@ export default function ProviderCatalog({
 
   const catalog = useMemo(() => presets.filter(p => p.id !== "custom"), [presets]);
 
-  /** Usage-ranked order: requests desc, then label (050a sortPresets is the no-usage fallback). */
-  const ranked = useMemo(() => catalog.toSorted((a, b) => {
-    const ra = usageRank[a.id] ?? 0;
-    const rb = usageRank[b.id] ?? 0;
-    if (rb !== ra) return rb - ra;
-    return a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
-  }), [catalog, usageRank]);
+  /** Usage-ranked order only after usage arrives; until then keep stable label order
+   * so a slow /api/usage (~5s cold) cannot flash a catalog resort. */
+  const ranked = useMemo(() => {
+    const hasUsage = Object.keys(usageRank).length > 0;
+    return catalog.toSorted((a, b) => {
+      if (hasUsage) {
+        const ra = usageRank[a.id] ?? 0;
+        const rb = usageRank[b.id] ?? 0;
+        if (rb !== ra) return rb - ra;
+      }
+      return a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
+    });
+  }, [catalog, usageRank]);
 
   const buckets = useMemo(() => bucketPresets(ranked), [ranked]);
   const tierList = buckets[tier];
@@ -166,7 +175,33 @@ export default function ProviderCatalog({
                     )}
                   </>
                 ) : loggedIn ? (
-                  onLogout && <button type="button" className="btn btn-ghost" onClick={() => onLogout(row.id)}>{t("modal.accountLogout")}</button>
+                  <>
+                    {onManage && (
+                      <button type="button" className="btn btn-ghost" onClick={() => onManage(row.id)}>
+                        {t("modal.accountManage")}
+                      </button>
+                    )}
+                    {onLogin && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        disabled={busy}
+                        onClick={() => { if (!busy) onLogin(row.id, true); }}
+                      >
+                        {busy ? t("prov.waitingBrowser") : t("modal.accountAdd")}
+                      </button>
+                    )}
+                    {busy && onCancelLogin && (
+                      <button type="button" className="btn btn-ghost" onClick={() => onCancelLogin(row.id)}>
+                        {t("common.cancel")}
+                      </button>
+                    )}
+                    {onLogout && !busy && (
+                      <button type="button" className="btn btn-ghost" onClick={() => onLogout(row.id)}>
+                        {t("modal.accountLogout")}
+                      </button>
+                    )}
+                  </>
                 ) : busy ? (
                   onCancelLogin && <button type="button" className="btn btn-ghost" onClick={() => onCancelLogin(row.id)}>{t("common.cancel")}</button>
                 ) : (

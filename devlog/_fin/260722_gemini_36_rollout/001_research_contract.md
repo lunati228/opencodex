@@ -62,7 +62,7 @@ The registry statically seeds `google/gemini-3.5-flash` (`src/providers/registry
 
 ### jawcode metadata source
 
-`/Users/jun/Developer/new/700_projects/jawcode/packages/ai/src/models.json` contained multiple Gemini 3.5 rows and no `gemini-3.6-flash` row when checked on 2026-07-22. The OpenCodex generated snapshot therefore stays untouched in this unit.
+`<private-user-home>/Developer/new/700_projects/jawcode/packages/ai/src/models.json` contained multiple Gemini 3.5 rows and no `gemini-3.6-flash` row when checked on 2026-07-22. The OpenCodex generated snapshot therefore stays untouched in this unit.
 
 ## 5. Open questions converted to implementation gates
 

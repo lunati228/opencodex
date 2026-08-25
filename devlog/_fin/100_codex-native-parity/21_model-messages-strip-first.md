@@ -87,10 +87,10 @@ The template shape is simple but large:
 opencodex currently deep-clones the native template and rewrites only `base_instructions`:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:122
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:135
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts:157
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:108
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:122
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:135
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts:157
 ```
 
 That rewrite is probably ineffective for routed entries cloned from modern native models, because
@@ -104,10 +104,10 @@ There is also uneven proxy-side mitigation:
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:206
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:10
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:51
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts:13
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:206
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts:10
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts:51
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts:13
 ```
 
 ## Practical Policy

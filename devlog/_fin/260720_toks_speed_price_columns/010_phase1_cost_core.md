@@ -514,7 +514,7 @@ true 여부와 무관하게 모든 비용 숫자에 `~$`를 붙이고, true는 �
 
 ## 9. close gate
 
-저장소 루트 `/Users/jun/Developer/new/700_projects/opencodex-toksdev`에서 순서대로 실행한다.
+저장소 루트 `<private-user-home>/Developer/new/700_projects/opencodex-toksdev`에서 순서대로 실행한다.
 
 ```sh
 bun run generate:jawcode-metadata

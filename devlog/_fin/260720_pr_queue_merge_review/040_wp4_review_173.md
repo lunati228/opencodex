@@ -38,10 +38,10 @@ bun install
 bun test tests/storage-scanner.test.ts tests/api-storage.test.ts
 # 실기 activation: PR 헤드에서 스캐너를 실제 ~/.codex에 대해 실행
 bun -e 'import { scanStorage } from "./src/storage/scanner.ts";
-  const r = scanStorage("/Users/jun/.codex");
+  const r = scanStorage("<private-user-home>/.codex");
   console.log(JSON.stringify({ total: r.total, buckets: r.buckets.map(b =>
     ({ key: b.key, bytes: b.bytes, files: b.fileCount, rows: b.rows })) }, null, 1));'
-cd /Users/jun/developer/new/700_projects/opencodex
+cd <private-user-home>/developer/new/700_projects/opencodex
 git worktree remove --force /tmp/ocx-pr173
 ```
 기대: `state_db.rows`와 `logs_db.rows`가 숫자(라이브 WAL에서 null이면 그것이

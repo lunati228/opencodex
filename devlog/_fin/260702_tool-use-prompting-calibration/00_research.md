@@ -54,11 +54,11 @@ should receive a compact generic correction unless live evals show drift.
 
 `ModelInfo` contains `base_instructions` and model tool capability metadata:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:260`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:281`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:289`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:293`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:320`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:260`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:281`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:289`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:293`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/protocol/src/openai_models.rs:320`
 
 Session startup resolves the base instruction priority:
 
@@ -68,11 +68,11 @@ Session startup resolves the base instruction priority:
 
 Source:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:539`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:546`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:550`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:573`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:581`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:539`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:546`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:550`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:573`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:581`
 
 ### Codex also injects dynamic developer/context instructions
 
@@ -92,17 +92,17 @@ Source:
 
 Sources:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2638`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2669`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2693`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2698`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2729`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2743`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2771`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2798`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2815`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2825`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2863`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2638`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2669`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2693`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2698`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2729`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2743`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2771`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2798`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2815`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2825`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/mod.rs:2863`
 
 Interpretation: the "default prompt" is not a single static string. It is a composed
 instruction stack: model/base instructions plus turn/session context.
@@ -112,20 +112,20 @@ instruction stack: model/base instructions plus turn/session context.
 `build_prompt` attaches the router's model-visible tool specs and the model's parallel
 tool-call capability:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:897`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:903`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:905`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:906`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:897`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:903`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:905`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/session/turn.rs:906`
 
 `client.rs` converts those specs to Responses JSON and creates the actual request:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:742`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:745`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:770`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:772`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:774`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:775`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:776`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:742`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:745`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:770`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:772`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:774`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:775`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/client.rs:776`
 
 This proves the key request shape:
 
@@ -150,25 +150,25 @@ The model-visible tool spec enum includes:
 
 Sources:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:17`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:22`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:28`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:36`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:49`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:53`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:17`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:22`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:28`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:36`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:49`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/tools/src/tool_spec.rs:53`
 
 `spec_plan.rs` builds the visible specs and registry from planned runtimes, hosted specs,
 MCP, dynamic tools, extension tools, feature flags, provider capabilities, and model
 metadata:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:147`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:155`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:178`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:185`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:195`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:203`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:217`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:218`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:147`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:155`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:178`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:185`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:195`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:203`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:217`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:218`
 
 Notable native surfaces:
 
@@ -183,12 +183,12 @@ Notable native surfaces:
 
 Relevant source anchors:
 
-- shell registration: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:546`
-- utility/apply_patch/view_image registration: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:593`
-- collaboration tools: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:649`
-- MCP runtime tools: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:746`
-- dynamic tools: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:772`
-- tool search: `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:796`
+- shell registration: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:546`
+- utility/apply_patch/view_image registration: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:593`
+- collaboration tools: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:649`
+- MCP runtime tools: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:746`
+- dynamic tools: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:772`
+- tool search: `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/spec_plan.rs:796`
 
 ### Codex has runtime-level parallel policy
 
@@ -198,11 +198,11 @@ lock.
 
 Sources:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:31`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:36`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:88`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:115`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:118`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:31`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:36`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:88`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:115`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/parallel.rs:118`
 
 Implication for prompting: the prompt can recommend parallel independent reads, but the
 runtime still needs hard guarantees for unsafe tools. Cursor/other adapters should not
@@ -213,25 +213,25 @@ assume the model will self-serialize mutating work correctly.
 Codex exposes `apply_patch` as a freeform custom tool with Lark grammar, not as ordinary
 JSON function calling:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:7`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:18`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:20`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:7`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:18`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch_spec.rs:20`
 
 The handler accepts `ToolPayload::Custom`, parses and verifies the patch, then routes
 through sandbox/approval/runtime orchestration:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:300`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:324`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:329`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:351`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:389`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:300`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:324`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:329`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:351`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:389`
 
 It also intercepts shell-shaped `apply_patch` commands and sends them through the same
 verified patch path:
 
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:492`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:504`
-- `/Users/jun/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs:222`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:492`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/apply_patch.rs:504`
+- `<private-user-home>/Developer/codex/121_openai-codex/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs:222`
 
 Implication for non-OpenAI models: if the model was not trained or tuned on this exact
 freeform patch contract, the adapter should include a short explicit instruction and/or
@@ -263,30 +263,30 @@ The installed CLI help exposes:
 
 Local reference:
 
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:102`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:106`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:108`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:109`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:110`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:112`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:113`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:114`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:115`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:102`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:106`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:108`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:109`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:110`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:112`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:113`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:114`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:115`
 
 Cursor runtime/tool modules already include shell/read/grep/MCP/web-search/task UI and
 approval/lazy MCP scope machinery:
 
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:232`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:234`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:235`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:236`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:237`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:238`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:239`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:242`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:243`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:244`
-- `/Users/jun/Developer/codex/003_tool-runtime/03_cr_tool.md:245`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:232`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:234`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:235`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:236`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:237`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:238`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:239`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:242`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:243`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:244`
+- `<private-user-home>/Developer/codex/003_tool-runtime/03_cr_tool.md:245`
 
 Cursor official docs were checked for:
 
@@ -332,7 +332,7 @@ Reasonable operational basis:
 - Cursor routes many model families through a product-specific agent runtime.
 - Live Cursor investigations already showed model/tool-name sensitivity around
   `exec_command` and the `run_shell` alias strategy:
-  `/Users/jun/Developer/new/700_projects/opencodex/devlog/_plan/260702_cursor-toolcall-mcp-empty-rca/01_live-codex-exec-stall-alias-spec.md`
+  `<private-user-home>/Developer/new/700_projects/opencodex/devlog/_plan/260702_cursor-toolcall-mcp-empty-rca/01_live-codex-exec-stall-alias-spec.md`
 - Non-native model families often need exact-name and schema hints in adapters, even
   when the structured tool schema is technically present.
 
@@ -458,7 +458,7 @@ unless there is a separate migration.
 
 Related active plan:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/devlog/_plan/260702_cursor-toolcall-mcp-empty-rca/01_live-codex-exec-stall-alias-spec.md`
+- `<private-user-home>/Developer/new/700_projects/opencodex/devlog/_plan/260702_cursor-toolcall-mcp-empty-rca/01_live-codex-exec-stall-alias-spec.md`
 
 ### 4. Evaluate before broad rollout
 

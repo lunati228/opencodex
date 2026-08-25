@@ -4,7 +4,7 @@
  *
  * Usage:
  *   bun scripts/release.ts <version> [--tag latest|preview] [--publish]
- *       Preflight (clean tree + typecheck + tests + privacy scan) → bump package.json → commit → push →
+ *       Preflight (clean tree + dependency audit + typecheck + tests + privacy scan) → bump package.json → commit → push →
  *       wait for Cross-platform CI → dispatch the Release workflow → watch it.
  *       The version bump commit/push is real; the Release workflow publish step is dry-run by default.
  *       Pass --publish to publish.
@@ -16,7 +16,7 @@
  *
  * Requires: gh CLI (authed). Publishing is tokenless via Trusted Publishing (OIDC) — no NPM_TOKEN.
  */
-import { $ } from "bun";
+import { commandInvocation } from "../src/lib/win-exec";
 
 const args = process.argv.slice(2);
 interface GhRun {
@@ -40,13 +40,65 @@ const CI_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
 const CI_POLL_MS = 10 * 1000;
 
 async function runQuiet(command: string[]): Promise<CommandResult> {
-  const proc = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
+  // Windows exposes npm and gh as `.cmd` shims. A shell-less spawn of a bare
+  // `npm` skips PATHEXT entirely and refuses `.cmd` targets outright, so this
+  // preflight — the first thing a release does — aborted before invoking a
+  // single command, and the release-helper tests saw exit 1 with an empty call
+  // log. `commandInvocation` is the module the CLI already uses for exactly
+  // this, escaping included; do not hand-roll a second resolver here.
+  const [bin, ...rest] = command;
+  const invocation = commandInvocation(bin ?? "", rest);
+  const proc = Bun.spawn([invocation.file, ...invocation.args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    // Load-bearing on the `cmd.exe /d /s /c` path: the invocation is already a
+    // fully escaped command LINE, so re-quoting it would corrupt the arguments.
+    ...(invocation.options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
   return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
+/**
+ * Capture stdout from a command, failing loudly on a non-zero exit.
+ *
+ * Everything in this script goes through `commandInvocation` rather than
+ * `Bun.$`. The shell form looked equivalent but is not on Windows: a test that
+ * puts shims on PATH writes an extension-less launcher (shebang), a `.js`, and a
+ * `.cmd`. Unix honours the shebang launcher; Windows cannot execute it and the
+ * built-in shell does not retry as `.cmd`, so `$` walked past the shim straight
+ * to the real `git` — the branch guard then saw `dev` instead of the faked
+ * `main` and aborted before a single command was logged. That is what made four
+ * release-helper tests fail on windows-latest only, with an empty call log.
+ */
+async function capture(command: string[]): Promise<string> {
+  const result = await runQuiet(command);
+  if (result.exitCode !== 0) {
+    console.error(`✗ ${command.join(" ")} failed (exit ${result.exitCode})`);
+    if (result.stderr) console.error(result.stderr);
+    process.exit(1);
+  }
+  return result.stdout;
+}
+
+/** Run a command with its output attached to this terminal; abort on failure. */
+async function runLoud(command: string[]): Promise<void> {
+  const [bin, ...rest] = command;
+  const invocation = commandInvocation(bin ?? "", rest);
+  const proc = Bun.spawn([invocation.file, ...invocation.args], {
+    stdout: "inherit",
+    stderr: "inherit",
+    ...(invocation.options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    console.error(`✗ ${command.join(" ")} failed (exit ${exitCode})`);
+    process.exit(1);
+  }
 }
 
 async function readPackageName(): Promise<string> {
@@ -102,6 +154,77 @@ async function githubReleaseExists(tagName: string): Promise<boolean> {
   process.exit(1);
 }
 
+/** Order two semver strings per the semver.org rules (numeric identifiers numerically,
+ * numeric < alphanumeric prerelease, prerelease < release). Returns negative/0/positive. */
+export function compareReleaseVersions(left: string, right: string): number {
+  // SemVer 2.0.0: build metadata (+...) is valid and ignored for precedence, but
+  // anything else unparseable must fail CLOSED. Number() on a garbage core used to
+  // yield NaN, and NaN comparisons made the forward guard pass any candidate.
+  const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+  const parse = (value: string) => {
+    const match = SEMVER.exec(value.trim());
+    if (!match) throw new Error(`unparseable release version: ${JSON.stringify(value)}`);
+    const nums = [Number(match[1]), Number(match[2]), Number(match[3])];
+    return { nums, pre: match[4] ? match[4].split(".") : null };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  for (let i = 0; i < 3; i += 1) {
+    const delta = (a.nums[i] ?? 0) - (b.nums[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  if (a.pre === null && b.pre === null) return 0;
+  if (a.pre === null) return 1;
+  if (b.pre === null) return -1;
+  const len = Math.max(a.pre.length, b.pre.length);
+  for (let i = 0; i < len; i += 1) {
+    const x = a.pre[i];
+    const y = b.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xn = /^\d+$/.test(x) ? Number(x) : null;
+    const yn = /^\d+$/.test(y) ? Number(y) : null;
+    if (xn !== null && yn !== null && xn !== yn) return xn - yn;
+    if (xn !== null && yn === null) return -1;
+    if (xn === null && yn !== null) return 1;
+    if (xn === null && yn === null && x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/** The proposed version must move its npm channel FORWARD: an unused-but-obsolete
+ * target (e.g. cut from a dev branch whose version line trails main) would otherwise
+ * pass the unused-version check and publish a regression over the channel tip. */
+async function assertChannelVersionMovesForward(packageName: string, version: string, channel: string): Promise<void> {
+  const result = await runQuiet(["npm", "view", packageName, "dist-tags", "--json"]);
+  if (result.exitCode !== 0) {
+    console.error(`✗ failed to read npm dist-tags for ${packageName}`);
+    if (result.stderr) console.error(result.stderr);
+    process.exit(1);
+  }
+  let distTags: Record<string, string>;
+  try {
+    distTags = JSON.parse(result.stdout) as Record<string, string>;
+  } catch {
+    console.error(`✗ npm dist-tags response for ${packageName} was not JSON`);
+    process.exit(1);
+  }
+  const current = distTags[channel];
+  if (!current) return; // channel not published yet — nothing to regress
+  let forward: number;
+  try {
+    forward = compareReleaseVersions(version, current);
+  } catch (err) {
+    console.error(`✗ cannot compare release versions (candidate ${version}, channel tip ${JSON.stringify(current)}): ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  if (forward <= 0) {
+    console.error(`✗ release version ${version} does not move the '${channel}' channel forward (current: ${current}).`);
+    console.error("Reconcile the version line first: dev's package.json may trail the latest release; pick a version strictly newer than the channel tip.");
+    process.exit(1);
+  }
+}
+
 async function assertUnusedReleaseVersion(packageName: string, version: string): Promise<void> {
   const releaseTag = `v${version}`;
   const [npmUsed, tagSha, releaseUsed] = await Promise.all([
@@ -124,21 +247,21 @@ async function assertUnusedReleaseVersion(packageName: string, version: string):
 }
 
 async function watchLatest(): Promise<void> {
-  const id = (await $`gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId'`.text()).trim();
+  const id = await capture(["gh", "run", "list", "--workflow", "release.yml", "--limit", "1", "--json", "databaseId", "-q", ".[0].databaseId"]);
   if (!id) { console.error("No Release runs found yet."); process.exit(1); }
   await watchRun(id);
 }
 
 async function watchRun(id: string | number): Promise<void> {
   console.log(`→ watching Release run ${id}`);
-  await $`gh run watch ${String(id)} --exit-status --interval 10`;
+  await runLoud(["gh", "run", "watch", String(id), "--exit-status", "--interval", "10"]);
 }
 
 async function waitForReleaseWorkflowRun(sha: string, branch: string, createdAfterIso: string): Promise<GhRun> {
   const deadline = Date.now() + 2 * 60 * 1000;
   let attempt = 1;
   while (Date.now() < deadline) {
-    const raw = await $`gh run list --workflow release.yml --branch ${branch} --commit ${sha} --limit 20 --json createdAt,databaseId,headSha,status,url`.text();
+    const raw = await capture(["gh", "run", "list", "--workflow", "release.yml", "--branch", branch, "--commit", sha, "--limit", "20", "--json", "createdAt,databaseId,headSha,status,url"]);
     const runs = (JSON.parse(raw) as GhRun[])
       .filter(run => run.headSha === sha)
       .filter(run => !run.createdAt || run.createdAt >= createdAfterIso)
@@ -157,7 +280,7 @@ async function waitForReleaseWorkflowRun(sha: string, branch: string, createdAft
 }
 
 async function listCiRuns(sha: string, workflow: string = CI_WORKFLOW): Promise<GhRun[]> {
-  const raw = await $`gh run list --workflow ${workflow} --commit ${sha} --limit 20 --json conclusion,databaseId,headSha,status,url`.text();
+  const raw = await capture(["gh", "run", "list", "--workflow", workflow, "--commit", sha, "--limit", "20", "--json", "conclusion,databaseId,headSha,status,url"]);
   const runs = JSON.parse(raw) as GhRun[];
   return runs.filter(run => run.headSha === sha);
 }
@@ -192,7 +315,7 @@ async function waitForSuccessfulCi(sha: string, workflow: string = CI_WORKFLOW, 
 }
 
 async function _remoteMainSha(): Promise<string> {
-  const out = (await $`git ls-remote origin refs/heads/main`.text()).trim();
+  const out = await capture(["git", "ls-remote", "origin", "refs/heads/main"]);
   const [sha] = out.split(/\s+/);
   if (!sha) {
     console.error("✗ could not resolve origin/main");
@@ -203,7 +326,7 @@ async function _remoteMainSha(): Promise<string> {
 
 /** Live (network) head of a remote branch — never the local remote-tracking ref. */
 async function remoteBranchHead(branch: string): Promise<string> {
-  const out = (await $`git ls-remote origin refs/heads/${branch}`.text()).trim();
+  const out = await capture(["git", "ls-remote", "origin", `refs/heads/${branch}`]);
   const [sha] = out.split(/\s+/);
   if (!sha) {
     console.error(`✗ could not resolve origin/${branch}`);
@@ -225,7 +348,7 @@ if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
 const dryRun = !args.includes("--publish");
 
 // 1. Preflight — must be on main or preview, and local verification must pass.
-const branch = (await $`git rev-parse --abbrev-ref HEAD`.text()).trim();
+const branch = await capture(["git", "rev-parse", "--abbrev-ref", "HEAD"]);
 const allowedBranches = ["main", "preview"];
 const expectedTag = branch === "preview" ? "preview" : "latest";
 const tag = args.includes("--tag") ? (args[args.indexOf("--tag") + 1] ?? expectedTag) : expectedTag;
@@ -242,27 +365,51 @@ if (branch === "main" && version.includes("-")) {
   process.exit(1);
 }
 if (!allowedBranches.includes(branch)) { console.error(`✗ must be on ${allowedBranches.join(" or ")} (currently ${branch}).`); process.exit(1); }
-if ((await $`git status --porcelain`.text()).trim()) { console.error("✗ working tree not clean — commit or stash first."); process.exit(1); }
+if ((await capture(["git", "status", "--porcelain"])).trim()) { console.error("✗ working tree not clean — commit or stash first."); process.exit(1); }
 const packageName = await readPackageName();
 console.log(`→ release metadata preflight (${packageName}@${version})`);
 await assertUnusedReleaseVersion(packageName, version);
+await assertChannelVersionMovesForward(packageName, version, tag);
+console.log("→ dependency audit");
+await runLoud(["bun", "run", "audit:high"]);
 console.log("→ typecheck");
-await $`bun x tsc --noEmit`;
+await runLoud(["bun", "x", "tsc", "--noEmit"]);
 console.log("→ test suite");
-await $`bun test --isolate tests`;
+await runLoud(["bun", "test", "--isolate", "tests"]);
 console.log("→ privacy scan");
-await $`bun run privacy:scan`;
+await runLoud(["bun", "run", "privacy:scan"]);
 
 // 2. Bump package.json only; the workflow creates the version tag after npm publish.
-console.log(`→ bump package.json → ${version}`);
-await $`npm version ${version} --no-git-tag-version`;
+//
+// A dry run bumps and pushes exactly like a real one, because the point of the dry run is to
+// exercise the workflow against the REAL release commit. That makes the second invocation
+// re-enter with package.json already at `version`, where `npm version <same>` exits
+// "Version not changed" — so the documented "re-run with --publish" path could never
+// complete. Treat an already-correct version as satisfied rather than as an error: the
+// bump is a desired end state, not an action that must happen every time.
+const currentVersion = JSON.parse(await Bun.file("package.json").text()).version as string;
+if (currentVersion === version) {
+  console.log(`→ package.json already at ${version}; leaving it alone`);
+} else {
+  console.log(`→ bump package.json → ${version}`);
+  await runLoud(["npm", "version", version, "--no-git-tag-version"]);
+}
 
-// 3. Commit + push the version bump.
-await $`git add package.json`;
-await $`git commit -m ${`release: v${version}`}`;
-const releaseSha = (await $`git rev-parse HEAD`.text()).trim();
-console.log(`→ push origin ${branch}`);
-await $`git push origin ${branch}`;
+// 3. Commit + push the version bump — only if it is not already committed and pushed. On the
+// --publish re-run of a dry run there is nothing to commit, and `git commit` with an empty
+// index fails, which would strand the release just as surely as the bump did.
+const pendingBump = (await capture(["git", "status", "--porcelain", "package.json"])).trim() !== "";
+if (pendingBump) {
+  await runLoud(["git", "add", "package.json"]);
+  await runLoud(["git", "commit", "-m", `release: v${version}`]);
+}
+const releaseSha = await capture(["git", "rev-parse", "HEAD"]);
+if (pendingBump) {
+  console.log(`→ push origin ${branch}`);
+  await runLoud(["git", "push", "origin", branch]);
+} else {
+  console.log(`→ release commit ${releaseSha.slice(0, 9)} already pushed; reusing it`);
+}
 
 // 4. Wait for the pushed release commit to pass CI, then dispatch the Release workflow.
 console.log(`→ wait for Cross-platform CI (${releaseSha})`);
@@ -286,7 +433,7 @@ if (liveOriginSha !== releaseSha) {
 
 console.log(`→ dispatch Release (tag=${tag}, dry-run=${dryRun})`);
 const dispatchStartedAt = new Date(Date.now() - 5_000).toISOString();
-await $`gh workflow run release.yml --ref ${branch} -f version=${version} -f tag=${tag} -f expected-sha=${releaseSha} -f dry-run=${String(dryRun)}`;
+await runLoud(["gh", "workflow", "run", "release.yml", "--ref", branch, "-f", `version=${version}`, "-f", `tag=${tag}`, "-f", `expected-sha=${releaseSha}`, "-f", `dry-run=${String(dryRun)}`]);
 
 // 5. Watch it.
 const releaseRun = await waitForReleaseWorkflowRun(releaseSha, branch, dispatchStartedAt);

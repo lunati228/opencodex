@@ -1,0 +1,101 @@
+{
+  "providers": {
+    "laguna-local": {
+      "adapter": "openai-chat",
+      "baseUrl": "http://127.0.0.1:8081/v1",
+      "allowPrivateNetwork": true,
+      "disabled": true,
+      "authMode": "key",
+      "keyOptional": true,
+      "defaultModel": "laguna-s-2.1-apex-i-compact",
+      "models": [
+        "laguna-s-2.1-apex-i-compact"
+      ],
+      "liveModels": false,
+      "selectedModels": [
+        "laguna-s-2.1-apex-i-compact"
+      ],
+      "contextWindow": 8192,
+      "modelContextWindows": {
+        "laguna-s-2.1-apex-i-compact": 8192
+      },
+      "modelInputModalities": {
+        "laguna-s-2.1-apex-i-compact": [
+          "text"
+        ]
+      },
+      "defaultMaxOutputTokens": 1024,
+      "modelMaxOutputTokens": {
+        "laguna-s-2.1-apex-i-compact": 1024
+      },
+      "noReasoningModels": [
+        "laguna-s-2.1-apex-i-compact"
+      ],
+      "parallelToolCalls": false,
+      "note": "Disabled staging profile. Enable only after Laguna integrity, placement, template, quality, and tool-call gates pass."
+    },
+    "qwen-local": {
+      "adapter": "openai-chat",
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "allowPrivateNetwork": true,
+      "disabled": true,
+      "authMode": "local",
+      "keyOptional": true,
+      "freeTier": true,
+      "defaultModel": "huihui-qwen3.8-27b-abliterated-q6-k-l",
+      "models": [
+        "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]",
+        "huihui-qwen3.8-27b-abliterated-q6-k-l"
+      ],
+      "liveModels": false,
+      "selectedModels": [
+        "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]",
+        "huihui-qwen3.8-27b-abliterated-q6-k-l"
+      ],
+      "contextWindow": 196608,
+      "modelContextWindows": {
+        "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]": 131072,
+        "huihui-qwen3.8-27b-abliterated-q6-k-l": 196608
+      },
+      "modelInputModalities": {
+        "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]": [
+          "text",
+          "image"
+        ],
+        "huihui-qwen3.8-27b-abliterated-q6-k-l": [
+          "text",
+          "image"
+        ]
+      },
+      "modelReasoningEfforts": {
+        "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]": [
+          "low",
+          "medium",
+          "xhigh"
+        ],
+        "huihui-qwen3.8-27b-abliterated-q6-k-l": [
+          "low",
+          "medium",
+          "xhigh"
+        ]
+      },
+      "modelDefaultReasoningEfforts": {
+        "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]": "xhigh",
+        "huihui-qwen3.8-27b-abliterated-q6-k-l": "xhigh"
+      },
+      "modelReasoningEffortMap": {
+        "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]": {
+          "high": "xhigh",
+          "max": "xhigh"
+        },
+        "huihui-qwen3.8-27b-abliterated-q6-k-l": {
+          "high": "xhigh",
+          "max": "xhigh"
+        }
+      },
+      "modelSuffixBracketStrip": true,
+      "localRuntimeProfileId": "qwen38-27b-q6kl",
+      "note": "Reference-only disabled projection. Prefer the managed local-runtime controls, which verify exact artifacts and launch one loopback-only Qwen slot."
+    }
+  }
+}

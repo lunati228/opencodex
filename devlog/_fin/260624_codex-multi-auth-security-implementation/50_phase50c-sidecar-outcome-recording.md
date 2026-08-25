@@ -25,7 +25,7 @@ This phase wires selected-pool sidecar outcomes into the Phase 50B taxonomy with
 
 ## File Plan
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/web-search/executor.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/executor.ts`
 
 Import only the type:
 
@@ -46,7 +46,7 @@ Inside `runWebSearch()`:
 - after `fetch()`, call `recordOutcome?.(res.status)` before status branching;
 - in `catch`, map `TimeoutError` to `"timeout"` and everything else to `"connect_error"`, call `recordOutcome?.(...)`, then return the existing error object.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/web-search/loop.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/loop.ts`
 
 Import `SidecarOutcomeRecorder`.
 
@@ -56,7 +56,7 @@ Pass `recordSidecarOutcome` into `runWebSearch(...)`.
 
 Do not record the main routed-provider loop fetch here in this slice. That fetch belongs to the routed provider, not necessarily the ChatGPT sidecar credential.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/vision/describe.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/vision/describe.ts`
 
 Import `SidecarOutcomeRecorder` type from the web-search executor, or define a shared type if needed without creating a dependency cycle.
 
@@ -67,7 +67,7 @@ Inside `describeImage()`:
 - after `fetch()`, call `recordOutcome?.(res.status)`;
 - in `catch`, map `TimeoutError` to `"timeout"` and everything else to `"connect_error"`, call `recordOutcome?.(...)`, then return the existing error object.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/vision/index.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/vision/index.ts`
 
 Import `SidecarOutcomeRecorder`.
 
@@ -75,7 +75,7 @@ Add optional `recordSidecarOutcome?: SidecarOutcomeRecorder` to `describeImagesI
 
 Pass it to `describeImage(...)`.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
 
 Add a small helper near `handleResponses()`:
 
@@ -94,7 +94,7 @@ When calling:
 - `describeImagesInPlace(...)`, pass `sidecarOutcomeRecorder(config, authCtx)`;
 - `runWithWebSearch(...)`, pass `recordSidecarOutcome: sidecarOutcomeRecorder(config, authCtx)`.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/sidecar-abort.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/sidecar-abort.test.ts`
 
 Add tests without real account identifiers:
 
@@ -105,7 +105,7 @@ Add tests without real account identifiers:
 
 These unit tests prove the sidecar helper behavior. Existing `src/codex-routing.ts` tests prove 401/403 then quarantine through `recordCodexUpstreamOutcome()`.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/web-search.test.ts` OR `/Users/jun/Developer/new/700_projects/opencodex/tests/sidecar-abort.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/web-search.test.ts` OR `<private-user-home>/Developer/new/700_projects/opencodex/tests/sidecar-abort.test.ts`
 
 Add one integration-style unit test for `runWithWebSearch()`:
 
@@ -142,12 +142,12 @@ Independent verification:
 
 Changed files:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/web-search/executor.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/web-search/loop.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/vision/describe.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/vision/index.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/sidecar-abort.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/executor.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/loop.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/vision/describe.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/vision/index.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/sidecar-abort.test.ts`
 
 Implemented:
 

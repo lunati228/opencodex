@@ -12,7 +12,8 @@
 import { OAuthCallbackFlow, type OAuthCallbackFlowOptions } from "./callback-server";
 import { generatePKCE } from "./pkce";
 import type { OAuthController, OAuthCredentials } from "./types";
-import { antigravityUserAgent, ANTIGRAVITY_GOOG_API_CLIENT_UA } from "../adapters/client-fingerprint";
+import { antigravityUserAgent, ANTIGRAVITY_IDE_VERSION } from "../adapters/client-fingerprint";
+import { ANTIGRAVITY_BASE_URL } from "../providers/antigravity-endpoint";
 
 const CLIENT_ID = process.env.GOOGLE_ANTIGRAVITY_CLIENT_ID
   || "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
@@ -20,8 +21,8 @@ const CLIENT_SECRET = process.env.GOOGLE_ANTIGRAVITY_CLIENT_SECRET
   || "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";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v2/userinfo";
 const PROD_API = "https://cloudcode-pa.googleapis.com";
-const DAILY_API = "https://daily-cloudcode-pa.googleapis.com";
 const API_VERSION = "v1internal";
 const SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
@@ -32,7 +33,8 @@ const SCOPES = [
 ];
 const CALLBACK_PORT = 51121;
 const CALLBACK_PATH = "/callback";
-const REFRESH_SKEW_MS = 50 * 60 * 1000; // refresh proactively ~50min before nominal 1h expiry
+// Keep provider-side margins small: the shared OAuth freshness gate applies an additional minute.
+const REFRESH_SKEW_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const ONBOARD_ATTEMPTS = 5;
 const ONBOARD_POLL_MS = 2_000;
@@ -71,6 +73,7 @@ async function postToken(body: Record<string, string>, signal?: AbortSignal): Pr
     headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(body).toString(),
     signal: requestSignal(signal),
+    redirect: "error",
   });
   if (!response.ok) {
     // Status only — the body can carry grant/account details.
@@ -98,6 +101,7 @@ async function loadCodeAssistProject(accessToken: string, signal?: AbortSignal):
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "*/*", "Content-Type": "application/json", "User-Agent": antigravityUserAgent() },
     body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } }),
     signal: requestSignal(signal),
+    redirect: "error",
   });
   if (!response.ok) return undefined;
   return extractProjectId((await response.json().catch(() => undefined)) as Record<string, unknown> | undefined);
@@ -106,11 +110,17 @@ async function loadCodeAssistProject(accessToken: string, signal?: AbortSignal):
 async function onboardProject(accessToken: string, signal?: AbortSignal): Promise<string | undefined> {
   for (let attempt = 0; attempt < ONBOARD_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw signal.reason ?? new Error("Antigravity onboarding aborted");
-    const response = await fetch(`${DAILY_API}/${API_VERSION}:onboardUser`, {
+    const response = await fetch(`${ANTIGRAVITY_BASE_URL}/${API_VERSION}:onboardUser`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: "*/*", "Content-Type": "application/json", "User-Agent": antigravityUserAgent(), "x-goog-api-client": ANTIGRAVITY_GOOG_API_CLIENT_UA },
-      body: JSON.stringify({ tier_id: "free-tier", metadata: { ide_type: "ANTIGRAVITY", ide_name: "antigravity", ide_version: antigravityUserAgent() } }),
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "*/*", "Content-Type": "application/json", "User-Agent": antigravityUserAgent() },
+      // `ide_version` is a version, not a User-Agent. `antigravityUserAgent()` returns the whole
+      // header — `antigravity/ide/2.5.5 (aidev_client; os_type=...; arch=...)` — so onboarding was
+      // sending a parenthesized UA string in a field the real client fills with `2.5.5`. It is a
+      // fingerprint mismatch rather than a crash, which is why nothing failed: the request still
+      // succeeds, it just does not look like Antigravity.
+      body: JSON.stringify({ tier_id: "free-tier", metadata: { ide_type: "ANTIGRAVITY", ide_name: "antigravity", ide_version: ANTIGRAVITY_IDE_VERSION } }),
       signal: requestSignal(signal),
+      redirect: "error",
     });
     if (!response.ok) {
       // Transient (429/5xx): keep polling within the attempt budget. Hard 4xx: give up now.
@@ -226,4 +236,30 @@ export async function refreshAntigravityToken(refreshToken: string, signal?: Abo
   // Re-discover the project on refresh so a newly-onboarded account fills in projectId.
   const projectId = await discoverAntigravityProject(creds.access, signal).catch(() => undefined);
   return projectId ? { ...creds, projectId } : creds;
+}
+
+/**
+ * Refresh and derive import identity from Google's pinned userinfo endpoint. Imports may not
+ * borrow the email written in a local file: that would let one valid token overwrite another
+ * account's slot when a refresh response has no id_token.
+ */
+export async function validateAntigravityImportCredential(
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<OAuthCredentials> {
+  const credential = await refreshAntigravityToken(refreshToken, signal);
+  const response = await fetch(USERINFO_ENDPOINT, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${credential.access}` },
+    signal: requestSignal(signal),
+  });
+  if (!response.ok) throw new Error(`Antigravity identity request failed: ${response.status}`);
+  const body = (await response.json().catch(() => undefined)) as { email?: unknown; id?: unknown } | undefined;
+  if (typeof body?.email !== "string" || body.email.length === 0) {
+    throw new Error("Antigravity identity response did not include an email");
+  }
+  if (typeof body.id !== "string" || body.id.length === 0) {
+    throw new Error("Antigravity identity response did not include an account id");
+  }
+  return { ...credential, accountId: body.id, email: body.email.toLowerCase() };
 }

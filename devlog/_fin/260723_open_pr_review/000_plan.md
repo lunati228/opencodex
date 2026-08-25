@@ -8,7 +8,7 @@ close / rebuild-on-dev, with evidence per PR.
 
 ## Worktree
 
-- Path: `/Users/jun/.codex/worktrees/3118/opencodex-pr-review`
+- Path: `<private-user-home>/.codex/worktrees/3118/opencodex-pr-review`
 - Branch: `codex/pr-review-260723` (tracking `origin/dev` @ d56d2948)
 
 ## PR Inventory (as of 2026-07-23 ~16:30 KST)

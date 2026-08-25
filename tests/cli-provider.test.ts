@@ -1,13 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli", "index.ts");
 const isolatedCodexHome = mkdtempSync(join(tmpdir(), "ocx-prov-codex-home-"));
+
+// Every case below spawns the real CLI. Cold Bun starts on a loaded windows-latest runner
+// routinely blow the 5s default before --help returns; the spawn IS the assertion.
+setDefaultTimeout(SPAWN_BUDGET_MS);
 
 function runCli(args: string[], env: Record<string, string> = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -17,6 +22,9 @@ function runCli(args: string[], env: Record<string, string> = {}) {
     // a test run would WIPE the user's routed catalog entries (live-catalog pollution).
     env: { ...process.env, CODEX_HOME: isolatedCodexHome, ...env },
     encoding: "utf8",
+    // Contended windows-latest cold starts regularly exceed Bun's 5s default before --help
+    // even prints; keep the child deadline under the test budget so status is not null.
+    timeout: SPAWN_BUDGET_MS - 5_000,
   });
 }
 
@@ -97,6 +105,38 @@ describe("ocx provider", () => {
     }
   });
 
+  test("provider add rejects a configured Codex account namespace without mutating config", () => {
+    const { dir, configPath } = freshConfig({
+      codexAccountNamespaces: { deepseek: "side-account-id" },
+    });
+    try {
+      const before = readFileSync(configPath, "utf8");
+      const result = runCli(["provider", "add", "deepseek", "--api-key", "sk-test"], { OPENCODEX_HOME: dir });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("must not collide with a configured Codex account namespace");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.each(["xai", "deepseek"])("login %s rejects a configured Codex account namespace before prompting", provider => {
+    const { dir, configPath } = freshConfig({
+      codexAccountNamespaces: { [provider]: "side-account-id" },
+    });
+    try {
+      const before = readFileSync(configPath, "utf8");
+      const result = runCli(["login", provider], { OPENCODEX_HOME: dir });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("must not collide with a configured Codex account namespace");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("provider add custom provider requires --adapter and --base-url", () => {
     const { dir } = freshConfig();
     try {
@@ -104,6 +144,74 @@ describe("ocx provider", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("--adapter");
       expect(result.stderr).toContain("--base-url");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider show --json never prints secret-shaped modelCosts keys", () => {
+    const { dir } = freshConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+        blsc: {
+          adapter: "openai-chat",
+          baseUrl: "https://llmapi.blsc.cn",
+          modelCosts: {
+            "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+            "sk-abcdef1234567890": { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 },
+          },
+        },
+      },
+    });
+    try {
+      const result = runCli(["provider", "show", "blsc", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain("sk-abcdef1234567890");
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.modelCosts).toEqual({
+        "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider add --force preserves an existing modelCosts overlay", () => {
+    const { dir } = freshConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+        blsc: {
+          adapter: "openai-chat",
+          baseUrl: "https://llmapi.blsc.cn",
+          apiKey: "sk-old",
+          modelCosts: {
+            "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+          },
+        },
+      },
+    });
+    try {
+      const result = runCli([
+        "provider", "add", "blsc",
+        "--adapter", "openai-chat",
+        "--base-url", "https://llmapi.blsc.cn",
+        "--api-key", "sk-rotated",
+        "--force",
+      ], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const config = readConfig(dir);
+      expect(config.providers.blsc.apiKey).toBe("sk-rotated");
+      expect(config.providers.blsc.modelCosts).toEqual({
+        "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -178,6 +286,45 @@ describe("ocx provider", () => {
       const config = readConfig(dir);
       expect(config.providers.deepseek).toBeUndefined();
       expect(config.providers.openai).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("provider remove drops that provider's custom models (#1273)", () => {
+    const { dir } = freshConfig({
+      providers: {
+        openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+        huggingface: { adapter: "openai-chat", baseUrl: "https://api.hf.test/v1", apiKey: "k" },
+      },
+      customModels: [
+        { id: "keep-1", provider: "openai", modelId: "kept-model" },
+        { id: "drop-1", provider: "huggingface", modelId: "DeepSeek-V4-Flash-0731" },
+      ],
+      // Seeded so the assertion below proves removal does not rewrite one-time
+      // ownership: an older binary must keep seeing the same legacy slugs.
+      customModelCatalogMigration: {
+        version: 1,
+        legacyOwnedSlugs: ["huggingface/DeepSeek-V4-Flash-0731", "openai/kept-model"],
+      },
+    });
+    try {
+      const result = runCli(["provider", "remove", "huggingface", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        action: "removed",
+        provider: "huggingface",
+        droppedCustomModels: 1,
+      });
+
+      const config = readConfig(dir);
+      expect(config.customModels).toEqual([
+        { id: "keep-1", provider: "openai", modelId: "kept-model" },
+      ]);
+      expect(config.customModelCatalogMigration).toEqual({
+        version: 1,
+        legacyOwnedSlugs: ["huggingface/DeepSeek-V4-Flash-0731", "openai/kept-model"],
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

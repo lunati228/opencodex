@@ -8,7 +8,7 @@ Capture Codex fast/priority requests accurately in opencodex request logs withou
 
 ## Current Evidence
 
-- Live `codex exec` succeeds through opencodex with `/Users/jun/.codex/config.toml` containing `service_tier = "fast"` and `[features].fast_mode = true`.
+- Live `codex exec` succeeds through opencodex with `<private-user-home>/.codex/config.toml` containing `service_tier = "fast"` and `[features].fast_mode = true`.
 - Current `/api/logs` entries only include `model`, `provider`, `status`, `durationMs`, and stream close metadata.
 - `src/responses/schema.ts` accepts `service_tier`, but `src/responses/parser.ts` does not copy it into `OcxRequestOptions.serviceTier` yet.
 - `devlog/90_service-tier-fast/00_investigation.md` establishes the split: config spelling `fast`, runtime/catalog/request id `priority`.

@@ -46,7 +46,7 @@ flowchart TD
 
 ## Diff-Level Plan
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts`
 
 Add exported type:
 
@@ -77,7 +77,7 @@ Inside `bridgeToResponsesSSE()`:
 - do not call the callback from `cancel()`, because client cancellation is not an upstream account failure.
 - still report stall timeout before closing the stream; stall timeout is an upstream/application terminal, not client cancellation.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/ws-bridge.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/ws-bridge.ts`
 
 Import `ResponsesTerminalStatus` type from `./bridge`.
 
@@ -131,7 +131,7 @@ export async function sendResponseToWebSocket(
 
 Pass `options.onTerminal` through to SSE and JSON conversion paths.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
 
 Import `ResponsesTerminalStatus` type.
 
@@ -201,9 +201,9 @@ Update server call sites:
 - WebSocket `sendResponseToWebSocket()` uses `{ onTerminal: recorderFromHandleResponses }`, where `recorderFromHandleResponses` is set only by the actual Codex forward passthrough path.
 - WebSocket calls `handleResponses()` with `recordTerminalOutcomes: false`.
 
-`/Users/jun/Developer/new/700_projects/opencodex/src/web-search/loop.ts` is explicitly out of scope for this phase. Its sidecar/main-loop execution already receives sidecar status recording from Phase 50C, and threading terminal callbacks through the model-loop abstraction is a separate design slice. Phase 50E covers the server response path that directly owns selected pool auth context.
+`<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/loop.ts` is explicitly out of scope for this phase. Its sidecar/main-loop execution already receives sidecar status recording from Phase 50C, and threading terminal callbacks through the model-loop abstraction is a separate design slice. Phase 50E covers the server response path that directly owns selected pool auth context.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/bridge-lifecycle.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/bridge-lifecycle.test.ts`
 
 Add tests:
 
@@ -212,7 +212,7 @@ Add tests:
 - generated bridge reports `incomplete` terminal callback on adapter EOF without terminal;
 - cancelled bridge stream does not report terminal outcome, including an adapter generator that reacts to cancellation by throwing or returning.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
 
 Add tests:
 
@@ -224,7 +224,7 @@ Add tests:
 - one WebSocket path test proves a generated failed stream records exactly one terminal outcome, not one from `handleResponses()` plus one from WS conversion.
 - one negative test proves a generated non-forward stream with an active pool account does not mutate pool upstream health.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/passthrough-abort.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/passthrough-abort.test.ts`
 
 Add tests:
 
@@ -236,7 +236,7 @@ Add tests:
 - `data: [DONE]` before a terminal payload reports incomplete at EOF rather than success.
 - invalid JSON payloads do not leak payload text and report incomplete at EOF if no terminal status is observed.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
 
 Add a focused server-level passthrough SSE regression:
 
@@ -252,7 +252,7 @@ Add a negative attribution regression:
 - consume the response body;
 - assert `getCodexUpstreamHealth(poolId)` is still null.
 
-Add a WebSocket attribution regression if practical in this file; otherwise keep it in `/Users/jun/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts` with the `setTerminalOutcomeRecorder` behavior:
+Add a WebSocket attribution regression if practical in this file; otherwise keep it in `<private-user-home>/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts` with the `setTerminalOutcomeRecorder` behavior:
 
 - a WebSocket conversion callback must not be supplied for non-forward generated responses.
 
@@ -283,7 +283,7 @@ Independent verification:
 - Persisting stream terminal health across process restart.
 - Using exact upstream embedded error codes to classify `response.failed` as credential/quota. This slice records late stream failure conservatively as transient `502`.
 - UI display for terminal stream failure reason.
-- Web-search loop terminal callback plumbing in `/Users/jun/Developer/new/700_projects/opencodex/src/web-search/loop.ts`.
+- Web-search loop terminal callback plumbing in `<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/loop.ts`.
 
 ## Plan Audit Fixes
 
@@ -301,27 +301,27 @@ Status: implemented in B.
 
 Implementation files:
 
-- `/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts`
   - Added `ResponsesTerminalStatus`.
   - Added optional `onTerminal` support to `bridgeToResponsesSSE()`.
   - Reports `completed`, `failed`, and `incomplete` once for generated SSE terminal outcomes.
   - Suppresses terminal reporting after client cancellation.
-- `/Users/jun/Developer/new/700_projects/opencodex/src/ws-bridge.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/ws-bridge.ts`
   - Added optional terminal reporting to SSE pumping, JSON conversion, and `sendResponseToWebSocket()`.
   - Reports EOF/protocol stream failures as `incomplete` only when the turn is current and not client-cancelled.
   - Keeps terminal callbacks generic; no account ids or payload text are passed to the callback.
-- `/Users/jun/Developer/new/700_projects/opencodex/src/server.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts`
   - Added `usesCodexForwardPoolAuth()` and `codexForwardTerminalOutcomeRecorder()` so account health updates are scoped to actual `openai-responses` forward passthrough requests using the selected pool credential.
   - Deferred passthrough SSE 200 health recording until the terminal SSE payload.
   - Added `recordTerminalOutcomes` / `setTerminalOutcomeRecorder` ownership so HTTP records internally and WebSocket records only during WS conversion.
   - Added terminal observation to `relaySseWithHeartbeat()` while preserving byte-for-byte relay semantics.
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/bridge-lifecycle.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/bridge-lifecycle.test.ts`
   - Added generated bridge terminal callback tests for completed, failed, incomplete, and cancellation.
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/ws-endpoint.test.ts`
   - Added WebSocket terminal callback tests for failed, incomplete, JSON failed/completed, stale turns, and cancellation.
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/passthrough-abort.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/passthrough-abort.test.ts`
   - Added passthrough SSE terminal parser tests for failed, EOF incomplete, cancel, CRLF/multiline, split chunks, `[DONE]`, and invalid JSON.
-- `/Users/jun/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
+- `<private-user-home>/Developer/new/700_projects/opencodex/tests/server-auth.test.ts`
   - Added server-level regression proving passthrough SSE terminal failure does not get erased by initial HTTP 200.
   - Added negative attribution regression proving non-forward generated streams do not mutate active pool health.
 

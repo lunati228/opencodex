@@ -89,7 +89,7 @@ HTTP の境界は `server/index.ts` が担い、Responses データプレーン�
 | `done` | `response.completed`（usage 付き） |
 | `error` | `response.failed`（`last_error` 付き） |
 
-ブリッジは **ハートビートキープアライブ**（RC3）も実行します。上流からデータが来ないとき 2 秒ごとにパーサーが無視する `response.heartbeat` SSE イベントを送り、Codex のアイドルタイマーを再開します。デフォルトの **stall deadline** は 300 秒（`stallTimeoutSec`）です。この時間を超えると上流を中断し、理由が `upstream_stall_timeout` の `response.incomplete` を送り、接続が延々とぶら下がらないようにします。
+ブリッジは **ハートビートキープアライブ**（RC3）も実行します。上流からデータが来ないとき 2 秒ごとにパーサーが無視する `: opencodex heartbeat` SSE コメント行を送り、Codex のアイドルタイマーを再開します。コメント行はイベントを生成せずに任意の eventsource パーサーに破棄されるため、厳格な Responses デコーダは未知のバリアントを決して見ません。デフォルトの **stall deadline** は 300 秒（`stallTimeoutSec`）です。この時間を超えると上流を中断し、理由が `upstream_stall_timeout` の `response.incomplete` を送り、接続が延々とぶら下がらないようにします。
 
 ツール呼び出しはパーサーが取得した名前空間マップ、freeform 集合、tool-search 集合を使って 3 種類の Responses 項目タイプに振り分けます — そのため MCP 名前空間、`apply_patch` スタイルの freeform ツール、クライアントが実行する `tool_search` がすべてラウンドトリップします。`buildResponseJSON()` 変種は同じイベントから単一の非ストリーミングレスポンスオブジェクトを生成します。
 
@@ -109,12 +109,14 @@ Codex コンテキスト compaction はルーティングされたモデルで�
 ## Reasoning effort
 
 `reasoning-effort.ts` は Codex の reasoning ラベルを各プロバイダーの wire 値に変換します。
-Codex カタログは Codex が受け入れるラベル（`low` / `medium` / `high` / `xhigh` / `max`）を公表しますが、上流プロバイダーはより小さなサブセットしかサポートしなかったり、実際の alias が必要だったりします。このモジュールは:
+明示的に宣言された非 GPT ラダーは合成レベルを追加せず、そのままカタログに表示されます。宣言のないエントリは互換デフォルトを維持し、GPT ファミリーは既存の Codex 製品レベルを維持します。このモジュールは:
 
 - 標準 `CODEX_REASONING_LEVELS` とその整列順序を定義します。
 - 要求された effort を正確なレベルがないとき最も近いサポート段階にクランプします。
 - カスタム wire マッピングのためのモデル別・プロバイダー別 `reasoningEffortMap` override を解釈します。
 - `noReasoningModels` に列挙されたモデルについては effort を完全に削除します。
+
+たとえば Gemini 3.7 Flash は `low` / `medium` / `high` のみを表示します。管理対象のローカル Qwen は `low` / `medium` / `xhigh` を表示し、既定値は `xhigh` です。古い保存値のクランプや変換は wire 境界でのみ行われます。
 
 ## コア型
 

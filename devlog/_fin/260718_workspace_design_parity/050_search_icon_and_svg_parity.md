@@ -35,8 +35,8 @@
   - `/provider-icons/openai.svg`
   - `/provider-icons/opencode.svg`
   - `/provider-icons/grok-color.svg`
-- 클래식: `/Users/jun/.browser-agent/screenshots/screenshot_1784338088050.png`
-- Workspace: `/Users/jun/.browser-agent/screenshots/screenshot_1784338100615.png`
+- 클래식: `<private-user-home>/.browser-agent/screenshots/screenshot_1784338088050.png`
+- Workspace: `<private-user-home>/.browser-agent/screenshots/screenshot_1784338100615.png`
 - `bunx tsc -b --noEmit` — exit 0
 - `bunx eslint src/components/provider-workspace/ProviderRail.tsx` — exit 0
 - `bun run build` — exit 0, 67 modules transformed

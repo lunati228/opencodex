@@ -13,11 +13,11 @@ unknown providers support metadata they do not expose.
 Relevant source files:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts
 ```
 
 Current gaps:
@@ -59,7 +59,7 @@ Usage details policy:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/types.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts
 ```
 
 Change `AdapterEvent`:
@@ -86,7 +86,7 @@ Extend `OcxUsage`:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/bridge.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/bridge.ts
 ```
 
 Add a helper:
@@ -171,7 +171,7 @@ done                       -> usage
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/openai-chat.ts
 ```
 
 Change streaming mapping:
@@ -205,7 +205,7 @@ usage: {
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/anthropic.ts
 ```
 
 Keep `thinking_delta` as summary. Extend usage mapping:
@@ -227,7 +227,7 @@ const hasCache =
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/adapters/google.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/adapters/google.ts
 ```
 
 Extend usage mapping when Gemini returns known metadata:
@@ -242,7 +242,7 @@ Keep both optional.
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/bridge.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/bridge.test.ts
 ```
 
 Add focused bridge tests:
@@ -257,7 +257,7 @@ Add focused bridge tests:
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/adapter-usage.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/adapter-usage.test.ts
 ```
 
 Add adapter-level unit tests for:

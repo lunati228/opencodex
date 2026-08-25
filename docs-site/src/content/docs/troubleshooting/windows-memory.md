@@ -30,28 +30,40 @@ upstream data in native memory that JavaScript cannot bound.
 Bounded mitigation and visibility — **not a fix**. On the bundled 1.3.14
 runtime the leak itself remains an upstream problem:
 
-- **RSS watchdog** — the proxy samples its own memory every minute and logs a
-  rate-limited warning when RSS crosses 4 GiB.
+- **Memory watchdog** — the proxy samples its own memory every minute and logs a
+  rate-limited warning when observed memory crosses 4 GiB. Observed memory is
+  the largest of RSS, `external`, and `arrayBuffers` (not their sum), because
+  Windows working-set/RSS counters can under-report committed external
+  retention.
 - **`ocx doctor`** — a "Memory / runtime" section shows the *service*
-  process's Bun version, RSS, JS-heap share, and stream-mode decision, and
-  tells you whether growth looks native-side (the upstream issue) or JS-side
-  (an opencodex bug you should report).
+  process's Bun version, RSS, external/ArrayBuffers counters, JS-heap context,
+  and stream-mode decision. On the bundled Bun 1.3.14 runtime, `heapUsed` /
+  `jscHeap` alone are not a leak discriminator; compare observed memory with
+  `responseState` and repeated samples before assigning an app-level leak.
 - **`GET /api/system/memory`** — the same data over the authenticated
-  management API for dashboards or scripts. Alongside the RSS/heap numbers it
-  reports a scalar `responseState` block (entry count, total/largest serialized
-  bytes, oldest-entry age) for the proxy's in-memory `previous_response_id`
-  continuation store. This further attributes *JS-heap* growth: a rising
-  `responseState.totalBytes` under a rising heap points at conversation
-  retention (long `store:false` chains re-expanding each turn), whereas a flat
-  `responseState` under a rising RSS points back at the native runtime. The
-  values are scalar-only — no request bodies, tokens, paths, or account
-  identifiers — and the read is side-effect free (it never prunes or evicts).
-  The dashboard's read-only **Memory observability** card renders the same
-  fields.
+  management API for dashboards or scripts. Alongside RSS/heap/external counters
+  it reports a scalar `responseState` block (entry count, total/largest
+  serialized bytes, oldest-entry age) for the proxy's in-memory
+  `previous_response_id` continuation store. This further attributes growth: a
+  rising `responseState.totalBytes` under rising observed memory points at
+  conversation retention (long `store:false` chains re-expanding each turn),
+  whereas a flat `responseState` under rising observed memory points away from
+  that store. The values are scalar-only — no request bodies, tokens, paths, or
+  account identifiers — and the read is side-effect free (it never prunes or
+  evicts). The dashboard's **Memory observability** card renders the
+  same fields and offers a confirm-gated **Drain & restart** action: it shows
+  the current active-turn count, waits up to 60s for active turns (reusing
+  the existing 503 + `Retry-After` drain), then aborts any remaining turns.
+  The running proxy owns restart authorization and drain coordination, then
+  exits; an installed service manager launches the replacement when applicable.
+  The action reports success only after a different, identity-verified process
+  is healthy on the same port, without tearing down Codex injection. That is a
+  longer, informed recycle than the short drain on `POST /api/stop`.
 - **A gated alternative stream path** — a bounded single-reader relay that
-  removes the unbounded buffering shape entirely. It becomes the default
-  automatically once a bundled Bun release verifiably carries the #32111 fix;
-  today it is opt-in only (see below).
+  removes the unbounded buffering shape entirely. On Windows it becomes the
+  default automatically once a bundled Bun release verifiably carries the
+  #32111 fix; today it is opt-in only (see below). On macOS it stays opt-in
+  even after such a release — flipping macOS `auto` is a separate decision.
 
 Real-world RSS improvement from these changes is **awaiting verification by
 Windows users** — we do not claim the leak is fixed.
@@ -64,13 +76,14 @@ restart it.
 
 1. **Wait for a bundled runtime update.** Once a Bun release verifiably
    carries the fixes, opencodex will bump the bundled runtime and the safer
-   stream path turns on automatically.
+   stream path turns on automatically on Windows (macOS keeps requiring the
+   explicit opt-in below).
 
 2. **Run a Bun runtime you trust with `OPENCODEX_BUN_PATH`.** This is
    unvalidated territory — you are running opencodex on a runtime we have not
    tested; at your own risk. Important for service installs: the override is
    read **when the service artifact is generated**, not at service start. Set
-   the environment variable, then re-run `ocx service install` from that same
+   the environment variable, then re-run `ocx service repair` from that same
    shell so the path is baked into the durable service definition. Setting
    the env alone does nothing for an already-installed service.
 
@@ -81,7 +94,8 @@ restart it.
    1.3.14 this uses the stream shape affected by #32111, which can crash the
    process mid-stream (on any OS, not just Windows). The service manager will
    restart it, but in-flight requests fail. `"legacy-tee"` pins the current
-   default; `"auto"` (default) lets the runtime gate decide.
+   default. On Windows, `"auto"` (default) lets the runtime gate decide. On
+   macOS, `"auto"` always stays on tee; explicit `"eager-relay"` is the opt-in.
 
 If you try any of these on a real Windows workload, please report the before
 and after `ocx doctor` memory sections on

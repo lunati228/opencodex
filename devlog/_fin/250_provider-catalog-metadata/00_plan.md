@@ -39,7 +39,7 @@ Preserve these ideas instead:
 
 ## Implementation Plan
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/types.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/types.ts`
 
 Add optional provider catalog metadata fields to `OcxProviderConfig`:
 
@@ -47,7 +47,7 @@ Add optional provider catalog metadata fields to `OcxProviderConfig`:
 - `modelContextWindows?: Record<string, number>`
 - `modelInputModalities?: Record<string, string[]>`
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/providers/registry.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/providers/registry.ts`
 
 Extend `ProviderRegistryEntry` and `ProviderConfigSeed` with the same metadata fields.
 
@@ -81,7 +81,7 @@ Keep these fields unchanged:
 - `defaultModel: "umans-coder"`
 - `escapeBuiltinToolNames: true`
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/providers/derive.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/providers/derive.ts`
 
 Copy the new metadata fields through:
 
@@ -89,23 +89,23 @@ Copy the new metadata fields through:
 - `deriveKeyLoginMap()`
 - `DerivedKeyLoginProvider`
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/oauth/key-providers.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/oauth/key-providers.ts`
 
 Copy the new metadata fields through:
 
 - `KeyLoginProvider`
 - `enrichProviderFromCatalog()`
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/oauth/login-cli.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/oauth/login-cli.ts`
 
 Copy the new metadata fields into the saved key-login provider config.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/oauth/index.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/oauth/index.ts`
 
 Include the new metadata fields in OAuth provider reconciliation so future OAuth registry metadata
 stays synced.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts`
 
 Extend `catalogHintsFromProviderConfig()` so provider config metadata reaches `CatalogModel`:
 
@@ -140,16 +140,16 @@ Use that helper in all three catalog paths:
 This preserves PR #12's cap semantics: config can lower oversized live metadata but must not raise a
 smaller live context window.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/provider-registry-parity.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/provider-registry-parity.test.ts`
 
 Assert registry-derived key-login and provider presets preserve Umans context/input metadata.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/umans-provider.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/umans-provider.test.ts`
 
 Strengthen Umans tests so the saved/enriched provider retains catalog metadata while preserving
 Anthropic Messages runtime behavior.
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts`
 
 Add catalog tests for:
 
@@ -158,7 +158,7 @@ Add catalog tests for:
 - configured caps not raising smaller live metadata
 - cached metadata being capped consistently
 
-### MODIFY `/Users/jun/Developer/new/700_projects/opencodex/README.md`
+### MODIFY `<private-user-home>/Developer/new/700_projects/opencodex/README.md`
 
 Add a short configuration example or field summary for `contextWindow`, `modelContextWindows`, and
 `modelInputModalities`, then point detailed field definitions to the docs-site configuration

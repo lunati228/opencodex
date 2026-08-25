@@ -4,7 +4,7 @@ import { describe, expect, mock, test } from "bun:test";
 const lookupMock = mock(async (_hostname: string, _opts: unknown): Promise<{ address: string; family: number }[]> => []);
 mock.module("node:dns/promises", () => ({ lookup: lookupMock }));
 
-const { providerDestinationConfigError, providerDestinationResolvedError } = await import("../src/lib/destination-policy");
+const { providerDestinationConfigError, providerDestinationResolvedError, resolvePublicAddresses } = await import("../src/lib/destination-policy");
 
 const provider = (baseUrl: string, allowPrivateNetwork?: boolean) => ({ baseUrl, allowPrivateNetwork });
 
@@ -27,6 +27,11 @@ describe("providerDestinationConfigError — reserved IPv4 ranges (review findin
 
   test("still passes ordinary public literals", () => {
     expect(providerDestinationConfigError("custom", provider("https://93.184.216.34/v1"))).toBeNull();
+  });
+
+  test("rejects IPv6 site-local and multicast literals", () => {
+    expect(providerDestinationConfigError("custom", provider("http://[fec0::1]/v1"))).toContain("allowPrivateNetwork");
+    expect(providerDestinationConfigError("custom", provider("http://[ff02::1]/v1"))).toContain("allowPrivateNetwork");
   });
 });
 
@@ -56,6 +61,18 @@ describe("providerDestinationResolvedError — DNS-resolved SSRF check (activati
     lookupMock.mockResolvedValueOnce([{ address: "fd00::1", family: 6 }]);
     const error = await providerDestinationResolvedError("custom", provider("https://v6.example.com/v1"));
     expect(error).toContain("private-network address (fd00::1)");
+  });
+
+  test("blocks a hostname resolving to IPv6 site-local space", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "fec0::1", family: 6 }]);
+    const error = await providerDestinationResolvedError("custom", provider("https://v6-site.example.com/v1"));
+    expect(error).toMatch(/site-local address \(fec0::1\)/);
+  });
+
+  test("blocks a hostname resolving to IPv6 multicast space", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "ff02::1", family: 6 }]);
+    const error = await providerDestinationResolvedError("custom", provider("https://v6-mcast.example.com/v1"));
+    expect(error).toMatch(/multicast address \(ff02::1\)/);
   });
 
   test("passes a hostname resolving only to public addresses", async () => {
@@ -145,5 +162,94 @@ describe("providerDestinationResolvedError — canonical openai Clash fake-IP ex
       "openai",
       provider("https://chatgpt.com/backend-api/codex"),
     )).toContain("benchmark address (198.18.0.30)");
+  });
+});
+
+describe("resolvePublicAddresses — caller-specific diagnostics", () => {
+  test("provider callers do not receive image-URL DNS errors", async () => {
+    lookupMock.mockRejectedValueOnce(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
+
+    await expect(resolvePublicAddresses(
+      "https://unresolvable.example/v1/models",
+      { context: "provider URL" },
+    )).rejects.toThrow("provider URL hostname unresolvable.example could not be resolved");
+  });
+
+  test("DNS resolution failures have a distinct error type for proxy degradation", async () => {
+    lookupMock.mockRejectedValueOnce(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
+
+    let error: unknown;
+    try {
+      await resolvePublicAddresses("https://proxy-only.example/v1/models", { context: "provider URL" });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).name).toBe("DestinationDnsResolutionError");
+  });
+
+  test("provider private-network opt-in returns classified private addresses", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "192.168.1.50", family: 4 }]);
+
+    const resolved = await resolvePublicAddresses(
+      "http://ollama.lan:11434/v1/models",
+      { context: "provider URL", allowPrivateNetwork: true },
+    );
+
+    expect(resolved.privateNetwork).toBe(true);
+    expect(resolved.addresses).toEqual([{ address: "192.168.1.50", family: 4 }]);
+  });
+
+  test("hostname Clash fake-IP answers are accepted only under the explicit benchmark opt-in (#1748)", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "198.18.56.214", family: 4 }]);
+
+    const resolved = await resolvePublicAddresses(
+      "https://www.packyapi.com/v1/models",
+      { context: "provider URL", allowBenchmarkAddresses: true },
+    );
+
+    expect(resolved.privateNetwork).toBe(false);
+    expect(resolved.addresses).toEqual([{ address: "198.18.56.214", family: 4 }]);
+  });
+
+  test("hostname Clash fake-IP answers still reject without the benchmark opt-in", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "198.18.56.214", family: 4 }]);
+
+    await expect(resolvePublicAddresses(
+      "https://www.packyapi.com/v1/models",
+      { context: "provider URL" },
+    )).rejects.toThrow("benchmark address (198.18.56.214)");
+  });
+
+  test("benchmark opt-in mixed with RFC1918 still requires the private-network opt-in", async () => {
+    lookupMock.mockResolvedValueOnce([
+      { address: "198.18.56.214", family: 4 },
+      { address: "10.0.0.5", family: 4 },
+    ]);
+
+    await expect(resolvePublicAddresses(
+      "https://rebind.example.com/v1/models",
+      { context: "provider URL", allowBenchmarkAddresses: true },
+    )).rejects.toThrow("private-network address (10.0.0.5)");
+  });
+
+  test("benchmark opt-in does not admit a literal 198.18.x URL", async () => {
+    await expect(resolvePublicAddresses(
+      "https://198.18.56.214/v1/models",
+      { context: "provider URL", allowBenchmarkAddresses: true },
+    )).rejects.toThrow("benchmark address");
+  });
+
+  test("image/Lab fetch (no opt-in) still rejects hostnames resolving to 198.18.x (#1748 SSRF guard)", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "198.18.4.2", family: 4 }]);
+    await expect(resolvePublicAddresses("https://fakeip.example.com/img.png"))
+      .rejects.toThrow("image URL hostname fakeip.example.com resolves to benchmark address (198.18.4.2)");
+
+    lookupMock.mockResolvedValueOnce([{ address: "198.19.7.9", family: 4 }]);
+    await expect(resolvePublicAddresses(
+      "https://fakeip.example.com/v1/models",
+      { context: "Lab provider destination", allowPrivateNetwork: false },
+    )).rejects.toThrow("benchmark address (198.19.7.9)");
   });
 });

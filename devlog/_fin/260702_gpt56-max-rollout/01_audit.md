@@ -78,10 +78,10 @@ Evidence:
 - `src/codex-catalog.ts:397`
 - `tests/reasoning-effort.test.ts:274`
 - `src/responses/parser.ts:207`
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:48`
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:64`
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:130`
-- `/Users/jun/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:133`
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:48`
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:64`
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:130`
+- `<private-user-home>/Developer/codex/120_codex-cli/codex-rs/protocol/src/openai_models.rs:133`
 
 ### 5. Kiro is now an exposure-policy question, not an adapter blocker
 

@@ -13,7 +13,7 @@ only when the provider advertises it; `ensureUltraReasoningLevel` deliberately
 appends ultra alone — wire clamps ultra->max->highest native). This phase adds
 the v2 gate; it does not add any max emission.
 
-## Repo: /Users/jun/Developer/new/700_projects/opencodex
+## Repo: <private-user-home>/Developer/new/700_projects/opencodex
 
 ### NEW src/codex/features.ts
 

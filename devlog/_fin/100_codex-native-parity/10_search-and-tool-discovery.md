@@ -52,7 +52,7 @@ If metadata is missing or unknown:
 opencodex clones a native Codex catalog template in:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
 ```
 
 The routed entries currently do not explicitly remove or override:
@@ -71,13 +71,13 @@ For hosted web search, opencodex mitigates at request time:
 Relevant local paths:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:134
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:141
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:142
-/Users/jun/Developer/new/700_projects/opencodex/src/responses/parser.ts:380
-/Users/jun/Developer/new/700_projects/opencodex/src/web-search/index.ts:30
-/Users/jun/Developer/new/700_projects/opencodex/src/server.ts:159
-/Users/jun/Developer/new/700_projects/opencodex/src/web-search/synthetic-tool.ts:11
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:134
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:141
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:142
+<private-user-home>/Developer/new/700_projects/opencodex/src/responses/parser.ts:380
+<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/index.ts:30
+<private-user-home>/Developer/new/700_projects/opencodex/src/server.ts:159
+<private-user-home>/Developer/new/700_projects/opencodex/src/web-search/synthetic-tool.ts:11
 ```
 
 ## Gap

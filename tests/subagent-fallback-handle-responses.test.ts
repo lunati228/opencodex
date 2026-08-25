@@ -25,9 +25,11 @@ import {
 import {
   isModelHealthBlocked,
   resetSubagentModelFallbackStateForTests,
+  setSubagentQuotaPrimeForTests,
 } from "../src/codex/subagent-model-fallback";
 import type { CodexAuthContext } from "../src/codex/auth-context";
 import { handleResponses } from "../src/server/responses";
+import { isEagerRelaySseResponse } from "../src/server/relay";
 import type { OcxConfig } from "../src/types";
 import type { RequestLogContext } from "../src/server/request-log";
 import type { ResponsesTerminalStatus } from "../src/bridge";
@@ -197,6 +199,54 @@ async function postSpawn(
 }
 
 describe("subagent fallback without primary auth cooldown failure", () => {
+  test("exact account child bypasses quota priming and fallback on an empty 503", async () => {
+    const now = 1_800_000_000_000;
+    Date.now = () => now;
+    installPoolCredential("pool-a", "pool_acc", now);
+    installPoolCredential("pool-b", "pool_b_acc", now);
+    const cfg = poolNativePlusRoutedConfig({
+      codexAccountNamespaces: { side: "pool-a" },
+      subagentModelFallback: ["xai/grok-4.5"],
+    });
+    cfg.codexAccounts?.push({
+      id: "pool-b",
+      email: "pool-b@example.test",
+      isMain: false,
+      chatgptAccountId: "pool_b_acc",
+    });
+    cfg.activeCodexAccountId = "pool-b";
+    updateAccountQuota("pool-b", 95, undefined, 20);
+
+    let quotaPrimes = 0;
+    setSubagentQuotaPrimeForTests(async () => { quotaPrimes += 1; });
+    const urls: string[] = [];
+    const accounts: Array<string | null> = [];
+    const models: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      urls.push(String(input));
+      const headers = new Headers(init?.headers);
+      accounts.push(headers.get("chatgpt-account-id"));
+      models.push(JSON.parse(String(init?.body))?.model ?? "missing");
+      return new Response(null, { status: 503, headers: { "retry-after": "0" } });
+    }) as typeof fetch;
+
+    const response = await postSpawn(cfg, {
+      model: "side/gpt-5.6-sol",
+      input: readableAgentInput(),
+      stream: false,
+    });
+
+    expect(response.status).toBe(503);
+    const error = await response.json() as { error?: { message?: string } };
+    expect(error.error?.message?.trim().length).toBeGreaterThan(0);
+    expect(error.error?.message?.toLowerCase()).not.toBe("unknown error");
+    expect(quotaPrimes).toBe(0);
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.every(url => url.includes("chatgpt.com/backend-api/codex"))).toBe(true);
+    expect(new Set(accounts)).toEqual(new Set(["pool_acc"]));
+    expect(new Set(models)).toEqual(new Set(["gpt-5.6-sol"]));
+  });
+
   test("cooled primary with no probe lease selects healthy routed fallback", async () => {
     const now = 1_800_000_000_000;
     Date.now = () => now;
@@ -296,28 +346,28 @@ describe("subagent fallback without primary auth cooldown failure", () => {
     expect(response.status).not.toBe(429);
   });
 
-  test("final-route auth failure does not leave a primary probe lease", async () => {
+  test("final-route direct auth failure does not acquire a pool probe lease", async () => {
     const now = 1_800_000_000_000;
     Date.now = () => now;
     installPoolCredential("pool-a", "pool_acc", now);
     const cfg: OcxConfig = {
       port: 0,
-      defaultProvider: "openai",
+      defaultProvider: "xai",
       activeCodexAccountId: "pool-a",
       autoSwitchThreshold: 80,
-      subagentModelFallback: ["openai-direct/gpt-5.5"],
+      subagentModelFallback: ["gpt-5.5"],
       providers: {
         openai: {
           adapter: "openai-responses",
           baseUrl: "https://chatgpt.com/backend-api/codex",
           authMode: "forward",
-          codexAccountMode: "pool",
-        },
-        "openai-direct": {
-          adapter: "openai-responses",
-          baseUrl: "https://chatgpt.com/backend-api/codex",
-          authMode: "forward",
           codexAccountMode: "direct",
+        },
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "key",
+          apiKey: "xai-test",
         },
       },
       codexAccounts: [
@@ -328,8 +378,16 @@ describe("subagent fallback without primary auth cooldown failure", () => {
     updateAccountQuota("pool-a", 95, undefined, 20);
     const resetAt = Math.floor((now + 4 * 24 * 60 * 60_000) / 1000);
     recordCodexUpstreamOutcome(cfg, "pool-a", 429, { resetAt, now });
+    const { noteSubagentModelFailure } = await import("../src/codex/subagent-model-fallback");
+    noteSubagentModelFailure("xai/grok-4.5", "429", cfg);
 
-    // Omit authorization so direct-mode final auth fails — primary never leased.
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      throw new Error("must not dispatch");
+    }) as typeof fetch;
+
+    // Omit authorization so the canonical Direct final route fails before dispatch.
     const response = await handleResponses(
       new Request("http://localhost/v1/responses", {
         method: "POST",
@@ -338,7 +396,7 @@ describe("subagent fallback without primary auth cooldown failure", () => {
           "x-openai-subagent": "collab_spawn",
         },
         body: JSON.stringify({
-          model: "gpt-5.6-sol",
+          model: "xai/grok-4.5",
           input: readableAgentInput(),
           stream: false,
         }),
@@ -348,11 +406,110 @@ describe("subagent fallback without primary auth cooldown failure", () => {
     );
 
     expect(response.status).toBe(401);
+    expect(fetchCalls).toBe(0);
     expect(getCodexUpstreamHealth("pool-a")?.probeLeaseId).toBeUndefined();
   });
 });
 
 describe("subagent fallback final-route normalization", () => {
+  test("routed Responses passthrough 410 marks the primary unavailable for the next child retry", async () => {
+    const cfg = poolNativePlusRoutedConfig({
+      activeCodexAccountId: undefined,
+      subagentModelFallback: ["xai/grok-4.5"],
+    });
+    const urls: string[] = [];
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes("api.openai.com")) {
+        return Response.json({
+          error: {
+            message: "The model 'retired-model' has reached its end of life and is no longer available.",
+          },
+        }, { status: 410 });
+      }
+      return Response.json({
+        id: "resp_fallback",
+        object: "response",
+        status: "completed",
+        model: "grok-4.5",
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof fetch;
+
+    const first = await postSpawn(cfg, {
+      model: "openai-apikey/retired-model",
+      input: readableAgentInput(),
+      stream: false,
+    });
+    expect(first.status).toBe(410);
+    expect(isModelHealthBlocked("openai-apikey/retired-model", cfg)).toBe(true);
+
+    const second = await postSpawn(cfg, {
+      model: "openai-apikey/retired-model",
+      input: readableAgentInput(),
+      stream: false,
+    });
+    expect(second.status).toBe(200);
+    expect(urls.filter(url => url.includes("api.openai.com"))).toHaveLength(1);
+    expect(urls.some(url => url.includes("api.x.ai"))).toBe(true);
+  });
+
+  test("web-search loop 410 marks the routed primary unavailable for the next child retry", async () => {
+    const now = 1_800_000_000_000;
+    installPoolCredential("pool-a", "pool_acc", now);
+    const cfg = poolNativePlusRoutedConfig({
+      subagentModelFallback: ["xai/grok-4.5"],
+      webSearchSidecar: { enabled: true },
+    });
+    cfg.providers.dead = {
+      adapter: "openai-chat",
+      baseUrl: "https://dead.example/v1",
+      authMode: "key",
+      apiKey: "dead-test",
+    };
+    const urls: string[] = [];
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes("dead.example")) {
+        return Response.json({
+          error: {
+            message: "The model 'retired-model' has reached its end of life and is no longer available.",
+          },
+        }, { status: 410 });
+      }
+      return Response.json({
+        id: "resp_fallback",
+        object: "response",
+        status: "completed",
+        model: "grok-4.5",
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof fetch;
+
+    const first = await postSpawn(cfg, {
+      model: "dead/retired-model",
+      input: readableAgentInput(),
+      stream: false,
+      tools: [{ type: "web_search" }],
+    });
+    expect(first.status).toBe(410);
+    expect(isModelHealthBlocked("dead/retired-model", cfg)).toBe(true);
+
+    const second = await postSpawn(cfg, {
+      model: "dead/retired-model",
+      input: readableAgentInput(),
+      stream: false,
+      tools: [{ type: "web_search" }],
+    });
+    expect(second.status).toBe(200);
+    expect(urls.filter(url => url.includes("dead.example"))).toHaveLength(1);
+    expect(urls.some(url => url.includes("api.x.ai"))).toBe(true);
+  });
+
   test("falls back to gpt-5.6-sol-pro and rewrites wire model + reasoning.mode", async () => {
     const cfg = poolNativePlusRoutedConfig({
       activeCodexAccountId: undefined,
@@ -940,4 +1097,40 @@ describe("native passthrough terminal finalization", () => {
       expect(result.healthBlocked).toBe(false);
     });
   }
+});
+
+describe("darwin explicit eager-relay path selection", () => {
+  const completedSse = `event: response.completed\ndata: ${JSON.stringify({
+    type: "response.completed",
+    response: { id: "r1", status: "completed", output: [] },
+  })}\n\n`;
+
+  async function runDarwinStreamMode(streamMode: "legacy-tee" | "eager-relay"): Promise<Response> {
+    const now = 1_800_000_000_000;
+    Date.now = () => now;
+    installPoolCredential("pool-a", "pool_acc", now);
+    mockSseUpstream(completedSse);
+    return postSpawn(
+      poolNativePlusRoutedConfig({ streamMode, activeCodexAccountId: "pool-a" }),
+      { model: "gpt-5.6-sol", input: readableAgentInput(), stream: true },
+    );
+  }
+
+  test.skipIf(process.platform !== "darwin")(
+    "eager-relay + no rewrite marks the direct handleResponses response as eager",
+    async () => {
+      const response = await runDarwinStreamMode("eager-relay");
+      expect(isEagerRelaySseResponse(response)).toBe(true);
+      expect(await response.text()).toContain("response.completed");
+    },
+  );
+
+  test.skipIf(process.platform !== "darwin")(
+    "legacy-tee + no rewrite does not carry the eager marker",
+    async () => {
+      const response = await runDarwinStreamMode("legacy-tee");
+      expect(isEagerRelaySseResponse(response)).toBe(false);
+      expect(await response.text()).toContain("response.completed");
+    },
+  );
 });

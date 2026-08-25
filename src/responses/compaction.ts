@@ -17,7 +17,7 @@
 
 export const OCX_COMPACTION_PREFIX = "ocx1:";
 
-/** Mirrors codex-rs core/templates/compact/prompt.md (the local-compaction instruction). */
+/** Mirrors codex-rs core/templates/compact/prompt.md, with a routed-helper output invariant. */
 export const COMPACT_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
 Include:
@@ -26,12 +26,32 @@ Include:
 - What remains to be done (clear next steps)
 - Any critical data, examples, or references needed to continue
 
-Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+
+Your visible final response MUST contain the handoff summary. Do not stop after internal reasoning, do not call tools, and never return an empty final response.`;
 
 /** Mirrors codex-rs core/templates/compact/summary_prefix.md (framing for a replayed summary). */
 export const SUMMARY_PREFIX = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
 
 export const OPAQUE_COMPACTION_NOTE = "[earlier conversation was compacted; the summary is stored in a format this model cannot read]";
+
+/**
+ * Item types in the compact wire family. Each carries an `encrypted_content` blob the client
+ * replays verbatim on every later turn, and the minting backend verifies it is unmodified.
+ *
+ * Keep this the only enumeration: a copy that listed just `compaction` let the response-side
+ * field backfill synthesize ids into the other two, which the client then replayed as "modified
+ * from the compact response".
+ */
+const COMPACTION_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "compaction",
+  "compaction_summary",
+  "context_compaction",
+]);
+
+export function isCompactionItemType(type: unknown): boolean {
+  return typeof type === "string" && COMPACTION_ITEM_TYPES.has(type);
+}
 
 export function encodeCompactionSummary(summary: string): string {
   return OCX_COMPACTION_PREFIX + Buffer.from(summary, "utf-8").toString("base64");
@@ -105,7 +125,14 @@ export function buildCompactV1Output(userMessages: string[], summary: string): R
       remaining -= msg.length;
     } else {
       // Budget partially covers this older message: keep its tail (most recent context) and stop.
-      selected.push(msg.slice(msg.length - remaining));
+      let tailStart = msg.length - remaining;
+      // Never start the retained tail on a lone LOW surrogate: the pair's
+      // other half would be lost and encoding substitutes U+FFFD.
+      if (tailStart > 0 && tailStart < msg.length) {
+        const first = msg.charCodeAt(tailStart);
+        if (first >= 0xdc00 && first <= 0xdfff) tailStart += 1;
+      }
+      selected.push(msg.slice(tailStart));
       break;
     }
   }

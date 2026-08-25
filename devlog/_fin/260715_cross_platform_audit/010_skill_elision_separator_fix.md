@@ -14,7 +14,7 @@ because `maybeElideSkillText` basenames the skill directory with a POSIX-only sp
 
 ```diff
 -  const base = dir.split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
-+  // Windows clients send `C:\Users\...\claude-api`; normalize separators before
++  // Windows clients send `<private-user-home>\claude-api`; normalize separators before
 +  // basenaming (repo precedent: src/codex/inject.ts isOpencodexCatalogPath).
 +  const base = dir.replace(/\\/g, "/").split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
 ```
@@ -24,8 +24,8 @@ Behavior table (input first line `Base directory for this skill: <dir>`):
 | `<dir>` | base | blocked `claude-api`? |
 |---------|------|----------------------|
 | `/private/tmp/.../claude-api` | `claude-api` | elided (unchanged) |
-| `C:\Users\u\AppData\...\claude-api` | `claude-api` | elided (FIXED) |
-| `C:\Users\u\mixed/path\claude-api` | `claude-api` | elided (FIXED) |
+| `<private-user-home>\AppData\...\claude-api` | `claude-api` | elided (FIXED) |
+| `<private-user-home>\mixed/path\claude-api` | `claude-api` | elided (FIXED) |
 | `\\server\share\skills\claude-api` (UNC) | `claude-api` | elided (FIXED) |
 | `C:claude-api` (drive-relative, out of client contract) | `c:claude-api` | pass-through (pinned) |
 
@@ -46,14 +46,14 @@ New tests (same describe block, after the existing carrier tests):
 ```ts
 test("text-block carrier: Windows backslash base dir is elided (live incident 2026-07-15)", () => {
   const texts = userTexts(requestWithSkillTextBlock("claude-api", 500_000, undefined,
-    "C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\bundled-skills\\claude-api"));
+    "<private-user-home>\\AppData\\Roaming\\npm\\node_modules\\bundled-skills\\claude-api"));
   expect(texts.some(t => t.includes("elided") && t.includes("claude-api"))).toBe(true);
   expect(texts.every(t => t.length < 10_000)).toBe(true);
 });
 
 test("text-block carrier: mixed separators and UNC paths are elided", () => {
   const mixed = userTexts(requestWithSkillTextBlock("claude-api", 500_000, undefined,
-    "C:\\Users\\u\\skills/2.1.207\\claude-api"));
+    "<private-user-home>\\skills/2.1.207\\claude-api"));
   expect(mixed.some(t => t.includes("elided"))).toBe(true);
   const unc = userTexts(requestWithSkillTextBlock("claude-api", 500_000, undefined,
     "\\\\server\\share\\skills\\claude-api"));

@@ -73,7 +73,7 @@ max_context_window_tokens -> context_window
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/scripts/generate-jawcode-metadata.ts
+<private-user-home>/Developer/new/700_projects/opencodex/scripts/generate-jawcode-metadata.ts
 ```
 
 Responsibilities:
@@ -99,7 +99,7 @@ Responsibilities:
 4. Write:
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts
 ```
 
 The generated file must be deterministic: sorted providers and sorted model ids.
@@ -108,7 +108,7 @@ It must not emit the full jawcode registry; large unrelated provider catalogs st
 ### NEW
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/generated/jawcode-model-metadata.ts
 ```
 
 Generated exports:
@@ -149,7 +149,7 @@ export function resolveJawcodeProvider(provider: string): string | undefined {
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/src/codex-catalog.ts
+<private-user-home>/Developer/new/700_projects/opencodex/src/codex-catalog.ts
 ```
 
 Add import:
@@ -191,7 +191,7 @@ Call sites:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/package.json
+<private-user-home>/Developer/new/700_projects/opencodex/package.json
 ```
 
 Add script:
@@ -203,7 +203,7 @@ Add script:
 ### MODIFY
 
 ```text
-/Users/jun/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
+<private-user-home>/Developer/new/700_projects/opencodex/tests/codex-catalog.test.ts
 ```
 
 Add tests proving:

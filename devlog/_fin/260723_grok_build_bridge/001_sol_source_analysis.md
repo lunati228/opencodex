@@ -2,7 +2,7 @@
 
 Date: 2026-07-23
 Source: Sol(medium) 서브에이전트 read-only 분석, 전문은 `/tmp/grok-build-a5727c5-analysis.md`
-Tree: `/Users/jun/Developer/codex/180_grok-build` @ `a5727c5960452e7527a154b25cb5bf00cda0545e` (SOURCE_REV `30192d2eef5d`)
+Tree: `<private-user-home>/Developer/codex/180_grok-build` @ `a5727c5960452e7527a154b25cb5bf00cda0545e` (SOURCE_REV `30192d2eef5d`)
 
 ## 핵심 판정 (Sol)
 

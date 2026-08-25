@@ -18,15 +18,69 @@ export function setWindowsElevationSpawnForTests(next: ElevationSpawn | null): v
 
 type GetSystemDirectoryW = (buffer: Pointer, size: number) => number;
 type TrustedSystemDirectoryResolver = () => string;
+type IsUserAnAdmin = () => number;
+type WindowsElevationProbe = () => boolean | null;
+
+export class WindowsSystemDirectoryFfiUnavailableError extends Error {
+  constructor() {
+    super("Failed to load GetSystemDirectoryW from kernel32.dll.");
+    this.name = "WindowsSystemDirectoryFfiUnavailableError";
+  }
+}
 
 let getSystemDirectoryWFn: GetSystemDirectoryW | null | undefined;
 let trustedSystemDirectoryResolverForTests: TrustedSystemDirectoryResolver | null = null;
+let isUserAnAdminFn: (() => boolean) | null | undefined;
+let windowsElevationProbeForTests: WindowsElevationProbe | null = null;
 
 /** Test-only seam to replace GetSystemDirectoryW-backed resolution. */
 export function setTrustedWindowsSystemDirectoryResolverForTests(
   next: TrustedSystemDirectoryResolver | null,
 ): void {
   trustedSystemDirectoryResolverForTests = next;
+}
+
+/** Test-only seam for the locale-independent current-token elevation probe. */
+export function setWindowsElevationProbeForTests(next: WindowsElevationProbe | null): void {
+  windowsElevationProbeForTests = next;
+}
+
+function loadIsUserAnAdmin(): (() => boolean) | null {
+  if (isUserAnAdminFn !== undefined) return isUserAnAdminFn;
+  if (process.platform !== "win32") {
+    isUserAnAdminFn = null;
+    return null;
+  }
+  try {
+    const lib = dlopen("shell32.dll", {
+      IsUserAnAdmin: {
+        args: [],
+        // Win32 BOOL is a signed 32-bit integer, not C/C++ bool.
+        returns: "i32",
+      },
+    });
+    const isUserAnAdmin = lib.symbols.IsUserAnAdmin as IsUserAnAdmin;
+    isUserAnAdminFn = () => isUserAnAdmin() !== 0;
+  } catch {
+    isUserAnAdminFn = null;
+  }
+  return isUserAnAdminFn;
+}
+
+/**
+ * Probe the effective Windows token without parsing localized command output.
+ * `null` fails closed: callers must retain the original scheduler error rather
+ * than infer that an unknown token state needs elevation.
+ */
+export function isCurrentWindowsProcessElevated(): boolean | null {
+  if (windowsElevationProbeForTests) return windowsElevationProbeForTests();
+  const isUserAnAdmin = loadIsUserAnAdmin();
+  if (!isUserAnAdmin) return null;
+  try {
+    return isUserAnAdmin();
+  } catch {
+    return null;
+  }
 }
 
 function loadGetSystemDirectoryW(): GetSystemDirectoryW | null {
@@ -67,7 +121,7 @@ export function resolveTrustedWindowsSystemDirectory(): string {
   }
   const getSystemDirectoryW = loadGetSystemDirectoryW();
   if (!getSystemDirectoryW) {
-    throw new Error("Failed to load GetSystemDirectoryW from kernel32.dll.");
+    throw new WindowsSystemDirectoryFfiUnavailableError();
   }
 
   let size = 260;
@@ -121,7 +175,7 @@ export function assertTrustedSystemExecutableForTests(candidate: string, label: 
   return assertTrustedSystemExecutable(candidate, label);
 }
 
-type ElevationExeOverrides = { powershell?: string; schtasks?: string };
+type ElevationExeOverrides = { powershell?: string; schtasks?: string; taskkill?: string; icacls?: string };
 let elevationExeOverridesForTests: ElevationExeOverrides | null = null;
 
 /**
@@ -155,6 +209,24 @@ export function resolveTrustedWindowsSchtasksExe(): string {
   }
   const candidate = join(resolveTrustedWindowsSystemDirectory(), "schtasks.exe");
   return assertTrustedSystemExecutable(candidate, "schtasks.exe");
+}
+
+/** Absolute path to System32\\taskkill.exe from a trusted system directory. */
+export function resolveTrustedWindowsTaskkillExe(): string {
+  if (elevationExeOverridesForTests?.taskkill) {
+    return elevationExeOverridesForTests.taskkill;
+  }
+  const candidate = join(resolveTrustedWindowsSystemDirectory(), "taskkill.exe");
+  return assertTrustedSystemExecutable(candidate, "taskkill.exe");
+}
+
+/** Absolute path to System32\\icacls.exe from a trusted system directory. */
+export function resolveTrustedWindowsIcaclsExe(): string {
+  if (elevationExeOverridesForTests?.icacls) {
+    return elevationExeOverridesForTests.icacls;
+  }
+  const candidate = join(resolveTrustedWindowsSystemDirectory(), "icacls.exe");
+  return assertTrustedSystemExecutable(candidate, "icacls.exe");
 }
 
 /** Stable machine-readable marker for a denied `schtasks /create`. Crosses the CLI→proxy boundary. */
@@ -252,6 +324,34 @@ export function schtasksOperationFromArgs(args: string[]): WindowsSchtasksOperat
   return "other";
 }
 
+function schedulerExitStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" && Number.isInteger(status) ? status : null;
+}
+
+/**
+ * The owned scheduler install has a fixed shape. Restrict the locale-independent
+ * fallback to that shape so unrelated schtasks failures cannot request elevation.
+ */
+function isOwnedSchedulerCreate(args: string[]): boolean {
+  const normalized = args.map(arg => arg.toLowerCase());
+  const taskIndex = normalized.indexOf("/tn");
+  const xmlIndex = normalized.indexOf("/xml");
+  return normalized[0] === "/create"
+    && normalized[taskIndex + 1] === "opencodex-proxy"
+    && taskIndex > 0
+    && xmlIndex > 0
+    && Boolean(args[xmlIndex + 1])
+    && normalized.includes("/f");
+}
+
+function isWindowsSchtasksAccessDeniedError(error: unknown, args: string[]): boolean {
+  if (!isOwnedSchedulerCreate(args)) return false;
+  return isWindowsAccessDeniedError(error)
+    || (schedulerExitStatus(error) === 1 && isCurrentWindowsProcessElevated() === false);
+}
+
 /** Structured Task Scheduler failure that survives formatting and process boundaries. */
 export class WindowsSchtasksError extends Error {
   readonly code = "WINDOWS_SCHTASKS_ERROR" as const;
@@ -287,7 +387,8 @@ export class WindowsElevationError extends Error {
 /** Replace raw schtasks access-denied output with dashboard-friendly guidance. */
 export function formatWindowsSchtasksError(error: unknown, args: string[]): string {
   const operation = schtasksOperationFromArgs(args);
-  const accessDenied = isWindowsAccessDeniedError(error);
+  const ownedCreateAccessDenied = isWindowsSchtasksAccessDeniedError(error, args);
+  const accessDenied = ownedCreateAccessDenied || isWindowsAccessDeniedError(error);
   if (!accessDenied) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -297,7 +398,7 @@ export function formatWindowsSchtasksError(error: unknown, args: string[]): stri
     `Command: schtasks ${argsText}`,
     "Approve the Windows UAC prompt to install the background service, or run `ocx service install` from an elevated PowerShell window.",
   ].join(" ");
-  if (operation === "create") {
+  if (operation === "create" && ownedCreateAccessDenied) {
     return `${guidance}\n${WINDOWS_SCHTASKS_CREATE_ACCESS_DENIED_MARKER}`;
   }
   return guidance;
@@ -306,7 +407,9 @@ export function formatWindowsSchtasksError(error: unknown, args: string[]): stri
 export function toWindowsSchtasksError(error: unknown, args: string[]): WindowsSchtasksError {
   if (error instanceof WindowsSchtasksError) return error;
   const operation = schtasksOperationFromArgs(args);
-  const reason: WindowsSchtasksFailureReason = isWindowsAccessDeniedError(error) ? "access-denied" : "other";
+  const reason: WindowsSchtasksFailureReason = isWindowsSchtasksAccessDeniedError(error, args)
+    ? "access-denied"
+    : "other";
   return new WindowsSchtasksError(operation, reason, formatWindowsSchtasksError(error, args));
 }
 
@@ -520,6 +623,49 @@ export function runWindowsElevated(file: string, args: string[]): Promise<number
     `if ($null -eq $p) { exit ${OCX_ELEVATED_UAC_CANCELLED} }`,
     "$null = $p.Handle;",
     // Missing ExitCode is a protocol failure for single-file elevation (not success).
+    `if ($null -eq $p.ExitCode) { exit ${OCX_ELEVATED_PROTOCOL_FAILED} }`,
+    "exit $p.ExitCode",
+  ].join("");
+
+  return startPowerShellCommand(script).completion.then(result => result.exitCode);
+}
+
+/**
+ * Register one scheduled-task definition without exposing a mutable XML pathname to
+ * the elevated process. The XML bytes are fixed in the encoded PowerShell command
+ * before UAC; Register-ScheduledTask receives that string directly after elevation.
+ */
+export function runWindowsElevatedScheduledTaskRegistration(
+  taskName: string,
+  xml: string,
+): Promise<number> {
+  const xmlBase64 = Buffer.from(xml, "utf16le").toString("base64");
+  const powerShellPath = windowsPowerShell();
+  const powerShellDirectory = powerShellPath.replace(/[\\/][^\\/]+$/, "");
+  const scheduledTasksModule = `${powerShellDirectory}\\Modules\\ScheduledTasks\\ScheduledTasks.psd1`;
+  const inner = [
+    `$taskName = ${psSingleQuote(taskName)}`,
+    `$xmlBase64 = ${psSingleQuote(xmlBase64)}`,
+    "$xml = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($xmlBase64))",
+    `$module = Microsoft.PowerShell.Core\\Import-Module -Name ${psSingleQuote(scheduledTasksModule)} -PassThru -Force -ErrorAction Stop`,
+    "$registerTask = $module.ExportedCommands['Register-ScheduledTask']",
+    "if ($null -eq $registerTask) { throw 'Trusted ScheduledTasks module does not export Register-ScheduledTask.' }",
+    "& $registerTask -TaskName $taskName -Xml $xml -Force -ErrorAction Stop | Out-Null",
+  ].join("; ");
+  const encodedCommand = Buffer.from(inner, "utf16le").toString("base64");
+  const script = [
+    `$p = Start-Process -FilePath ${psSingleQuote(powerShellPath)}`,
+    ` -ArgumentList ${psSingleQuote(buildWindowsElevatedArgumentList([
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-EncodedCommand",
+      encodedCommand,
+    ]))}`,
+    " -Verb RunAs -WindowStyle Hidden -PassThru -Wait;",
+    `if ($null -eq $p) { exit ${OCX_ELEVATED_UAC_CANCELLED} }`,
+    "$null = $p.Handle;",
     `if ($null -eq $p.ExitCode) { exit ${OCX_ELEVATED_PROTOCOL_FAILED} }`,
     "exit $p.ExitCode",
   ].join("");
