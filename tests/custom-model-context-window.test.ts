@@ -83,7 +83,7 @@ describe("custom model rows inherit their provider's real context window", () =>
   // Codex has one context/compaction budget per model row. The managed provider therefore
   // publishes one stable model id per fixed Qwen window instead of pretending service_tier can alter model metadata.
   test("the managed local provider reports every fixed Qwen window", async () => {
-    const projection = managedLocalProviderProjection(196608);
+    const projection = managedLocalProviderProjection(184320);
     const cfg = config({
       providers: { ...config().providers, [LOCAL_RUNTIME_PROVIDER_ID]: projection },
       customModels: [

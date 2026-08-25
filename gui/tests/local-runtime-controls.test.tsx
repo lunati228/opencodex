@@ -20,20 +20,20 @@ let testWindow: Window;
 const runningStatus = {
   state: "running",
   revision: 7,
-  requested: { profileId: "qwen38-27b-q6kl", nCtx: 196608 },
+  requested: { profileId: "qwen38-27b-q6kl", nCtx: 184320 },
   effective: {
     profileId: "qwen38-27b-q6kl",
-    nCtx: 196608,
+    nCtx: 184320,
     model: "huihui-qwen3.8-27b-abliterated-q6-k-l",
     verifiedAt: "2026-07-27T12:00:00.000Z",
   },
-  lastKnownGood: { profileId: "qwen38-27b-q6kl", nCtx: 196608 },
+  lastKnownGood: { profileId: "qwen38-27b-q6kl", nCtx: 184320 },
   failure: null,
   pid: 4242,
   operationPending: false,
   controlEnabled: true,
-  contextConstraints: { min: 16384, max: 196608, step: 16384 },
-  contextCheckpoints: [131072, 196608],
+  contextConstraints: { min: 16384, max: 184320, step: 1024 },
+  contextCheckpoints: [131072, 184320],
 };
 
 beforeEach(() => {
@@ -101,9 +101,9 @@ test("shows requested, effective, last-known-good, and owned process state", asy
     expect(container.textContent).toContain("Last-known-good nCtx");
     expect(container.textContent).toContain("4242");
     const context = container.querySelector<HTMLSelectElement>("#local-runtime-context");
-    expect(context?.value).toBe("196608");
+    expect(context?.value).toBe("184320");
     expect([...context!.options].map(option => option.value)).toEqual([
-      "131072", "196608",
+      "131072", "184320",
     ]);
   } finally {
     await act(async () => root.unmount());
@@ -182,7 +182,7 @@ test("does not expose arbitrary or obsolete Qwen context values", async () => {
     expect(values).not.toContain(8192);
     expect(values).not.toContain(49152);
     expect(values).not.toContain(98304);
-    expect(values).toEqual([131072, 196608]);
+    expect(values).toEqual([131072, 184320]);
   } finally {
     await act(async () => root.unmount());
   }

@@ -51,10 +51,10 @@ type RuntimeStatus = {
 };
 
 const PROFILE_ID = "qwen38-27b-q6kl" as const;
-const FALLBACK_CONTEXT_CONSTRAINTS = { min: 16384, max: 196608, step: 16384 };
+const FALLBACK_CONTEXT_CONSTRAINTS = { min: 16384, max: 184320, step: 1024 };
 const FALLBACK_REASONING_EFFORTS: ReasoningEffort[] = ["off", "low", "medium", "xhigh"];
 /** Used only before the first status arrives, or if the server omits profiles. */
-const FALLBACK_CONTEXT = 196608;
+const FALLBACK_CONTEXT = 184320;
 const FALLBACK_REASONING: ReasoningEffort = "xhigh";
 type RuntimeMessage = {
   ok: boolean;

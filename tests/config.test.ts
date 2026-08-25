@@ -236,10 +236,10 @@ describe("opencodex config defaults", () => {
       localRuntime: { ...runtime, nCtx: 196_608 },
     })).toMatchObject({
       ok: true,
-      config: { localRuntime: { profileId: "qwen38-27b-q6kl", nCtx: 196_608 } },
+      config: { localRuntime: { profileId: "qwen38-27b-q6kl", nCtx: 184_320 } },
     });
 
-    for (const nCtx of [131_072, 196_608]) {
+    for (const nCtx of [131_072, 184_320]) {
       expect(validateConfigCandidate({
         ...defaults,
         localRuntime: { ...runtime, nCtx },
@@ -249,25 +249,27 @@ describe("opencodex config defaults", () => {
       });
     }
 
-    expect(validateConfigCandidate({
-      ...defaults,
-      localRuntime: {
-        enabled: true,
-        autoStart: false,
-        profileId: "qwen38-27b-q6kl",
-        nCtx: 262_144,
-        reasoningEffort: "medium",
-      },
-    })).toMatchObject({
-      ok: true,
-      config: {
+    for (const nCtx of [196_608, 262_144]) {
+      expect(validateConfigCandidate({
+        ...defaults,
         localRuntime: {
+          enabled: true,
+          autoStart: false,
           profileId: "qwen38-27b-q6kl",
-          nCtx: 196_608,
+          nCtx,
           reasoningEffort: "medium",
         },
-      },
-    });
+      })).toMatchObject({
+        ok: true,
+        config: {
+          localRuntime: {
+            profileId: "qwen38-27b-q6kl",
+            nCtx: 184_320,
+            reasoningEffort: "medium",
+          },
+        },
+      });
+    }
 
     for (const nCtx of [4096, 5120, 6144, 7168, 8192]) {
       expect(validateConfigCandidate({

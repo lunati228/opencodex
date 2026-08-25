@@ -8,7 +8,7 @@
  * cycle to prove the server can be started and stopped more than once.
  *
  * Usage:
- *   bun tools/release-gate/verify-local-runtime.ts [--ctx 196608] [--cycles 2]
+ *   bun tools/release-gate/verify-local-runtime.ts [--ctx 184320] [--cycles 2]
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -30,7 +30,7 @@ const readFlag = (name: string, fallback: number): number => {
   return Number.isFinite(value) ? value : fallback;
 };
 
-const nCtx = readFlag("--ctx", 196_608);
+const nCtx = readFlag("--ctx", 184_320);
 const cycles = readFlag("--cycles", 2);
 const privateProfile = loadPrivateLocalRuntimeProfile(LOCAL_RUNTIME_PROFILE_ID);
 const READY_TIMEOUT_MS = 600_000;

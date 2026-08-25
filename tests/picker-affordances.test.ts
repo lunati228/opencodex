@@ -86,11 +86,11 @@ describe("Qwen context catalog variants", () => {
     // fewer rows is the only honest way to shorten the list.
     expect(QWEN_CONTEXT_VARIANTS).toEqual([
       { label: "128K", contextWindow: 131_072, autoCompactTokenLimit: 112_066 },
-      { label: "192K", contextWindow: 196_608, autoCompactTokenLimit: 168_099 },
+      { label: "180K", contextWindow: 184_320, autoCompactTokenLimit: 157_593 },
     ]);
   });
 
-  test("keeps the accepted 192K model id bare and suffixes the lower-memory row", () => {
+  test("keeps the accepted 180K model id bare and suffixes the lower-memory row", () => {
     expect(QWEN_CONTEXT_VARIANTS.map(variant =>
       qwenContextVariantModelId(QWEN_PROFILE.modelId, variant.contextWindow),
     )).toEqual([
@@ -100,7 +100,7 @@ describe("Qwen context catalog variants", () => {
   });
 
   test("every retired suffix resolves to nothing rather than a different allocation", () => {
-    // 16K/32K/64K/256K were real rows before the trim, and [8K]/[24K]/[48K]/[96K]
+    // 16K/32K/64K/192K/256K were real rows before the trim, and [8K]/[24K]/[48K]/[96K]
     // before that. A stale id must never quietly select a window llama.cpp is not
     // running: strict matching is the whole point.
     for (const label of ["8K", "16K", "24K", "32K", "48K", "64K", "96K", "192K", "256K"]) {
@@ -111,7 +111,7 @@ describe("Qwen context catalog variants", () => {
 
   test("resolves both bare and namespaced model ids without reading service_tier", () => {
     expect(qwenContextVariantForModelId(QWEN_PROFILE.modelId, QWEN_PROFILE.modelId)?.contextWindow)
-      .toBe(196_608);
+      .toBe(184_320);
     expect(qwenContextVariantForModelId(
       `${QWEN_PROFILE.providerId}/${QWEN_PROFILE.modelId}[128K]`,
       QWEN_PROFILE.modelId,
@@ -136,15 +136,15 @@ describe("applyPickerAffordances", () => {
     expect(entry.default_service_tier).toBeUndefined();
   });
 
-  test("uses the explicit 192K name for the accepted default row", () => {
+  test("uses the explicit 180K name for the accepted default row", () => {
     const entry: Record<string, unknown> = {
       slug: `${QWEN_PROFILE.providerId}/${QWEN_PROFILE.modelId}`,
       description: "Local model.",
     };
     applyPickerAffordances(entry, QWEN_PROFILE.providerId);
-    expect(entry.display_name).toBe("Local | Qwen 3.8 27B · 192K");
-    expect(entry.context_window).toBe(196_608);
-    expect(entry.auto_compact_token_limit).toBe(168_099);
+    expect(entry.display_name).toBe("Local | Qwen 3.8 27B · 180K");
+    expect(entry.context_window).toBe(184_320);
+    expect(entry.auto_compact_token_limit).toBe(157_593);
   });
 
   test("leaves a non-local routed provider's speed row alone", () => {

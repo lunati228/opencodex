@@ -4,8 +4,8 @@
 
 - `GET /api/local-runtime/status` exposes the active range and optional exact
   `contextCheckpoints`; each profile descriptor carries its own checkpoints.
-  The managed Qwen profile renders as an exact two-value 128K/192K select. The
-  accepted 192K row is the default; no 256K managed-local option is published.
+  The managed Qwen profile renders as an exact two-value 128K/180K select. The
+  accepted 180K row is the default; no 192K or 256K managed-local option is published.
 - `PUT /api/helper-turn-models` accepts review target, compact target,
   `helperTurnScope`, `helperTurnReasoningEffort`, and
   `helperTurnCodexRemainingPercentThreshold`. The threshold accepts integer

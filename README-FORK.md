@@ -5,7 +5,7 @@ OpenCodex's public routing behavior.
 
 ## Public local-runtime contract
 
-The managed Qwen profile has a 192K (196,608-token) default context window and
+The managed Qwen profile has a 180K (184,320-token) default context window and
 an explicit 128K (131,072-token) lower-memory row. Qwen agent work defaults to
 xhigh reasoning; the picker exposes exactly low, medium, and xhigh. Saved
 obsolete local reasoning values normalize only at the compatibility boundary.

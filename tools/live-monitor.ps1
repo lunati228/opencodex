@@ -37,7 +37,7 @@ $ErrorActionPreference = "Continue"
 $base = "http://127.0.0.1:$Port"
 $qwenCompactLimits = @{
   "131072" = 112066
-  "196608" = 168099
+  "184320" = 157593
 }
 
 function Write-Event {

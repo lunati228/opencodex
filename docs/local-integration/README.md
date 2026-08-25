@@ -5,7 +5,7 @@ runtime integration. It is intentionally not an operator runbook.
 
 ## Public contract
 
-- The managed Qwen profile uses a 192K (196,608-token) default context window
+- The managed Qwen profile uses a 180K (184,320-token) default context window
   and exposes an explicit 128K (131,072-token) lower-memory row.
 - Qwen agent work defaults to xhigh reasoning. Its picker exposes only low,
   medium, and xhigh.

@@ -49,11 +49,11 @@ describe("managed Huihui Qwen3.8 runtime profile", () => {
   test("combines public endpoint controls with a private launch policy", () => {
     const args = buildLocalRuntimeArgs({
       profileId: LOCAL_RUNTIME_PROFILE_ID,
-      nCtx: 196_608,
+      nCtx: 184_320,
     }, PRIVATE_PROFILE);
     const contextIndex = args.indexOf("--ctx-size");
 
-    expect(args[contextIndex + 1]).toBe("196608");
+    expect(args[contextIndex + 1]).toBe("184320");
     expect(args[args.indexOf("--model") + 1]).toBe(PRIVATE_PROFILE.modelPath);
     expect(args[args.indexOf("--mmproj") + 1]).toBe(PRIVATE_PROFILE.projectorPath);
     expect(args[args.indexOf("--private-placement-fixture") + 1]).toBe("enabled");
@@ -74,10 +74,10 @@ describe("managed Huihui Qwen3.8 runtime profile", () => {
     });
     expect(validateLocalRuntimeCandidate({
       profileId: LOCAL_RUNTIME_PROFILE_ID,
-      nCtx: 196_608,
+      nCtx: 184_320,
     })).toEqual({
       profileId: LOCAL_RUNTIME_PROFILE_ID,
-      nCtx: 196_608,
+      nCtx: 184_320,
       reasoningEffort: "xhigh",
     });
     expect(() => validateLocalRuntimeCandidate({
@@ -85,10 +85,10 @@ describe("managed Huihui Qwen3.8 runtime profile", () => {
       nCtx: 131_072,
     })).toThrow("LOCAL_RUNTIME_PROFILE_INVALID");
     // Retired picker sizes stay invalid even when they are multiples of the step.
-    // 16K/32K/64K/256K were real rows until the trims; a saved
+    // 16K/32K/64K/192K/256K were real rows until the trims; a saved
     // config carrying one is migrated by the legacy local-runtime migration, never
     // accepted verbatim here.
-    for (const nCtx of [8192, 16_384, 24_576, 32_768, 49_152, 65_536, 98_304, 262_144]) {
+    for (const nCtx of [8192, 16_384, 24_576, 32_768, 49_152, 65_536, 98_304, 196_608, 262_144]) {
       expect(() => validateLocalRuntimeCandidate({
         profileId: LOCAL_RUNTIME_PROFILE_ID,
         nCtx,
@@ -132,7 +132,7 @@ describe("managed Huihui Qwen3.8 runtime profile", () => {
   });
 
   test("projects a keyless provider with two fixed catalog model variants", () => {
-    const provider = managedLocalProviderProjection(196_608);
+    const provider = managedLocalProviderProjection(184_320);
     const modelIds = QWEN_CONTEXT_VARIANTS.map(variant =>
       qwenContextVariantModelId(QWEN_PROFILE.modelId, variant.contextWindow));
 
@@ -142,7 +142,7 @@ describe("managed Huihui Qwen3.8 runtime profile", () => {
       authMode: "local",
       keyOptional: true,
       defaultModel: LOCAL_RUNTIME_MODEL_ID,
-      contextWindow: 196_608,
+      contextWindow: 184_320,
       modelSuffixBracketStrip: true,
       localRuntimeProfileId: LOCAL_RUNTIME_PROFILE_ID,
     });
@@ -191,8 +191,8 @@ describe("local runtime profile registry", () => {
   });
 
   test("keeps only the two fixed Qwen context rows", () => {
-    expect(QWEN_PROFILE.context).toEqual({ min: 16_384, max: 196_608, step: 16_384 });
-    expect(QWEN_PROFILE.defaultContext).toBe(196_608);
+    expect(QWEN_PROFILE.context).toEqual({ min: 16_384, max: 184_320, step: 1_024 });
+    expect(QWEN_PROFILE.defaultContext).toBe(184_320);
     expect(QWEN_PROFILE.contextCheckpoints).toEqual(
       QWEN_CONTEXT_VARIANTS.map(variant => variant.contextWindow),
     );
@@ -206,7 +206,7 @@ describe("local runtime profile registry", () => {
     const budgetOf = (effort: LocalRuntimeReasoningEffort): string | undefined => {
       const args = buildLocalRuntimeArgs({
         profileId: "qwen38-27b-q6kl",
-        nCtx: 196_608,
+        nCtx: 184_320,
         reasoningEffort: effort,
       }, PRIVATE_PROFILE);
       const index = args.indexOf("--reasoning-effort");
@@ -221,7 +221,7 @@ describe("local runtime profile registry", () => {
     for (const legacy of ["high", "max"]) {
       const candidate = validateLocalRuntimeCandidate({
         profileId: "qwen38-27b-q6kl",
-        nCtx: 196_608,
+        nCtx: 184_320,
         reasoningEffort: legacy,
       });
       expect(candidate.reasoningEffort).toBe("xhigh");
@@ -229,7 +229,7 @@ describe("local runtime profile registry", () => {
 
     const legacyHigh = buildLocalRuntimeArgs({
       profileId: "qwen38-27b-q6kl",
-      nCtx: 196_608,
+      nCtx: 184_320,
       reasoningEffort: "high",
     }, PRIVATE_PROFILE);
     expect(legacyHigh[legacyHigh.indexOf("--n-predict") + 1]).toBe("-1");
@@ -238,7 +238,7 @@ describe("local runtime profile registry", () => {
     // "off" must disable thinking outright rather than pass a zero budget.
     const off = buildLocalRuntimeArgs({
       profileId: "qwen38-27b-q6kl",
-      nCtx: 196_608,
+      nCtx: 184_320,
       reasoningEffort: "off",
     }, PRIVATE_PROFILE);
     expect(off[off.indexOf("--reasoning") + 1]).toBe("off");
@@ -249,11 +249,11 @@ describe("local runtime profile registry", () => {
   test("an absent reasoning effort resolves to the profile's own default", () => {
     expect(validateLocalRuntimeCandidate({
       profileId: "qwen38-27b-q6kl",
-      nCtx: 196_608,
+      nCtx: 184_320,
     }).reasoningEffort).toBe("xhigh");
     expect(() => validateLocalRuntimeCandidate({
       profileId: "qwen38-27b-q6kl",
-      nCtx: 196_608,
+      nCtx: 184_320,
       reasoningEffort: "maximum",
     })).toThrow("LOCAL_RUNTIME_REASONING_INVALID");
   });
@@ -318,6 +318,16 @@ describe("projection recognition survives adding fields", () => {
     expect(isManagedLocalProviderProjection(QWEN_PROFILE.providerId, fresh)).toBe(true);
   });
 
+  test("the retired 192K/xhigh shape is recognised for migration", () => {
+    const retired = managedLocalProviderProjection(184_320, LOCAL_RUNTIME_PROFILE_ID);
+    retired.contextWindow = 196_608;
+    retired.modelContextWindows = {
+      [`${QWEN_PROFILE.modelId}[128K]`]: 131_072,
+      [QWEN_PROFILE.modelId]: 196_608,
+    };
+    expect(isManagedLocalProviderProjection(QWEN_PROFILE.providerId, retired)).toBe(true);
+  });
+
   test("the retired 256K/medium/output-capped shape is recognised for migration", () => {
     const baseModel = QWEN_PROFILE.modelId;
     const modelIds = [`${baseModel}[128K]`, baseModel];
@@ -364,7 +374,7 @@ describe("projection recognition survives adding fields", () => {
 });
 
 describe("managed local provider connect timeout", () => {
-  const managed = managedLocalProviderProjection(196_608, LOCAL_RUNTIME_PROFILE_ID);
+  const managed = managedLocalProviderProjection(184_320, LOCAL_RUNTIME_PROFILE_ID);
 
   test("allows near-native-context prompt ingestion without changing cloud defaults", () => {
     expect(

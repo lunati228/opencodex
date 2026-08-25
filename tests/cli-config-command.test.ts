@@ -141,12 +141,12 @@ describe("ocx config export", () => {
       writeFileSync(configPath, JSON.stringify(config), "utf8");
 
       const result = runCli(
-        ["config", "set", "localRuntime.nCtx", "196608", "--json"],
+        ["config", "set", "localRuntime.nCtx", "184320", "--json"],
         { OPENCODEX_HOME: dir },
       );
       expect(result.status).toBe(0);
       const persisted = JSON.parse(readFileSync(configPath, "utf8"));
-      expect(persisted.localRuntime.nCtx).toBe(196_608);
+      expect(persisted.localRuntime.nCtx).toBe(184_320);
       expect(persisted.providers["qwen-local"]).toBeUndefined();
       expect(persisted.providers["nvidia-glm-5.2"]).toBeUndefined();
     } finally {

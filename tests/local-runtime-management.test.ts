@@ -130,7 +130,7 @@ describe("managed local runtime management API", () => {
       requested: { profileId: "qwen38-27b-q6kl", nCtx: QWEN_DEFAULT_CONTEXT },
       effective: { nCtx: QWEN_DEFAULT_CONTEXT },
       lastKnownGood: { nCtx: QWEN_DEFAULT_CONTEXT },
-      contextConstraints: { min: 16384, max: 196608, step: 16384 },
+      contextConstraints: { min: 16384, max: 184320, step: 1024 },
       contextCheckpoints: QWEN_CONTEXT_VARIANTS.map(variant => variant.contextWindow),
       reasoningEfforts: ["off", "low", "medium", "xhigh"],
       profiles: [{

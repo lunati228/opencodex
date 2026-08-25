@@ -7,7 +7,7 @@
   routing (`gemini-3.7-flash` -> CCA wire `gemini-3.7-flash-tiered` with
   `thinkingLevel`, routing saved suffixes and retired 3.6/3.5 aliases safely) are
   implemented and regression-tested. The active managed-local contract exposes
-  Qwen at fixed 128K and 192K rows, uses 192K by default, and publishes exactly
+  Qwen at fixed 128K and 180K rows, uses 180K by default, and publishes exactly
   low, medium, and xhigh reasoning with xhigh as the default. Machine-specific
   runtime evidence and launch configuration are intentionally untracked.
 
@@ -28,7 +28,7 @@ native Speed capability. Therefore the fork will not overload Speed or patch
 Codex itself to simulate it.
 
 The accepted managed Qwen runtime profile is deliberately narrower than any
-model-card ceiling: the public contract is 196,608 tokens, with a 131,072-token
+model-card ceiling: the public contract is 184,320 tokens, with a 131,072-token
 lower-memory row. Artifact identity, local paths, hardware placement, and
 measurements belong only in the ignored private profile.
 
@@ -56,18 +56,19 @@ metadata, not a global statement about GLM.
    | Picker choice | Context | Auto-compact trigger |
    |---|---:|---:|
    | 128K | 131,072 | 112,066 |
-   | 192K | 196,608 | 168,099 |
+   | 180K | 184,320 | 157,593 |
 
    The row COUNT is a product decision and may change again. What may not
    change is the mechanism: one row per real window, never one row whose
    allocation moves underneath it.
 
-2. Keep the bare managed-Qwen model id as the accepted 192K default. Give the
+2. Keep the bare managed-Qwen model id as the accepted 180K default. Give the
    128K row a bracketed suffix and strip that suffix before sending the model id
    to `llama.cpp`.
-3. Retire the former 256K managed-local row. Migrate saved 262,144-token values
-   to 196,608; migrate older smaller retired rows to 131,072. This compatibility
-   conversion is explicit and does not silently advertise a 256K allocation.
+3. Retire the former 192K and 256K managed-local rows. Migrate saved 196,608-
+   and 262,144-token values to 184,320; migrate older smaller retired rows to
+   131,072. This compatibility conversion is explicit and does not silently
+   advertise a retired allocation.
 4. Amended 2026-08-21: route automatic review and automatic compaction for every
    external conversation to the configured `google-antigravity` Gemini helper
    at every Codex quota level. The canonical helper model is
@@ -129,8 +130,8 @@ metadata, not a global statement about GLM.
   Native Codex compaction remains unmodified, and native review changes only
   at the explicit low-quota threshold.
 - Auto-compaction limits default to 85.5% of context window across all models.
-- 192K is the accepted managed-local default. The 256K row is retired and
-  remains present only in compatibility code and tests that migrate old state.
+- 180K is the accepted managed-local default. The 192K and 256K rows are retired
+  and remain present only in compatibility code and tests that migrate old state.
 - Picker membership is startup-loaded by Codex. A catalog sync or quota
   decoration is not enough for an already-running Codex app; restart Codex to
   see changed rows.

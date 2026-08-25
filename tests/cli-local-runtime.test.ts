@@ -14,8 +14,8 @@ function harness(status: Record<string, unknown> = {}) {
     revision: 7,
     requested: { profileId: "qwen38-27b-q6kl", nCtx: 131072, reasoningEffort: "xhigh" },
     effective: { profileId: "qwen38-27b-q6kl", nCtx: 131072, model: "huihui-qwen3.8-27b-abliterated-q6-k-l" },
-    contextConstraints: { min: 16384, max: 196608, step: 16384 },
-    contextCheckpoints: [131072, 196608],
+    contextConstraints: { min: 16384, max: 184320, step: 1024 },
+    contextCheckpoints: [131072, 184320],
     controlEnabled: true,
     ...status,
   };
@@ -88,10 +88,10 @@ describe("ocx local-runtime", () => {
     expect(calls.some(c => c.path === "/api/local-runtime/apply")).toBe(false);
   });
 
-  test("context accepts the verified 192K choice", async () => {
+  test("context accepts the verified 180K choice", async () => {
     const { calls, deps } = harness();
-    expect(await handleLocalRuntimeCommand(["context", "196608", "--json"], deps)).toBe(0);
-    expect(calls[1]!.body).toMatchObject({ nCtx: 196608 });
+    expect(await handleLocalRuntimeCommand(["context", "184320", "--json"], deps)).toBe(0);
+    expect(calls[1]!.body).toMatchObject({ nCtx: 184320 });
   });
 
   test("autostart sends the exact body the route accepts", async () => {

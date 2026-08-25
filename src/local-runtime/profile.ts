@@ -68,7 +68,7 @@ export const QWEN_PROFILE: LocalRuntimeProfile = {
   providerId: "qwen-local",
   modelId: "huihui-qwen3.8-27b-abliterated-q6-k-l",
   label: "Huihui Qwen3.8 27B Q6_K_L (vision + MTP)",
-  context: { min: 16_384, max: 196_608, step: 16_384 },
+  context: { min: 16_384, max: 184_320, step: 1_024 },
   contextCheckpoints: QWEN_CONTEXT_VARIANTS.map(variant => variant.contextWindow),
   defaultContext: QWEN_DEFAULT_CONTEXT,
   defaultReasoningEffort: "xhigh",
@@ -294,6 +294,21 @@ const PROJECTION_FIELDS_ADDED_LATER = [
   "modelReasoningEffortMap",
 ] as const;
 
+/** Exact provider projection emitted by the retired 192K/xhigh Qwen profile. */
+function legacyQwen192ProviderProjection(nCtx: number): OcxProviderConfig | undefined {
+  if (nCtx !== 131_072 && nCtx !== 196_608) return undefined;
+  const profile = QWEN_PROFILE;
+  const lowerModelId = `${profile.modelId}[128K]`;
+  const legacy = managedLocalProviderProjection(131_072, profile.id);
+  legacy.defaultModel = nCtx === 196_608 ? profile.modelId : lowerModelId;
+  legacy.contextWindow = nCtx;
+  legacy.modelContextWindows = {
+    [lowerModelId]: 131_072,
+    [profile.modelId]: 196_608,
+  };
+  return legacy;
+}
+
 /** Exact provider projection emitted by the retired 256K/medium Qwen profile. */
 function legacyQwen256ProviderProjection(nCtx: number): OcxProviderConfig | undefined {
   if (nCtx !== 131_072 && nCtx !== 262_144) return undefined;
@@ -372,7 +387,11 @@ export function isManagedLocalProviderProjection(
     } catch {
       current = undefined;
     }
-    return [current, legacyQwen256ProviderProjection(nCtx)]
+    return [
+      current,
+      legacyQwen192ProviderProjection(nCtx),
+      legacyQwen256ProviderProjection(nCtx),
+    ]
       .filter((candidate): candidate is OcxProviderConfig => candidate !== undefined)
       .some(candidate => matchesManagedProjectionHistory(stored, candidate));
   } catch {
@@ -383,7 +402,7 @@ export function isManagedLocalProviderProjection(
 /**
  * Cloud providers normally return response headers well within 200 seconds.
  * A managed local runtime does not: llama.cpp finishes prompt evaluation before
- * sending the first response byte, and evaluating a near-192K prompt can
+ * sending the first response byte, and evaluating a near-180K prompt can
  * legitimately exceed that cloud-oriented deadline on this host. Keep the
  * exception finite and identity-bound, and always preserve an operator override.
  */

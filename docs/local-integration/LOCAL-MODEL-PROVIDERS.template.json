@@ -52,10 +52,10 @@
         "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]",
         "huihui-qwen3.8-27b-abliterated-q6-k-l"
       ],
-      "contextWindow": 196608,
+      "contextWindow": 184320,
       "modelContextWindows": {
         "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]": 131072,
-        "huihui-qwen3.8-27b-abliterated-q6-k-l": 196608
+        "huihui-qwen3.8-27b-abliterated-q6-k-l": 184320
       },
       "modelInputModalities": {
         "huihui-qwen3.8-27b-abliterated-q6-k-l[128K]": [

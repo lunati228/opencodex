@@ -1320,8 +1320,8 @@ const LEGACY_LOCAL_CONTEXT_MIGRATIONS: Readonly<Record<number, number>> = {
   49_152: 131_072,
   65_536: 131_072,
   98_304: 131_072,
-  196_608: 196_608,
-  262_144: 196_608,
+  196_608: 184_320,
+  262_144: 184_320,
 };
 
 function migrateLegacyLocalRuntime(value: unknown): unknown {

@@ -10,7 +10,7 @@
  * Each supported Qwen window is consequently a real catalog model id. The
  * openai-chat adapter strips the trailing bracket suffix before sending the id
  * to llama.cpp, so both rows still address the same server alias. The bare
- * id is deliberately the accepted 192K row. The 128K row remains available for
+ * id is deliberately the accepted 180K row. The 128K row remains available for
  * lower-memory sessions and is always explicit in the id.
  *
  * The compaction values are explicit operational policy, not calculated at
@@ -36,10 +36,10 @@ export interface QwenContextVariant {
 
 export const QWEN_CONTEXT_VARIANTS: readonly QwenContextVariant[] = [
   { label: "128K", contextWindow: 131_072, autoCompactTokenLimit: 112_066 },
-  { label: "192K", contextWindow: 196_608, autoCompactTokenLimit: 168_099 },
+  { label: "180K", contextWindow: 184_320, autoCompactTokenLimit: 157_593 },
 ] as const;
 
-export const QWEN_DEFAULT_CONTEXT = 196_608;
+export const QWEN_DEFAULT_CONTEXT = 184_320;
 
 export function qwenContextVariantForContext(
   contextWindow: number,
@@ -47,7 +47,7 @@ export function qwenContextVariantForContext(
   return QWEN_CONTEXT_VARIANTS.find(variant => variant.contextWindow === contextWindow);
 }
 
-/** Codex-facing id for one fixed row. The accepted 192K default stays bare. */
+/** Codex-facing id for one fixed row. The accepted 180K default stays bare. */
 export function qwenContextVariantModelId(
   baseModelId: string,
   contextWindow: number,

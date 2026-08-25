@@ -4,7 +4,7 @@
 
 - `origin/main` was already an ancestor of `ornith-setup`; the requested merge
   check required no merge commit.
-- The managed Qwen source configuration now uses a 192K default context window,
+- The managed Qwen source configuration now uses a 180K default context window,
   an explicit 128K row, and xhigh as the default agent reasoning effort.
 - Non-GPT reasoning pickers use their model-declared ladders. GPT behavior was
   intentionally left unchanged.

@@ -4,7 +4,7 @@ The public managed-local contract is deliberately small:
 
 | Setting | Public behavior |
 | --- | --- |
-| Default context | 196,608 tokens (192K) |
+| Default context | 184,320 tokens (180K) |
 | Explicit lower context | 131,072 tokens (128K) |
 | Default reasoning | xhigh |
 | Qwen picker values | low, medium, xhigh |

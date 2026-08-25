@@ -89,7 +89,7 @@ describe("invalidateCodexModelsCache write gate (#476 / #518)", () => {
     expect(cache.models.find(model => model.slug === `${QWEN_PROFILE.providerId}/${qwen128k}`)?.display_name)
       .toBe("Local | Qwen 3.8 27B · 128K");
     expect(cache.models.find(model => model.slug === `${QWEN_PROFILE.providerId}/${QWEN_PROFILE.modelId}`)?.display_name)
-      .toBe("Local | Qwen 3.8 27B · 192K");
+      .toBe("Local | Qwen 3.8 27B · 180K");
   });
 
   test("preserves an observed unknown native as a hidden sync observation", () => {

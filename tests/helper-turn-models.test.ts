@@ -348,7 +348,7 @@ describe("auto-compaction redirect", () => {
 
   test("policy routing classifies a stopped local runtime without trying to start it", () => {
     const cfg = config();
-    cfg.providers[QWEN_PROFILE.providerId] = managedLocalProviderProjection(196_608);
+    cfg.providers[QWEN_PROFILE.providerId] = managedLocalProviderProjection(184_320);
     expect(() => routeModel(
       cfg,
       `${QWEN_PROFILE.providerId}/${QWEN_PROFILE.modelId}`,

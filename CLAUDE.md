@@ -4,7 +4,7 @@ Read `AGENTS.md` before changing the repository.
 
 ## Public configuration boundary
 
-- The managed Qwen profile defaults to 192K (196,608 tokens); 128K (131,072
+- The managed Qwen profile defaults to 180K (184,320 tokens); 128K (131,072
   tokens) is an explicit lower-memory row.
 - Qwen agent work uses xhigh by default and exposes only low, medium, and
   xhigh in its picker.
