@@ -610,8 +610,10 @@ export function writeDesktop3pConfig(
       profile,
       nativeContextCap,
     ) as Record<string, unknown>;
-    const configJson = JSON.stringify(generatedConfig, null, 2) + "\n";
-    const fingerprint = desktop3pRoutingFingerprint(generatedConfig);
+    const preserved = readDesktopProfileForeignKeys(configPath);
+    const mergedConfig = { ...preserved, ...generatedConfig };
+    const configJson = JSON.stringify(mergedConfig, null, 2) + "\n";
+    const fingerprint = desktop3pRoutingFingerprint(mergedConfig);
     const { backupPath } = atomicReplaceDesktopConfig(configPath, configJson);
     try {
       atomicWriteSecretFile(metadataPath, JSON.stringify({ ...metadata, appliedId: id, entries }, null, 2) + "\n");
@@ -635,6 +637,24 @@ export function writeDesktop3pConfig(
     const reason = error instanceof Error ? error.message : String(error);
     return { written: false, path: configPath, reason };
   }
+}
+
+const OPENCODEX_DESKTOP_PROFILE_KEYS = new Set([
+  "inferenceProvider",
+  "inferenceCredentialKind",
+  "inferenceGatewayBaseUrl",
+  "inferenceGatewayApiKey",
+  "modelDiscoveryEnabled",
+  "inferenceModels",
+]);
+
+function readDesktopProfileForeignKeys(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (!isRecord(parsed)) throw new Error("Claude Desktop 3P profile is not a JSON object");
+  return Object.fromEntries(
+    Object.entries(parsed).filter(([key]) => !OPENCODEX_DESKTOP_PROFILE_KEYS.has(key)),
+  );
 }
 
 /** Backup an existing owned config then atomically replace it. Exported for failure-path tests. */

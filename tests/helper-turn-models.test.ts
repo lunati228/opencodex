@@ -395,6 +395,23 @@ describe("helper-turn model management route", () => {
     expect(cfg.autoReviewModel).toBe("google-antigravity/gemini-3.7-flash");
   });
 
+  test("stores a target qualified by a case-insensitive provider alias", async () => {
+    const cfg = config();
+    cfg.providers["google-antigravity"].alias = "agy";
+    const response = await put({ autoReviewModel: "AGY/gemini-3.7-flash" }, cfg);
+    expect(response.status).toBe(200);
+    expect(cfg.autoReviewModel).toBe("AGY/gemini-3.7-flash");
+  });
+
+  test("refuses an ambiguous case-insensitive provider alias", async () => {
+    const cfg = config();
+    cfg.providers.openai.alias = "shared";
+    cfg.providers["google-antigravity"].alias = "SHARED";
+    const response = await put({ autoReviewModel: "shared/gemini-3.7-flash" }, cfg);
+    expect(response.status).toBe(422);
+    expect(cfg.autoReviewModel).toBeUndefined();
+  });
+
   test("null clears an override", async () => {
     const cfg = config({ autoReviewModel: "google-antigravity/gemini-3.7-flash" });
     const response = await put({ autoReviewModel: null }, cfg);

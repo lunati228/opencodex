@@ -80,6 +80,7 @@ const REINJECT_AND_READ_JOURNAL = [
   'const fs = require("fs");',
   'const path = require("path");',
   'const { injectCodexConfig } = require("./src/codex/inject");',
+  'const { JOURNAL_PATH } = require("./src/codex/journal");',
   "(async () => {",
   '  const firstCatalog = path.join(process.env.CODEX_HOME, "first-catalog.json");',
   '  const secondCatalog = path.join(process.env.CODEX_HOME, "second-catalog.json");',
@@ -92,7 +93,7 @@ const REINJECT_AND_READ_JOURNAL = [
   "  };",
   "  await injectCodexConfig(10100, config, { catalogPath: firstCatalog });",
   "  await injectCodexConfig(10200, { ...config, port: 10200 }, { catalogPath: secondCatalog });",
-  '  const journal = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, "opencodex-journal.json"), "utf8"));',
+  '  const journal = JSON.parse(fs.readFileSync(JOURNAL_PATH, "utf8"));',
   "  console.log(JSON.stringify({ url: journal.injectedOpenaiBaseUrl, catalog: journal.injectedCatalogPath }));",
   "})();",
 ].join(String.fromCharCode(10));
@@ -131,7 +132,12 @@ const REINJECT_AFTER_USER_EDIT_RESTORE = [
 function runScript(codexHome: string, script: string): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(process.execPath, ["--eval", script], {
     cwd: repoRoot,
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      CODEX_SQLITE_HOME: codexHome,
+      OPENCODEX_HOME: join(codexHome, "opencodex-home"),
+    },
     encoding: "utf8",
   });
   return { stdout: result.stdout?.trim() ?? "", stderr: result.stderr?.trim() ?? "", status: result.status ?? 1 };

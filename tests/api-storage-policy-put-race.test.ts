@@ -28,7 +28,11 @@ afterEach(async () => {
 
 test("blocked worker completion preserves concurrent policy PUT edits", async () => {
   const blockMs = 1_500;
-  setStorageCleanupPolicyJobTestHooks({ blockMs });
+  let signalPolicyLoaded!: () => void;
+  const policyLoaded = new Promise<void>(resolve => {
+    signalPolicyLoaded = resolve;
+  });
+  setStorageCleanupPolicyJobTestHooks({ blockMs, onPolicyLoaded: signalPolicyLoaded });
   seedArchived(harness.isolatedCodexHome.path);
   const server = startServer(0);
   try {
@@ -64,7 +68,12 @@ test("blocked worker completion preserves concurrent policy PUT edits", async ()
       await Bun.sleep(20);
     }
     expect(sawRunning).toBe(true);
-    await Bun.sleep(800);
+    await Promise.race([
+      policyLoaded,
+      Bun.sleep(10_000).then(() => {
+        throw new Error("storage policy worker did not load its policy snapshot in time");
+      }),
+    ]);
 
     const put = await fetch(new URL("/api/storage/cleanup-policy", server.url), {
       method: "PUT",

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
+import { resetCodexModelEntitlementCacheForTests } from "../src/codex/model-entitlements";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
@@ -53,6 +54,7 @@ beforeEach(() => {
   isolatedCodexHome = installIsolatedCodexHome("ocx-ultra-wire-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-ultra-wire-"));
   process.env.OPENCODEX_HOME = testDir;
+  resetCodexModelEntitlementCacheForTests();
   globalThis.fetch = originalFetch;
 });
 
@@ -61,6 +63,7 @@ afterEach(() => {
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
   isolatedCodexHome = null;
+  resetCodexModelEntitlementCacheForTests();
   globalThis.fetch = originalFetch;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
 });
@@ -71,6 +74,15 @@ function mockNativeUpstream() {
   const upstream = Bun.serve({
     port: 0,
     async fetch(req) {
+      if (new URL(req.url).pathname === "/models") {
+        return Response.json({
+          models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map(slug => ({
+            slug,
+            supported_in_api: true,
+            visibility: "list",
+          })),
+        });
+      }
       try { captured.push(await req.json() as Record<string, unknown>); } catch { /* non-JSON */ }
       return Response.json({
         id: "resp_ultra",

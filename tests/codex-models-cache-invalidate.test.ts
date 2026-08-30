@@ -7,6 +7,8 @@ import {
   AGY_BRIDGE_ROW_SLUG,
   AGY_PROVIDER_USAGE_ROW_SLUG,
 } from "../src/codex/catalog/agy-bridge-row";
+import { invalidateCodexModelsCacheWithPermit } from "../src/codex/catalog/sync";
+import { withCatalogWriteSerialization } from "../src/codex/catalog-write-serialization";
 import { afterCatalogWriteHandleAppServers } from "../src/codex/app-server-processes";
 import { refreshCodexModelCatalog } from "../src/codex/refresh";
 import { syncModelsToCodex } from "../src/codex/sync";
@@ -90,6 +92,33 @@ describe("invalidateCodexModelsCache write gate (#476 / #518)", () => {
       .toBe("Local | Qwen 3.8 27B · 128K");
     expect(cache.models.find(model => model.slug === `${QWEN_PROFILE.providerId}/${QWEN_PROFILE.modelId}`)?.display_name)
       .toBe("Local | Qwen 3.8 27B · 180K");
+  });
+
+  test("permit-bound invalidation stays on its owning home after ambient drift", () => {
+    const ambientCodexHome = mkdtempSync(join(tmpdir(), "ocx-invalidate-ambient-"));
+    try {
+      writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "pinned-catalog.json"\n');
+      writeFileSync(join(codexHome, "pinned-catalog.json"), JSON.stringify({
+        models: [{ slug: "gpt-pinned-home" }],
+      }, null, 2) + "\n");
+      writeFileSync(join(ambientCodexHome, "opencodex-catalog.json"), JSON.stringify({
+        models: [{ slug: "gpt-ambient-home" }],
+      }, null, 2) + "\n");
+      process.env.CODEX_HOME = ambientCodexHome;
+
+      const outcome = withCatalogWriteSerialization(codexHome, permit =>
+        invalidateCodexModelsCacheWithPermit(permit, codexHome));
+
+      expect(outcome).toMatchObject({ kind: "completed", value: true });
+      expect(existsSync(join(ambientCodexHome, "models_cache.json"))).toBe(false);
+      const cache = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")) as {
+        models: Array<{ slug: string }>;
+      };
+      expect(cache.models).toEqual([{ slug: "gpt-pinned-home" }]);
+    } finally {
+      process.env.CODEX_HOME = codexHome;
+      rmSync(ambientCodexHome, { recursive: true, force: true });
+    }
   });
 
   test("preserves an observed unknown native as a hidden sync observation", () => {

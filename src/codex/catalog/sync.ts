@@ -14,7 +14,7 @@ import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, mo
 import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
-import { decodeRoutedModelId, routedSlug, slugEquals, slugEquivalenceKey, slugsEquivalent } from "../../providers/slug-codec";
+import { routedSlug, slugEquals, slugEquivalenceKey, slugsEquivalent } from "../../providers/slug-codec";
 import { identifyRoutedModel } from "../../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../../adapters/cursor/discovery";
 import { fetchCursorUsableModels } from "../../adapters/cursor/live-models";
@@ -30,7 +30,7 @@ import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
-import { getProviderRegistryEntry, providerCodexAccountMode } from "../../providers/registry";
+import { providerCodexAccountMode } from "../../providers/registry";
 import { codexAccountNamespaceEntries, isMainCodexAccountTarget } from "../account-namespaces";
 import { MAIN_CODEX_ACCOUNT_ID } from "../main-account";
 import {
@@ -41,7 +41,7 @@ import {
 } from "../model-entitlements";
 
 
-import { CODEX_CUSTOM_MODEL_CATALOG_KIND, CODEX_PROVIDER_MODEL_CATALOG_KIND, activeCodexModelsCachePath, applyCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, applyRoutedCodexToolMode, catalogBackupPathFor, catalogHasRoutedEntries, catalogModelSlug, ensureStrictCatalogFields, findNativeTemplate, isDefaultCatalogPath, isRoutedModelCompatibilityExcluded, legacyCatalogBackupPath, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
+import { CODEX_CUSTOM_MODEL_CATALOG_KIND, CODEX_PROVIDER_MODEL_CATALOG_KIND, activeCodexModelsCachePath, applyCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, applyRoutedCodexToolMode, catalogBackupPathFor, catalogHasRoutedEntries, catalogModelSlug, ensureStrictCatalogFields, findNativeTemplate, findSupportedNativeTemplate, isDefaultCatalogPath, isRoutedModelCompatibilityExcluded, legacyCatalogBackupPath, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readCodexCatalogPathForHome, readConfiguredAutoReviewModel, readNativeBaseline } from "./parsing";
 import type { CatalogModel, MultiAgentMode, RawCatalog, RawEntry } from "./parsing";
 import { accountBoundNativeOpenAiSlugs, accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, nativeContextLimits, observedAccountBoundNativeEntries, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry, type NativeContextLimitsInput } from "./metadata";
 import {
@@ -58,7 +58,6 @@ import {
   ensureGpt56ReasoningLevels,
   ensureUltraReasoningLevel,
   isGpt56NativeSlug,
-  isGptFamilyModelId,
 } from "./effort";
 import {
   clearGatherRoutedModelsInflight,
@@ -309,68 +308,6 @@ function managedLocalPickerEfforts(
   return profile.reasoningEfforts.filter(effort => effort !== "off");
 }
 
-function registryReasoningForCatalogSlug(slug: string): {
-  efforts: string[];
-  defaultEffort?: string;
-} | undefined {
-  const slash = slug.indexOf("/");
-  if (slash <= 0) return undefined;
-  const providerId = slug.slice(0, slash);
-  const encodedModelId = slug.slice(slash + 1);
-  const registry = getProviderRegistryEntry(providerId);
-  if (!registry) return undefined;
-  const knownModelIds = new Set([
-    ...(registry.models ?? []),
-    ...Object.keys(registry.modelReasoningEfforts ?? {}),
-    ...Object.keys(registry.modelDefaultReasoningEfforts ?? {}),
-  ]);
-  const modelId = decodeRoutedModelId(encodedModelId, knownModelIds);
-  const efforts = modelRecordValue(registry.modelReasoningEfforts, modelId)
-    ?? registry.reasoningEfforts;
-  if (efforts === undefined) return undefined;
-  const defaultEffort = modelRecordValue(
-    registry.modelDefaultReasoningEfforts,
-    modelId,
-  );
-  return {
-    efforts: [...efforts],
-    ...(defaultEffort !== undefined ? { defaultEffort } : {}),
-  };
-}
-
-/**
- * A degraded discovery may retain an old routed row from disk. Before this
- * repair, picker-only max/ultra tiers survived forever even after the provider
- * registry gained the model's exact non-GPT ladder.
- */
-function repairPreservedNonGptReasoning(entry: RawEntry): void {
-  if (typeof entry.slug !== "string" || isGptFamilyModelId(entry.slug)) return;
-  const declared = registryReasoningForCatalogSlug(entry.slug);
-  if (declared) {
-    applyReasoningLevels(
-      entry,
-      declared.efforts,
-      declared.defaultEffort,
-      true,
-      true,
-    );
-    return;
-  }
-  // With no authoritative declaration, retain observed lower rungs but remove
-  // the two product tiers OpenCodex historically synthesized itself.
-  const observed = catalogEntryEfforts(entry)
-    .filter(effort => effort !== "max" && effort !== "ultra");
-  applyReasoningLevels(
-    entry,
-    observed,
-    typeof entry.default_reasoning_level === "string"
-      ? entry.default_reasoning_level
-      : undefined,
-    true,
-    true,
-  );
-}
-
 /**
  * Friendly Codex-picker label for a routed `provider/model` slug. Command Code's two config
  * ids differ by a single dash (`command-code` vs `commandcode`), so relabel them to the
@@ -486,7 +423,7 @@ export function deriveEntry(
         model?.reasoningEfforts,
         model?.defaultReasoningEffort,
         preserveExact || codexForwardNativeCapabilityAlias !== null || managedLocalProfile !== undefined,
-        model?.reasoningEfforts !== undefined && !isGptFamilyModelId(slug),
+        managedLocalProfile !== undefined,
       );
       // This exact provider/model pair is the ChatGPT/Codex forward surface. Keep the pinned
       // native tool/search/responses-lite contract while preserving the routed slug and wire id.
@@ -526,7 +463,7 @@ export function deriveEntry(
   const isCursorFallback = isRouted && model?.provider === "cursor";
   const entry: RawEntry = {
     slug, display_name: routedDisplayName(slug), description: desc,
-    shell_type: "shell_command", visibility: "list", supported_in_api: true,
+    shell_type: "unified_exec", visibility: "list", supported_in_api: true,
     priority, base_instructions: "You are a helpful coding assistant.",
     ...(isRouted
       ? isCursorFallback
@@ -541,7 +478,7 @@ export function deriveEntry(
       model?.reasoningEfforts,
       model?.defaultReasoningEffort,
       preserveExact || managedLocalProfile !== undefined,
-      model?.reasoningEfforts !== undefined && !isGptFamilyModelId(slug),
+      managedLocalProfile !== undefined,
     );
   }
   else {
@@ -1228,7 +1165,6 @@ export function mergeCatalogEntriesFromObservedState({
     return false;
   });
   const finalRoutedEntrySet = new Set(finalRoutedEntries);
-  const preservedRoutedEntrySet = new Set(preservedRoutedEntries);
   const degradedPreservedCount = preservedRoutedEntries.filter(entry => {
     if (!finalRoutedEntrySet.has(entry)) return false;
     const slug = entry.slug as string;
@@ -1267,18 +1203,16 @@ export function mergeCatalogEntriesFromObservedState({
       applyPickerAffordances(e, managedLocalProfile.providerId);
       // Preserved GPT rows retain their historical synthetic max behavior.
       // Non-GPT rows never grow capabilities beyond their declared ladder.
-    } else if (!exactCombo && preservedRoutedEntrySet.has(m) && typeof e.slug === "string") {
-      if (isGptFamilyModelId(e.slug)) {
-        const levels = Array.isArray(e.supported_reasoning_levels)
-          ? e.supported_reasoning_levels as Array<{ effort?: string }>
-          : [];
-        if (levels.length > 0 && !levels.some(level => level.effort === "max")) {
-          levels.push(CODEX_REASONING_LEVELS.find(level => level.effort === "max")
-            ?? { effort: "max", description: "Maximum reasoning depth for the hardest problems" });
-          e.supported_reasoning_levels = levels;
-        }
-      } else {
-        repairPreservedNonGptReasoning(e);
+    } else if (!exactCombo) {
+      // Preserved routed entries from disk may predate the synthetic max rung.
+      // Managed local rows are the sole exception and were handled above.
+      const levels = Array.isArray(e.supported_reasoning_levels)
+        ? e.supported_reasoning_levels as Array<{ effort?: string }>
+        : [];
+      if (levels.length > 0 && !levels.some(level => level.effort === "max")) {
+        levels.push(CODEX_REASONING_LEVELS.find(level => level.effort === "max")
+          ?? { effort: "max", description: "Maximum reasoning depth for the hardest problems" });
+        e.supported_reasoning_levels = levels;
       }
     }
     if (wsEnabled) e.supports_websockets = true;
@@ -1333,7 +1267,7 @@ export function mergeCatalogEntriesForSync(
       isNativeAliasCatalogEntry(entry) && typeof entry.slug === "string" ? [entry.slug] : []
     )),
   ),
-  openaiContextCap?: number,
+  openaiContextCap?: NativeContextLimitsInput,
   keepNativeChatGptOnV1 = false,
 ): RawEntry[] {
   // Retained for source compatibility with the original helper contract. Raw provider ids must
@@ -1578,6 +1512,130 @@ function catalogModelsForMergeWithNativeRecovery(
   ]);
 }
 
+const AUTO_REVIEW_MODEL_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\s]/;
+
+export function isValidAutoReviewModel(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  return Boolean(trimmed)
+    && trimmed.length <= 1024
+    && !AUTO_REVIEW_MODEL_CONTROL_CHARS.test(trimmed);
+}
+
+export type AutoReviewModelOverrideResult = "absent" | "applied" | "invalid" | "unresolved";
+
+function isRoutedCatalogEntry(entry: RawEntry): boolean {
+  const slug = typeof entry.slug === "string" ? entry.slug : "";
+  return slug.includes("/")
+    || (typeof entry.description === "string" && entry.description.startsWith("Routed via opencodex → "));
+}
+
+function clearAutoReviewModelOverride(
+  models: readonly RawEntry[],
+  sourceModels: readonly RawEntry[] = [],
+): void {
+  const observedModels = [...models, ...sourceModels];
+  const configuredValues = new Set(observedModels.flatMap(entry => {
+    const value = entry?.auto_review_model_override;
+    return typeof value === "string" && value.trim() ? [value] : [];
+  }));
+  const globalStamp = configuredValues.size === 1
+    && observedModels.some(entry => {
+      const value = entry.auto_review_model_override;
+      return isRoutedCatalogEntry(entry)
+        && typeof value === "string"
+        && value.trim().length > 0
+        && configuredValues.has(value);
+    })
+    && observedModels.every(entry => {
+      const value = entry?.auto_review_model_override;
+      return value === null
+        || value === undefined
+        || (typeof value === "string" && configuredValues.has(value));
+    });
+  for (const entry of models) {
+    if (!entry || typeof entry !== "object") continue;
+    const current = entry.auto_review_model_override;
+    if (isRoutedCatalogEntry(entry)
+      || (globalStamp && typeof current === "string" && configuredValues.has(current))) {
+      entry.auto_review_model_override = null;
+    }
+  }
+}
+
+function warnAutoReviewModelDiagnostic(
+  reason: "invalid" | "unresolved",
+  configured: string,
+): void {
+  const safeConfigured = JSON.stringify(redactSecretString(configured));
+  const detail = reason === "unresolved"
+    ? "the selector was not found in the final catalog"
+    : "the selector format is invalid";
+  console.warn(
+    `[opencodex] auto_review_model ${detail} (${safeConfigured}); preserving normal upstream auto-review behavior.`,
+  );
+}
+
+function preserveNativeAutoReviewModelOverrides(
+  models: readonly RawEntry[],
+  sourceModels: readonly RawEntry[],
+): void {
+  const existing = new Map<string, string | null>();
+  for (const entry of sourceModels) {
+    const slug = typeof entry.slug === "string" ? entry.slug : undefined;
+    const value = entry.auto_review_model_override;
+    if (!slug || isRoutedCatalogEntry(entry)) continue;
+    if (typeof value === "string" || value === null) existing.set(slug, value);
+  }
+  for (const entry of models) {
+    const slug = typeof entry.slug === "string" ? entry.slug : undefined;
+    if (!slug || isRoutedCatalogEntry(entry) || !existing.has(slug)) continue;
+    entry.auto_review_model_override = existing.get(slug) ?? null;
+  }
+}
+
+export function applyAutoReviewModelOverride(
+  models: RawEntry[] | undefined,
+  autoReviewModel: string | null | undefined,
+  sourceModels: readonly RawEntry[] = [],
+): AutoReviewModelOverrideResult {
+  if (!models || !Array.isArray(models)) return "absent";
+  if (autoReviewModel === null || autoReviewModel === undefined) {
+    clearAutoReviewModelOverride(models, sourceModels);
+    return "absent";
+  }
+  const trimmed = autoReviewModel.trim();
+  if (!trimmed) {
+    clearAutoReviewModelOverride(models, sourceModels);
+    return "absent";
+  }
+  if (!isValidAutoReviewModel(trimmed)) {
+    clearAutoReviewModelOverride(models, sourceModels);
+    warnAutoReviewModelDiagnostic("invalid", trimmed);
+    return "invalid";
+  }
+  if (!configuredCatalogEntry(models, trimmed)) {
+    clearAutoReviewModelOverride(models, sourceModels);
+    warnAutoReviewModelDiagnostic("unresolved", trimmed);
+    return "unresolved";
+  }
+  for (const entry of models) {
+    if (entry && typeof entry === "object") {
+      entry.auto_review_model_override = trimmed;
+    }
+  }
+  return "applied";
+}
+
+/** Apply the root Codex auto-review selector after the final catalog merge. */
+export function finalizeAutoReviewModelOverride(
+  models: RawEntry[] | undefined,
+  sourceModels: readonly RawEntry[] = [],
+): AutoReviewModelOverrideResult {
+  if (models && sourceModels.length > 0) preserveNativeAutoReviewModelOverrides(models, sourceModels);
+  return applyAutoReviewModelOverride(models, readConfiguredAutoReviewModel(), sourceModels);
+}
+
 function writeRetainedCatalogSync({
   config,
   goModels,
@@ -1594,7 +1652,8 @@ function writeRetainedCatalogSync({
     catalog,
     onDiskCatalog,
   );
-  const template = findNativeTemplate(catalog);
+  // Strict selector for template inheritance; the validity gate above keeps the broad one.
+  const template = findSupportedNativeTemplate(catalog);
 
   try {
     // Once-only: preserve the PRISTINE pre-opencodex catalog as the native-priority baseline
@@ -1776,6 +1835,7 @@ function writeRetainedCatalogSync({
     },
   });
   clampCatalogModelsToCodexSupport(catalog.models);
+  finalizeAutoReviewModelOverride(catalog.models, catalogModelsForMerge);
 
   const added = goEntries.length + accountBoundEntries.length;
   const content = `${JSON.stringify(catalog, null, 2)}\n`;
@@ -2012,11 +2072,12 @@ export function invalidateCodexModelsCacheWithPermit(
     // The catalog-only sync override applies here too so an explicit refresh
     // keeps the cache consistent with the catalog it just wrote.
     if (!shouldSyncCodexOnStart(loadConfig()) && options?.allowWhenDesiredDisabled !== true) return false;
-    const catalogPath = readCodexCatalogPath();
+    const catalogPath = readCodexCatalogPathForHome(owningCodexHome);
     if (!existsSync(catalogPath)) return false;
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
-    const models = normalizePersistedPickerRows(catalog.models ?? catalog);
-    const currentCache = readCatalog(activeCodexModelsCachePath());
+  const models = normalizePersistedPickerRows(catalog.models ?? catalog);
+  const cachePath = join(owningCodexHome, "models_cache.json");
+  const currentCache = readCatalog(cachePath);
     const existingSlugs = new Set(models.flatMap((entry: RawEntry) =>
       typeof entry.slug === "string" ? [entry.slug] : []));
     const currentConfig = loadConfig();
@@ -2044,7 +2105,7 @@ export function invalidateCodexModelsCacheWithPermit(
       models: [...models, ...observedAccountModels],
     };
     replaceCodexModelsCache(permit, owningCodexHome, {
-      path: activeCodexModelsCachePath(),
+      path: cachePath,
       content: `${JSON.stringify(wrapper, null, 2)}\n`,
     });
     return true;

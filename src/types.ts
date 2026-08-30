@@ -3,8 +3,11 @@
 
 export type { OcxTool, OcxToolChoice } from "./types/tools";
 export {
+  CODE_MODE_EXEC_TOOL_NAME,
   namespacedToolName,
+  normalizeDeclaredToolName,
   toolChoiceAliases,
+  createToolChoiceResolver,
   toolChoiceCandidates,
   toolAllowedByChoice,
   resolveToolChoiceWireName,
@@ -60,8 +63,10 @@ export type {
   LocalRuntimeConfig,
   OcxApiKeyEntry,
   OcxClientIntegrationsConfig,
+  OcxConfigRebaseProvenance,
   OcxConfig,
   OcxAccountPoolRotationStrategy,
+  OcxAccountPoolQuotaWindow,
   OcxComboStrategy,
   OcxComboDefaultEffort,
   OcxComboTarget,
@@ -86,8 +91,10 @@ export type {
 export type {
   RefreshPolicy,
   OpenRouterProviderRouting,
+  VercelGatewayRouting,
   ResponsesItemIdRepairConfig,
   RateLimitRetryPolicy,
+  TransientRetryPolicy,
   ProviderCostOverlay,
   RequestPacingRule,
   ProviderRequestPacingConfig,

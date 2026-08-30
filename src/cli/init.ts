@@ -199,6 +199,7 @@ export async function runInit(): Promise<void> {
       port,
       providers: { [providerName]: providerConfig },
       defaultProvider: providerName,
+      modelDiscovery: { newModelPolicy: "off" },
     };
 
     saveConfig(config);

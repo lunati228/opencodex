@@ -48,7 +48,7 @@ function buildChatRequest(
 }
 
 describe("provider-specific reasoning effort mapping", () => {
-  test("Codex catalog keeps declared non-GPT ladders exact", () => {
+  test("Codex catalog advertises only the efforts actually supported by a routed model", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "neuralwatt", id: "glm-5.2", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
       { provider: "moonshot", id: "kimi-k2.7-code", reasoningEfforts: [] },
@@ -57,7 +57,7 @@ describe("provider-specific reasoning effort mapping", () => {
     const neuralwatt = entries.find(e => e.slug === "neuralwatt/glm-5.2");
     const kimi = entries.find(e => e.slug === "moonshot/kimi-k2.7-code");
 
-    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect((neuralwatt?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(neuralwatt?.default_reasoning_level).toBe("medium");
     expect(kimi?.supported_reasoning_levels).toEqual([]);
     expect(kimi).not.toHaveProperty("default_reasoning_level");
@@ -605,7 +605,7 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.tool_choice).toEqual({ type: "any" });
   });
 
-  test("catalog entries sanitize declared non-GPT efforts without inventing tiers", () => {
+  test("sanitizeCodexReasoningEfforts keeps max and strips unknown catalog labels", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "test", id: "model-with-max", reasoningEfforts: ["low", "max", "turbo", "high"] },
       { provider: "test", id: "model-clean", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
@@ -616,12 +616,10 @@ describe("provider-specific reasoning effort mapping", () => {
     const clean = entries.find(e => e.slug === "test/model-clean");
     const empty = entries.find(e => e.slug === "test/model-empty");
 
-    // Declared non-GPT ladders are exact. A declared max is deduplicated and
-    // unknown labels are stripped without adding picker-only tiers.
     const withMaxEfforts = (withMax?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort);
-    expect(withMaxEfforts).toEqual(["low", "high", "max"]);
+    expect(withMaxEfforts).toEqual(["low", "high", "max", "ultra"]);
 
-    expect((clean?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh"]);
+    expect((clean?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
 
     expect(empty?.supported_reasoning_levels).toEqual([]);
   });
@@ -974,5 +972,67 @@ describe("stale reasoning-ladder self-heal", () => {
       modelReasoningEffortMap: { model: { low: "low", high: "high" } },
     };
     expect(configuredReasoningEfforts(prov, "model")).toEqual([]);
+  });
+
+  test("per-effort omission sentinel (__omit__) drops reasoning_effort from the wire (#2356)", () => {
+    const ollamaProv: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "http://localhost:11434/v1",
+      modelReasoningEfforts: {
+        "qwen3.8-uncensored:27b-q4": ["low", "medium", "high", "xhigh", "max"],
+      },
+      modelReasoningEffortMap: {
+        "qwen3.8-uncensored:27b-q4": {
+          low: "low",
+          medium: "medium",
+          high: "__omit__",
+          xhigh: "__omit__",
+          max: "__omit__",
+        },
+      },
+    };
+
+    // High/xhigh/max/ultra map to undefined (omitted on wire)
+    expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "high")).toBeUndefined();
+    expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "xhigh")).toBeUndefined();
+    expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "max")).toBeUndefined();
+    expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "ultra")).toBeUndefined();
+
+    // Low and medium map to explicit wire values
+    expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "low")).toBe("low");
+    expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "medium")).toBe("medium");
+
+    const fallbackProv: OcxProviderConfig = {
+      ...ollamaProv,
+      modelReasoningEfforts: {
+        "qwen3.8-uncensored:27b-q4": ["low", "high"],
+      },
+      modelReasoningEffortMap: {
+        "qwen3.8-uncensored:27b-q4": { high: "__omit__" },
+      },
+    };
+    expect(mapReasoningEffort(fallbackProv, "qwen3.8-uncensored:27b-q4", "xhigh")).toBeUndefined();
+
+    // Verify in openai-chat adapter buildRequest: field is completely omitted when mapped to __omit__
+    const adapter = createOpenAIChatAdapter(ollamaProv);
+    const reqMax = adapter.buildRequest({
+      modelId: "qwen3.8-uncensored:27b-q4",
+      stream: false,
+      context: { messages: [{ role: "user", content: "deep thinking" }] },
+      options: { reasoning: "max" },
+    } as OcxParsedRequest);
+    const bodyMax = JSON.parse(reqMax.body as string);
+    expect(bodyMax.reasoning_effort).toBeUndefined();
+    expect(bodyMax).not.toHaveProperty("reasoning_effort");
+
+    // Field is present when mapped to a real string
+    const reqLow = adapter.buildRequest({
+      modelId: "qwen3.8-uncensored:27b-q4",
+      stream: false,
+      context: { messages: [{ role: "user", content: "fast turn" }] },
+      options: { reasoning: "low" },
+    } as OcxParsedRequest);
+    const bodyLow = JSON.parse(reqLow.body as string);
+    expect(bodyLow.reasoning_effort).toBe("low");
   });
 });

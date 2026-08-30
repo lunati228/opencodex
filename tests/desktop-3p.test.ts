@@ -293,6 +293,40 @@ describe("Claude Desktop 3P models", () => {
     }
   });
 
+  test("re-applying an owned profile preserves foreign profile keys", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-desktop-merge-"));
+    const previous = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+    process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = dir;
+    try {
+      const id = "owned-profile";
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "_meta.json"), JSON.stringify({
+        appliedId: id,
+        entries: [{ id, name: "opencodex" }],
+      }));
+      writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+        inferenceProvider: "gateway",
+        inferenceCredentialKind: "static",
+        inferenceGatewayBaseUrl: "http://127.0.0.1:1",
+        inferenceGatewayApiKey: "old-key",
+        modelDiscoveryEnabled: false,
+        inferenceModels: [],
+        foreignDeploymentSetting: { allowed: true },
+      }));
+
+      const written = writeDesktop3pConfig(4096, ["gpt-5.6-sol"], [], "new-key");
+      expect(written.written).toBe(true);
+      const profile = JSON.parse(readFileSync(join(dir, `${id}.json`), "utf8"));
+      expect(profile.foreignDeploymentSetting).toEqual({ allowed: true });
+      expect(profile.inferenceGatewayBaseUrl).toBe("http://127.0.0.1:4096");
+      expect(profile.inferenceGatewayApiKey).toBe("new-key");
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+      else process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("unsafe metadata ids fail closed before a config can escape the library", () => {
     const root = mkdtempSync(join(tmpdir(), "ocx-desktop-id-boundary-"));
     const library = join(root, "library");

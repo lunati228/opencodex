@@ -38,6 +38,7 @@ export interface PolicyJobOutcome {
   freedBytes?: number;
   removed?: number;
   trashDir?: string;
+  metadataPersistenceError?: PolicyRunResult["metadataPersistenceError"];
 }
 
 export interface PolicyJobState {
@@ -62,6 +63,8 @@ export interface PolicyJobTestHooks {
    * policy load, so concurrent PUTs can race completion metadata writes.
    */
   blockMs?: number;
+  /** Called after the worker has loaded its immutable start-of-job policy snapshot. */
+  onPolicyLoaded?: () => void;
   /**
    * When true, run on the main thread via `queueMicrotask` + optional sleep.
    * Used only for unit tests that cannot spawn workers; responsiveness tests
@@ -238,6 +241,7 @@ export async function abortStorageCleanupPolicyJobAsync(): Promise<void> {
   }
 }
 
+/** Project a run result into the bounded management-API job outcome. */
 function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
   return {
     ok: result.ok,
@@ -248,18 +252,26 @@ function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
     ...(result.freedBytes !== undefined ? { freedBytes: result.freedBytes } : {}),
     ...(result.removed !== undefined ? { removed: result.removed } : {}),
     ...(result.trashDir ? { trashDir: result.trashDir } : {}),
+    ...(result.metadataPersistenceError
+      ? { metadataPersistenceError: result.metadataPersistenceError }
+      : {}),
   };
 }
 
+/** Publish one completed evaluation without losing successful cleanup effects. */
 function applyFinished(result: PolicyRunResult): void {
   // Prefer the latest persisted policy over `result.policy`. The worker (or
   // in-process run) already merged run metadata into disk; a concurrent PUT
   // may also have landed after that write. Re-reading avoids applying a stale
   // start-of-job snapshot when the run skipped without saving.
-  try {
-    livePolicyApply?.(readStorageCleanupPolicyFromConfig());
-  } catch {
-    livePolicyApply?.(result.policy);
+  // A best-effort fallback policy may predate concurrent edits; keep the current
+  // live config untouched when the durable metadata write did not land.
+  if (!result.metadataPersistenceError) {
+    try {
+      livePolicyApply?.(readStorageCleanupPolicyFromConfig());
+    } catch {
+      livePolicyApply?.(result.policy);
+    }
   }
   state = {
     status: "idle",
@@ -292,7 +304,9 @@ function applyMutationBusy(): void {
   };
 }
 
-function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Promise<PolicyRunResult> {
+function runInWorker(
+  opts: RequestPolicyRunOptions & { blockMs?: number; onPolicyLoaded?: () => void },
+): Promise<PolicyRunResult> {
   const reservation = tryReserveStorageWorker();
   if (!reservation) return Promise.reject(new StorageWorkerAdmissionBusyError());
   return withStorageWorkerSpawnGate(() => new Promise<PolicyRunResult>((resolve, reject) => {
@@ -335,6 +349,10 @@ function runInWorker(opts: RequestPolicyRunOptions & { blockMs?: number }): Prom
       if (!data || typeof data !== "object") return;
       const msg = data as Record<string, unknown>;
       if (msg.requestId !== requestId) return;
+      if (msg.type === "policy_loaded") {
+        opts.onPolicyLoaded?.();
+        return;
+      }
       if (msg.type === "done" && msg.result && typeof msg.result === "object") {
         finish(() => resolve(msg.result as PolicyRunResult));
         return;
@@ -381,6 +399,7 @@ async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
   heldMutationLease = gate.lease;
   try {
     const blockMs = testHooks?.blockMs;
+    const onPolicyLoaded = testHooks?.onPolicyLoaded;
     let result: PolicyRunResult;
 
     if (testHooks?.runInProcess) {
@@ -392,12 +411,14 @@ async function executeJob(opts: RequestPolicyRunOptions): Promise<void> {
         codexHome,
         ...(opts.busyTimeoutMs !== undefined ? { busyTimeoutMs: opts.busyTimeoutMs } : {}),
         ...(typeof blockMs === "number" && blockMs > 0 ? { holdAfterLoadMs: blockMs } : {}),
+        ...(onPolicyLoaded ? { onPolicyLoaded } : {}),
       });
     } else {
       result = await runInWorker({
         ...opts,
         codexHome,
         ...(typeof blockMs === "number" && blockMs > 0 ? { blockMs } : {}),
+        ...(onPolicyLoaded ? { onPolicyLoaded } : {}),
       });
     }
 

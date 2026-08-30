@@ -279,7 +279,7 @@ describe("antigravity CCA envelope", () => {
       high: "gemini-pro-agent",
     });
 
-    const baseUrl = "https://cca.example";
+    const baseUrl = provider.baseUrl!;
     registerAntigravityDiscoveredWireModels(baseUrl, rows);
     // A complete discovery preserves each discovered suffix for the requested effort.
     expect(resolveAntigravityEffortWireModel("gemini-3.1-pro", "low", baseUrl))
@@ -318,7 +318,7 @@ describe("antigravity CCA envelope", () => {
       contextWindow: 1_048_576,
     }]);
 
-    const baseUrl = "https://cca-tiered-discovery.example";
+    const baseUrl = provider.baseUrl!;
     registerAntigravityDiscoveredWireModels(baseUrl, rows);
     expect(resolveAntigravityEffortWireModel("gemini-3.7-flash", "high", baseUrl))
       .toEqual({ wireModelId: "gemini-3.7-flash-tiered", thinkingLevel: "high" });
@@ -810,7 +810,10 @@ describe("antigravity history preserves tool-call thoughtSignature", () => {
     const env = JSON.parse(req.body);
     const modelTurn = (env.request.contents as { role: string; parts: Record<string, unknown>[] }[]).find(c => c.role === "model");
     const fcPart = modelTurn?.parts.find(part => "functionCall" in part);
-    expect(fcPart?.thoughtSignature).toBeUndefined();
+    // The synthetic fc_ id is still stripped — what lands is the constant bypass sentinel,
+    // fabricated here rather than forwarded from the client. isLikelyRealThoughtSignature
+    // rejects both, so neither can be cached or replayed as a genuine signature.
+    expect(fcPart?.thoughtSignature).toBe("skip_thought_signature_validator");
   });
 
   test("custom_tool_call item ids (ctc_...) from Claude/mixed history are NOT forwarded (issue #174)", async () => {
@@ -830,7 +833,8 @@ describe("antigravity history preserves tool-call thoughtSignature", () => {
     const env = JSON.parse(req.body);
     const modelTurn = (env.request.contents as { role: string; parts: Record<string, unknown>[] }[]).find(c => c.role === "model");
     const fcPart = modelTurn?.parts.find(part => "functionCall" in part);
-    expect(fcPart?.thoughtSignature).toBeUndefined();
+    // Same contract for ctc_ ids: not forwarded; the sentinel is injected in their place.
+    expect(fcPart?.thoughtSignature).toBe("skip_thought_signature_validator");
   });
 });
 

@@ -10,19 +10,23 @@ function source(relativePath: string): string {
 
 describe("atomic persistence classification", () => {
   test("both generic atomic publishers are secret-safe primitives", () => {
-    const config = source("src/config.ts");
+    const atomicWrite = source("src/config/atomic-write.ts");
 
     // Upstream consolidated public-cache and credential writes onto the same
-    // primitive. Classification by call-site count is therefore no longer a
-    // security boundary; the boundary is the primitive itself.
-    expect(config).toContain('writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 })');
-    expect(config).toContain("hardenSecretPath(target, { required: true, timeoutMemoKey: path })");
-    expect(config).toContain("hardenSecretPathAsync(target, {");
-    expect(config).toContain("required: true,");
-    expect(config).toContain("timeoutMemoKey: path,");
-    expect(config).toContain("renameAtomicFile");
-    expect(config).toContain("renameAtomicFileAsync");
-    expect(config).toContain("AtomicWriteSecretResidualError");
+    // primitive, now extracted from config.ts. Classification by call-site count
+    // is therefore no longer a security boundary; the boundary is the primitive itself.
+    // The temp is exclusively created owner-only, identity-checked, then written through
+    // the still-open descriptor so a pre-created or swapped path cannot receive the bytes.
+    expect(atomicWrite).toContain("constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600");
+    expect(atomicWrite).toContain("assertPrivateTempDescriptor(path, descriptor)");
+    expect(atomicWrite).toContain('writeFileSync(descriptor, content, { encoding: "utf-8" })');
+    expect(atomicWrite).toContain("hardenSecretPath(path, { required: true, timeoutMemoKey })");
+    expect(atomicWrite).toContain(
+      "await hardenSecretPathAsync(path, { required: true, timeoutMemoKey, retryTimedOutOnce });",
+    );
+    expect(atomicWrite).toContain("renameAtomicFile");
+    expect(atomicWrite).toContain("renameAtomicFileAsync");
+    expect(atomicWrite).toContain("AtomicWriteSecretResidualError");
   });
 
   test("credential-bearing fork surfaces retain a hardened atomic publisher", () => {

@@ -5,107 +5,12 @@ import {
   shouldUseCodexWsUpstream,
   type BunRuntimeGateInput,
 } from "./ws-upstream";
-import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
-import {
-  getConfigPath,
-  multiAgentGuidanceEnabled,
-  resolveEnvValue,
-} from "../../config";
-import { parseRequest } from "../../responses/parser";
-import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
-import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
-import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../../responses/state";
-import { routeModel } from "../../router";
-import {
-  advanceComboAfterFailure,
-  comboDefaultEffort,
-  comboFailureDecision,
-  comboIdFromRawBody,
-  concreteComboRequestBody,
-  getCombo,
-  isComboTargetInCooldown,
-  NoAvailableComboTargetsError,
-  noteComboSuccess,
-  parseRetryAfterMs,
-  pickComboTarget,
-  targetKey,
-} from "../../combos";
-import { isInjectionDebugEnabled } from "../../lib/debug-settings";
-import { injectionDebugLog } from "../../lib/injection-debug-log";
-import { modelInList, namespacedToolName } from "../../types";
-import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
-import {
-  forceRefreshOAuthAccessSnapshot,
-  getOAuthCredentialApiBaseUrl,
-  getOAuthCredentialProjectId,
-  getValidAccessTokenSnapshot,
-  type OAuthAccessSnapshot,
-  UnsupportedOAuthProviderError,
-} from "../../oauth";
-import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../../web-search";
-import { describeImagesInPlace, planVisionSidecar, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../../vision";
-import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/run-turn-queue";
-import {
-  applyCodexAuthContextToProvider,
-  CodexAccountCooldownError,
-  CodexAuthContextError,
-  CodexDirectAuthenticationError,
-  CodexPoolAuthenticationError,
-  CodexThreadAffinityExpiredError,
-  headersForCodexAuthContext,
-  isCodexAuthContextUsable,
-  resolveCodexAuthContext,
-  type CodexAuthContext,
-} from "../../codex/auth-context";
-import {
-  formatCodexProviderForLog,
-  recordCodexUpstreamOutcome,
-  type CodexUpstreamOutcome,
-} from "../../codex/routing";
-import { fetchWithResetRetry, fetchWithTransientRetry, applyUpstreamRecoveryInit } from "../../lib/upstream-retry";
-import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
-import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
-import { slugsEquivalent } from "../../providers/slug-codec";
-import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../providers/openai-virtual-models";
-import { isUsageDebugEnabled } from "../../usage/debug";
-import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
-import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
-import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../providers/key-failover";
-import { shouldAttemptImageTierRetry } from "../image-retry";
-import { resolveProviderTransport } from "../../providers/xai-transport";
+import type { OcxProviderConfig } from "../../types";
 import type { WsData } from "../ws-bridge";
-import { registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
-import { redactSecretString } from "../../lib/redact";
-import { readBoundedResponseBody } from "../../lib/bounded-body";
-import { supportedLadderFor } from "../effort-policy";
-import {
-  beginRequestAttempt,
-  catalogModelSupportsServiceTier,
-  finishRequestAttempt,
-  inspectResponseLogJson,
-  noteAttemptSend,
-  readConfiguredCodexServiceTier,
-  requestLogSpeedLabel,
-  sealRequestAttemptIdentity,
-  usageFromResponsesPayload,
-  type RequestLogContext,
-} from "../request-log";
-import type { AttemptRecoveryKind } from "../../usage/log";
-import {
-  consumeForInspection,
-  consumeForResponseLogMetadata,
-  markNativePassthroughSseResponse,
-  relaySseWithFailedTail,
-  relayWithAbort,
-  sanitizePassthroughHeaders,
-} from "../relay";
-import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
-import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 import { waitForProviderRequestSlot } from "../../providers/request-pacing";
 import { withUpstreamHttpVersion } from "../../lib/upstream-http-version";
 
-export { withUpstreamHttpVersion } from "../../lib/upstream-http-version";
+export { withUpstreamHttpVersion };
 
 export function disableResponsesRequestTimeout(req: Request, server: Pick<Server<WsData>, "timeout"> | undefined): boolean {
   if (!server) return false;
@@ -159,6 +64,14 @@ export function providerFetch(
   options: ProviderFetchOptions = {},
 ): ProviderFetch {
   const base = (provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch ?? globalThis.fetch;
+  const preconnect = (...args: Parameters<typeof globalThis.fetch.preconnect>): void => {
+    base.preconnect?.(...args);
+  };
+  const httpFetch = Object.assign(
+    (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) =>
+      base(input, { ...withUpstreamHttpVersion(input, init, provider), timeout: 0 }),
+    { preconnect },
+  ) as typeof globalThis.fetch;
   // ChatGPT Codex backend: streaming turns ride the responses_websockets
   // transport (measured ~3s faster TTFT than the SSE POST queue); everything
   // else keeps the provider's HTTP fetch. See ws-upstream.ts for the details.
@@ -167,9 +80,10 @@ export function providerFetch(
     // origin. Never let Fetch replay Authorization through an upstream redirect.
     const guardedInit = provider.externalProviderRef ? { ...init, redirect: "error" as const } : init;
     if (typeof input === "string" && guardedInit && shouldUseCodexWsUpstream(input, guardedInit, runtime)) {
-      return codexWsUpstreamFetch(input, guardedInit, base, runtime);
+      // A WS fallback must retain the same HTTP-version policy as the non-WS branch.
+      return codexWsUpstreamFetch(input, guardedInit, httpFetch, runtime);
     }
-    return base(input, withUpstreamHttpVersion(input, guardedInit, provider));
+    return httpFetch(input, guardedInit);
   };
   let pacingSlotAcquired = options.pacingSlotAcquired === true;
   const waitForPacing = (signal?: AbortSignal) => {
@@ -185,9 +99,6 @@ export function providerFetch(
     await waitForPacing(init?.signal ?? undefined);
     return unpaced(input, init);
   };
-  const preconnect = (...args: Parameters<typeof globalThis.fetch.preconnect>): void => {
-    base.preconnect?.(...args);
-  };
   return Object.assign(wrapped, {
     preconnect,
     waitForPacing,
@@ -196,6 +107,48 @@ export function providerFetch(
 }
 
 
+
+/**
+ * Wrap a provider fetch so `onDispatch` fires immediately before the send, not before pacing.
+ *
+ * `fetchWithHeaderTimeout` awaits `waitForPacing` and only then calls the executor, so a caller
+ * that signals at the call site records a dispatch even when a rejected pacing wait means nothing
+ * reached the network. That matters when the signal bounds later recovery: the request would lose
+ * its fallback on the strength of a send that never happened.
+ *
+ * The pacing surface is preserved deliberately. `waitForPacing` and `unpacedFetch` are read off
+ * the executor by `fetchWithHeaderTimeout`, so a plain function wrapper would silently drop
+ * provider pacing and double-send the slot.
+ */
+export function storedPoolReplayDispatchNotifier(
+  executor: ProviderFetch,
+  onDispatch: (() => void) | undefined,
+): ProviderFetch {
+  if (!onDispatch) return executor;
+  let notified = false;
+  const notifyOnce = (): void => {
+    if (notified) return;
+    notified = true;
+    onDispatch();
+  };
+  const unpacedSource = executor.unpacedFetch ?? executor;
+  const unpaced = Object.assign(
+    (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      notifyOnce();
+      return unpacedSource(input, init);
+    },
+    { preconnect: unpacedSource.preconnect },
+  ) as ProviderFetch["unpacedFetch"];
+  const wrapped = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+    await executor.waitForPacing?.(init?.signal ?? undefined);
+    return unpaced!(input, init);
+  };
+  return Object.assign(wrapped, {
+    preconnect: executor.preconnect,
+    waitForPacing: executor.waitForPacing,
+    unpacedFetch: unpaced,
+  }) as ProviderFetch;
+}
 
 export async function fetchWithHeaderTimeout(
   url: string,
@@ -228,6 +181,7 @@ export async function fetchWithHeaderTimeout(
       // indistinguishable from a pre-connection failure (#914).
       ...(manualRedirect ? { redirect: "manual" as const } : {}),
       signal: AbortSignal.any([abortSignal, timeout.signal]),
+      timeout: 0,
     });
   } finally {
     clearTimeout(timer);

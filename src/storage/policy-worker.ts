@@ -39,7 +39,10 @@ self.onmessage = (event: MessageEvent<unknown>) => {
       ...(codexHome ? { codexHome } : {}),
       ...(busyTimeoutMs !== undefined ? { busyTimeoutMs } : {}),
       ...(typeof blockMs === "number" && Number.isFinite(blockMs) && blockMs > 0
-        ? { holdAfterLoadMs: Math.floor(blockMs) }
+        ? {
+            holdAfterLoadMs: Math.floor(blockMs),
+            onPolicyLoaded: () => self.postMessage({ type: "policy_loaded", requestId }),
+          }
         : {}),
     });
     self.postMessage({ type: "done", requestId, result });
