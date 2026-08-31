@@ -121,6 +121,27 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(nativeModelRows(pool).map(row => row.slug)).toContain("gpt-daybreak-blue-latest");
   });
 
+  test("Direct keeps static GPT-5.6 rows visible when roster discovery is unconfirmed", () => {
+    resetCodexModelEntitlementCacheForTests();
+    const direct = makeConfig({
+      providers: { openai: { authMode: "forward", codexAccountMode: "direct" } },
+    });
+    const pool = makeConfig({
+      providers: { openai: { authMode: "forward", codexAccountMode: "pool" } },
+    });
+
+    const directRows = nativeModelRows(direct).map(row => row.slug);
+    expect(directRows).toContain("gpt-5.6-sol");
+    expect(directRows).toContain("gpt-5.6-terra");
+    expect(directRows).toContain("gpt-5.6-luna");
+    expect(directRows).not.toContain("gpt-daybreak-blue-latest");
+
+    const poolRows = nativeModelRows(pool).map(row => row.slug);
+    expect(poolRows).not.toContain("gpt-5.6-sol");
+    expect(poolRows).not.toContain("gpt-5.6-terra");
+    expect(poolRows).not.toContain("gpt-5.6-luna");
+  });
+
   test("a per-model window sets the native row and never exceeds the measured ceiling", () => {
     // The lever the dashboard's context button writes. It reaches the same accessors the cap
     // does, so /api/models and the on-disk catalog cannot disagree about the same slug.

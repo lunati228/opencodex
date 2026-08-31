@@ -45,11 +45,19 @@ the bare native or API-key model list. This keeps account-scoped upstream ids su
 `gpt-daybreak-blue-latest` callable without treating them as a static release allowlist.
 
 Account-gated native ids are a stricter subset. Their authenticated ChatGPT `/models` roster is
-cached per credential generation with a bounded timeout. A bare gated row is emitted only when at
-least one confirmed eligible account reports it; a selector-qualified row is emitted only when the
-mapped account reports it. A failed or malformed discovery is not positive evidence and therefore
-hides the gated row until a later refresh. The same snapshot gates Pool selection, so the catalog
-and runtime cannot disagree by advertising through one account and dispatching through another.
+cached per credential generation with a bounded timeout. In Pool mode, a bare gated row is emitted
+only when at least one confirmed eligible account reports it; a selector-qualified row is emitted
+only when the mapped account reports it. A failed or malformed discovery is not positive Pool or
+selector evidence and therefore hides those rows until a later refresh. The same snapshot gates
+Pool selection, so the catalog and runtime cannot disagree by advertising through one account and
+dispatching through another.
+
+Direct mode has one bounded exception: its bare catalog retains the statically shipped
+Sol/Terra/Luna rows because background sync cannot know the request-owned caller credential. For
+those three models at request time, a successful roster that omits the selected model is a confirmed
+denial; an unavailable or malformed roster is unknown and the canonical ChatGPT request remains the
+authority. Daybreak, Pool selection, and exact account selectors still fail closed on unknown
+evidence.
 
 The app-server's model list comes from this shared catalog, not from patching the App. Codex Desktop
 may still apply its remote native-only allowlist after `model/list`; an explicitly configured combo

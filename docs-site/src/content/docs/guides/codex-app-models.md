@@ -32,6 +32,15 @@ the stored main credential when an OpenCodex admission bearer is substituted). A
 Pool routing excludes unentitled accounts. If no roster can be confirmed, the gated row fails closed
 instead of spending a prompt on an upstream 400.
 
+GPT-5.6 Sol/Terra/Luna use the same confirmed roster evidence for Pool selection, but Direct keeps
+their shipped bare picker rows visible. A Direct catalog is built before opencodex can know the
+request-owned caller credential, so hiding those rows on a transient roster failure would make a
+valid route impossible to select. Each Direct request for those three models still checks its actual
+caller (or substituted stored-main) roster: a confirmed omission is rejected locally, while
+unavailable or malformed discovery lets the canonical ChatGPT request make the final authorization
+decision. Account-qualified rows and Pool routing remain fail-closed. Daybreak does not receive this
+exception and remains evidence-gated.
+
 A separate, explicit `customModels` entry can expose the same wire id as
 `openai/gpt-daybreak-blue-latest` through the canonical Codex-login forward provider:
 

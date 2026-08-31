@@ -35,6 +35,7 @@ import { codexAccountNamespaceEntries, isMainCodexAccountTarget } from "../accou
 import { MAIN_CODEX_ACCOUNT_ID } from "../main-account";
 import {
   availableAccountGatedNativeModels,
+  availableBareAccountGatedNativeModels,
   isCodexModelEntitlementSnapshotCurrent,
   resolveCodexModelEntitlements,
   type CodexModelEntitlementSnapshot,
@@ -1681,13 +1682,13 @@ function writeRetainedCatalogSync({
   const modelPickerOrder = config.modelPickerOrder ?? [];
   const multiAgentMode: MultiAgentMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
   const exactComboSlugs = exactComboCatalogSlugs(config);
-  const bareEligibleAccountIds = providerCodexAccountMode(
+  const openAiAccountMode = providerCodexAccountMode(
     OPENAI_CODEX_PROVIDER_ID,
     config.providers[OPENAI_CODEX_PROVIDER_ID],
-  ) === "direct" ? new Set([MAIN_CODEX_ACCOUNT_ID]) : undefined;
-  const availableBareGatedNativeSlugs = availableAccountGatedNativeModels(
+  ) === "direct" ? "direct" : "pool";
+  const availableBareGatedNativeSlugs = availableBareAccountGatedNativeModels(
     modelEntitlements,
-    bareEligibleAccountIds,
+    openAiAccountMode,
   );
   const availableAccountGatedNativeSlugs = availableAccountGatedNativeModels(modelEntitlements);
   const availableBareNativeSlugs = NATIVE_OPENAI_MODELS.filter(slug => (

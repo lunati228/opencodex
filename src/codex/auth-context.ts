@@ -38,7 +38,10 @@ import {
   isDirectCallerEntitledToCodexModel,
   resolveCodexModelEntitlements,
 } from "./model-entitlements";
-import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "./catalog/native-models";
+import {
+  ACCOUNT_GATED_NATIVE_OPENAI_MODELS,
+  DIRECT_MODE_STATIC_ACCOUNT_GATED_NATIVE_OPENAI_MODELS,
+} from "./catalog/native-models";
 import type { CodexCooldownSource, CodexQuotaScope } from "./routing";
 import { maskAccountId } from "../lib/privacy";
 import { formatErrorResponse } from "../bridge";
@@ -353,7 +356,7 @@ export interface ResolveCodexAuthContextOptions {
   /** A validated native Codex bearer may serve this request without entering Pool state. */
   requestScopedMainCredential?: boolean;
   /** Test seam for a Direct request's own forwarded ChatGPT credential. */
-  isDirectCallerEntitledToCodexModel?: (headers: Headers, modelId: string) => Promise<boolean>;
+  isDirectCallerEntitledToCodexModel?: (headers: Headers, modelId: string) => Promise<boolean | undefined>;
 }
 
 export interface CodexAccountSelectionAdmission {
@@ -383,7 +386,7 @@ export async function resolveCodexAuthContext(
         const entitled = await (
           options.isDirectCallerEntitledToCodexModel ?? isDirectCallerEntitledToCodexModel
         )(headers, options.modelId);
-        if (!entitled) {
+        if (entitled === false) {
           throw new CodexPoolAuthenticationError("The selected ChatGPT account does not support this model");
         }
       }
@@ -407,14 +410,16 @@ export async function resolveCodexAuthContext(
         throw new CodexMainProfileDrainingError();
       }
       if (options.modelId && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId)) {
-        const entitled = entitledCodexAccountIdsForModel(
-          await (options.resolveCodexModelEntitlements ?? resolveCodexModelEntitlements)(config, {
-            signal: options.signal,
-            nativeMainRefreshDependencies: options.nativeMainRefreshDependencies,
-          }),
-          options.modelId,
-        )?.has(MAIN_CODEX_ACCOUNT_ID) === true;
-        if (!entitled) {
+        const snapshot = await (options.resolveCodexModelEntitlements ?? resolveCodexModelEntitlements)(config, {
+          signal: options.signal,
+          nativeMainRefreshDependencies: options.nativeMainRefreshDependencies,
+        });
+        const mainConfirmed = snapshot.confirmedAccountIds.has(MAIN_CODEX_ACCOUNT_ID);
+        const mainEntitled = mainConfirmed
+          && snapshot.modelsByAccount.get(MAIN_CODEX_ACCOUNT_ID)?.has(options.modelId) === true;
+        const unconfirmedDirectFallback = !mainConfirmed
+          && DIRECT_MODE_STATIC_ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId);
+        if (!mainEntitled && !unconfirmedDirectFallback) {
           throw new CodexPoolAuthenticationError("The selected ChatGPT account does not support this model");
         }
       }

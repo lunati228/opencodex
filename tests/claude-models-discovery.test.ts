@@ -163,6 +163,44 @@ test("OpenAI list shape and Codex catalog shape stay unchanged", async () => {
   }
 });
 
+test("Direct Codex discovery retains shipped GPT-5.6 rows when roster discovery is unavailable", async () => {
+  writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
+    tokens: { access_token: "direct-discovery-access", account_id: "direct-discovery-account" },
+  }), "utf8");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/backend-api/codex/models") {
+      return new Response("unavailable", { status: 503 });
+    }
+    return originalFetch(request);
+  }) as typeof fetch;
+  const config = configWithStaticModels();
+  config.providers.openai = {
+    adapter: "openai-responses",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    authMode: "forward",
+    codexAccountMode: "direct",
+    liveModels: false,
+  };
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/models?client_version=1.0.0", server.url));
+    expect(response.status).toBe(200);
+    const json = await response.json() as { models: Array<{ slug: string }> };
+    const slugs = json.models.map(model => model.slug);
+    expect(slugs).toContain("gpt-5.6-sol");
+    expect(slugs).toContain("gpt-5.6-terra");
+    expect(slugs).toContain("gpt-5.6-luna");
+    expect(slugs).not.toContain("gpt-daybreak-blue-latest");
+  } finally {
+    await server.stop(true);
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Codex discovery applies the OpenAI context cap to native rows (#1430)", async () => {
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
     tokens: { access_token: "context-cap-access", account_id: "context-cap-account" },

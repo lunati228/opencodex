@@ -47,8 +47,10 @@ import {
   isNativeOpenAiCapabilityAliasModel,
   nativeOpenAiCapabilitySourceSlug,
 } from "./native-models";
-import { cachedAvailableAccountGatedNativeModels } from "../model-entitlements";
-import { MAIN_CODEX_ACCOUNT_ID } from "../main-account";
+import {
+  cachedAvailableAccountGatedNativeModels,
+  cachedAvailableBareAccountGatedNativeModels,
+} from "../model-entitlements";
 export { CODEX_NATIVE_ALIAS_CATALOG_KIND } from "./kinds";
 export {
   NATIVE_DAYBREAK_BLUE_MODEL,
@@ -416,11 +418,11 @@ export function nativeModelRows(config: Pick<OcxConfig, "disabledModels" | "comb
   // Both user levers, not just the cap: a per-model window set from the dashboard has to show
   // up on the row the dashboard itself renders.
   const limits = nativeContextLimits(config);
-  const bareEligibleAccountIds = providerCodexAccountMode(
+  const openAiAccountMode = providerCodexAccountMode(
     OPENAI_CODEX_PROVIDER_ID,
     config.providers?.[OPENAI_CODEX_PROVIDER_ID],
-  ) === "direct" ? new Set([MAIN_CODEX_ACCOUNT_ID]) : undefined;
-  const availableGated = cachedAvailableAccountGatedNativeModels(Date.now(), bareEligibleAccountIds);
+  ) === "direct" ? "direct" : "pool";
+  const availableGated = cachedAvailableBareAccountGatedNativeModels(openAiAccountMode);
   return NATIVE_OPENAI_MODELS
     .filter(slug => !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableGated.has(slug))
     .filter(slug => !shadowed.has(slug)).map(slug => {
@@ -508,9 +510,10 @@ export function shouldUpgradeToUpstreamEntry(entry: RawEntry): boolean {
     && entry.display_name === entry.slug;
 }
 
-export function nativeOpenAiSlugs(): string[] {
+export function nativeOpenAiSlugs(
+  availableGated: ReadonlySet<string> = cachedAvailableAccountGatedNativeModels(),
+): string[] {
   const live = catalogNativeSlugs();
-  const availableGated = cachedAvailableAccountGatedNativeModels();
   const candidates = live.length > 0 ? unique([...live, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]) : NATIVE_OPENAI_MODELS;
   return candidates.filter(slug => (
     !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableGated.has(slug)

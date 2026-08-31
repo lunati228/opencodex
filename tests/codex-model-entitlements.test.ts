@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   availableAccountGatedNativeModels,
+  availableBareAccountGatedNativeModels,
   cachedAvailableAccountGatedNativeModels,
   deriveGatedClientVersionFloor,
   entitledCodexAccountIdsForModel,
@@ -74,6 +75,9 @@ describe("Codex account model entitlements", () => {
     expect(snapshot.confirmedAccountIds.size).toBe(0);
     expect(entitledCodexAccountIdsForModel(snapshot, DAYBREAK)?.size).toBe(0);
     expect(availableAccountGatedNativeModels(snapshot).size).toBe(0);
+    expect([...availableBareAccountGatedNativeModels(snapshot, "direct")])
+      .toEqual([SOL, TERRA, LUNA]);
+    expect(availableBareAccountGatedNativeModels(snapshot, "pool").size).toBe(0);
   });
 
   test("ignores hidden or API-disabled rows", async () => {
@@ -152,16 +156,16 @@ describe("Codex account model entitlements", () => {
     expect(seenAccount).toBe("caller-account");
   });
 
-  test("Direct entitlement fails closed on an unconfirmed roster", async () => {
+  test("Direct GPT-5.6 entitlement distinguishes an unconfirmed roster from a confirmed denial", async () => {
     await expect(isDirectCallerEntitledToCodexModel(
       new Headers({ authorization: "Bearer caller-token" }),
-      DAYBREAK,
+      SOL,
       {
         fetcher: (async () => new Response("unavailable", { status: 503 })) as typeof fetch,
         now: 1_000,
-      clientVersion: TEST_CLIENT_VERSION,
+        clientVersion: TEST_CLIENT_VERSION,
       },
-    )).resolves.toBe(false);
+    )).resolves.toBeUndefined();
   });
 
   test("Direct-caller rosters do not evict main/Pool entitlement evidence", async () => {
@@ -307,8 +311,7 @@ describe("entitlement client version (#2886)", () => {
   test("concurrent roster requests for one account are bounded", async () => {
     // Distinct client_version values miss the flight key by design, so without a bound a caller
     // cycling versions could open arbitrarily many concurrent upstream requests, each holding an
-    // 8s timer. Over the bound the answer is unconfirmed — the same fail-closed result a discovery
-    // failure gives.
+    // 8s timer. Over the bound the answer is unconfirmed rather than a manufactured denial.
     let opened = 0;
     const gate: Array<() => void> = [];
     const backend = (async () => {
@@ -523,10 +526,8 @@ describe("entitlement client version (#2886)", () => {
     // the newer client's confirmation.
     expect([...cachedAvailableAccountGatedNativeModels(1_100, undefined, "0.150.0")]).toEqual([]);
     // Direct entries are excluded from the CATALOG projection by design, so assert through the
-    // entitlement check itself. A THROWING fetcher would be useless for the negative case:
-    // production converts a failed fetch into an unconfirmed roster, which is also `false`, so it
-    // could not tell a cache hit from a refetch. Count requests, and have any refetch return the
-    // OPPOSITE answer, so serving from cache is the only way each assertion can hold.
+    // entitlement check itself. Count requests and have any refetch return the OPPOSITE answer,
+    // so serving from the version-specific cache is the only way each assertion can hold.
     let refetches = 0;
     const inverted = (async (input: RequestInfo | URL) => {
       refetches += 1;

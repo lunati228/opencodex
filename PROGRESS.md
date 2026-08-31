@@ -13,6 +13,10 @@
   model's real highest wire effort; the managed Qwen ladder remains exact.
 - No Qwen request was run during this integration. A future live run requires
   explicit operator authorization.
+- Direct ChatGPT routing now distinguishes transient or malformed model-roster
+  discovery from a confirmed account denial. Sol/Terra/Luna remain present in
+  the Direct bare catalog; Pool, exact account selectors, and Daybreak retain
+  confirmed-evidence requirements.
 
 ## Merge reconciliation introduced here
 
@@ -49,8 +53,49 @@
   Production request and WebSocket timeouts are unchanged.
 - Replaced a timing guess in the storage-policy PUT race test with a test-only
   worker snapshot signal. Production cleanup behavior is unchanged.
+- Split Direct account-model admission into confirmed grant, confirmed denial,
+  and unconfirmed discovery. Only an unconfirmed shipped GPT-5.6 Direct case
+  reaches the canonical upstream request; Daybreak, Pool, and exact-account
+  selection remain fail-closed, and no credential material is logged or
+  persisted by the change.
 
 ## Verification checkpoint
+
+### GPT-5.6 Direct entitlement regression
+
+- The network-free RED case reproduced the defect through the real Direct
+  resolver: a mocked unavailable roster was mislabeled as the same local 401 as
+  a confirmed omission. Its valid-200 omission control remained a denial.
+- A second RED case proved that unconfirmed discovery removed the shipped Sol
+  row from the Direct picker projection.
+- After the repair, the three focused entitlement, auth-context, and native-row
+  suites completed with 127 passed, 0 failed, and 510 assertions.
+- The complete discovery suite passed with 12 tests and 122 assertions,
+  including the real `/v1/models` shape: unconfirmed Direct discovery retains
+  the three shipped bare rows while omitting Daybreak.
+- The complete convergence/account-selector suite passed with 25 tests and 305
+  assertions, confirming that the same state emits no GPT-5.6 account-selector
+  rows and no bare Daybreak row.
+- The repository privacy scan passed after the implementation and documentation
+  updates.
+- Import-graph changed-mode was not a usable scoped gate in this inherited
+  worktree: its merge base selected 830 of 1,017 test files, then the existing
+  dependency tree failed resolution before meaningful coverage. No full-suite
+  result is claimed; the deterministic focused suites are the recorded gate.
+- Typecheck reached only three unchanged `RequestInit.timeout` diagnostics in
+  server transport files. The worktree has Bun 1.3.14 types while the lockfile
+  expects 1.4.0; the clean integration checkout produces the identical three
+  diagnostics, and no changed file produced one.
+- The documentation site built successfully from the isolated sources by
+  reusing the clean checkout's existing same-branch dependency tree: 401 pages,
+  the Pagefind index, and the sitemap completed without an install or lockfile
+  change. The temporary dependency junction was removed after the build.
+- The same integration branch later recovered after a process restart without
+  receiving this isolated, uncommitted patch. That is treated as evidence that
+  the trigger includes transient runtime, upstream, cache, or authentication
+  state; it does not remove the deterministic unknown-versus-denied flaw.
+- No live proxy request, lifecycle operation, credential read, or configuration
+  mutation was used to validate this repair.
 
 ### Latest conflict-area checks
 

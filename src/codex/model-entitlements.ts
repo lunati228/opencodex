@@ -9,7 +9,10 @@ import {
   MAIN_CODEX_ACCOUNT_ID,
   type NativeMainRefreshDependencies,
 } from "./main-account";
-import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "./catalog/native-models";
+import {
+  ACCOUNT_GATED_NATIVE_OPENAI_MODELS,
+  DIRECT_MODE_STATIC_ACCOUNT_GATED_NATIVE_OPENAI_MODELS,
+} from "./catalog/native-models";
 import { loadPersistedCodexRuntime } from "./runtime";
 import { codexRuntimeStateEpoch } from "./runtime";
 import upstreamModelsSnapshot from "./data/upstream-models.json";
@@ -205,9 +208,9 @@ const MODEL_ROSTER_VERSIONS_PER_ACCOUNT_MAX = 4;
  * The cache is bounded on write, but an in-flight request is not a cache entry: distinct
  * `client_version` values miss the flight key by design, so a caller cycling versions could open
  * arbitrarily many concurrent upstream requests, each holding an eight-second timer. This bounds
- * the concurrency itself. Exceeding it is reported as unconfirmed — the same fail-closed answer a
- * discovery failure produces, and cheaper than either queueing or serving another version's
- * roster.
+ * the concurrency itself. Exceeding it is reported as unconfirmed, preserving the same downstream
+ * mode-specific handling as a discovery failure and remaining cheaper than either queueing or
+ * serving another version's roster.
  */
 const MODEL_ROSTER_FLIGHTS_PER_ACCOUNT_MAX = 4;
 const DIRECT_CALLER_ACCOUNT_PREFIX = "__direct_codex__:";
@@ -516,12 +519,14 @@ function candidateAccountIds(config: Pick<OcxConfig, "codexAccounts">): string[]
  *   accounts with different entitlements. A global allowlist therefore exposed unusable rows.
  * - 검토한 주요 대안: Infer access from plan labels, learn only after a failed prompt, or rewrite
  *   Daybreak to its current physical model.
- * - 선택한 방식: Cache bounded authenticated `/models` rosters per credential generation and
- *   fail closed for unconfirmed accounts.
+ * - 선택한 방식: Cache bounded authenticated `/models` rosters per credential generation. Pool
+ *   and exact-account routing fail closed for unconfirmed accounts; Direct Sol/Terra/Luna requests
+ *   let their credential-owning canonical request decide when discovery is unavailable.
  * - 다른 대안 대신 이 방식을 선택한 이유: Plan names do not prove grants, post-failure
  *   learning spends a real turn, and model rewriting changes the requested product identity.
  * - 장점, 단점 및 영향: Catalog and routing share exact account evidence. Cold gated requests
- *   pay one bounded discovery call per account; discovery failure temporarily hides the gated row.
+ *   pay one bounded discovery call per account. Discovery failure hides Pool and exact-account rows;
+ *   Direct retains only its shipped Sol/Terra/Luna rows and defers final authorization upstream.
  */
 export async function resolveCodexModelEntitlements(
   config: Pick<OcxConfig, "codexAccounts">,
@@ -551,12 +556,18 @@ export async function resolveCodexModelEntitlements(
   };
 }
 
-/** Fail-closed entitlement check for a Direct request's own forwarded ChatGPT credential. */
+/**
+ * Entitlement check for a Direct request's own forwarded ChatGPT credential.
+ *
+ * For the statically shipped Direct GPT-5.6 rows, `undefined` means roster discovery was not
+ * confirmed, so the canonical upstream request remains the authority. `false` covers a successful
+ * roster response that omitted the model and every unconfirmed evidence-only gated model.
+ */
 export async function isDirectCallerEntitledToCodexModel(
   headers: Headers,
   modelId: string,
   options: Pick<CodexModelEntitlementResolveOptions, "fetcher" | "now" | "clientVersion"> = {},
-): Promise<boolean> {
+): Promise<boolean | undefined> {
   if (!ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(modelId)) return true;
   const credential = directCallerCredential(headers);
   if (!credential) return false;
@@ -567,7 +578,8 @@ export async function isDirectCallerEntitledToCodexModel(
     options.now ?? Date.now(),
     clientVersion,
   );
-  return result.confirmed && result.models.has(modelId);
+  if (result.confirmed) return result.models.has(modelId);
+  return DIRECT_MODE_STATIC_ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(modelId) ? undefined : false;
 }
 
 export function entitledCodexAccountIdsForModel(
@@ -591,6 +603,23 @@ export function availableAccountGatedNativeModels(
       && models.has(modelId)
     ))
   )));
+}
+
+/** Bare native rows available for the configured OpenAI account mode. */
+export function availableBareAccountGatedNativeModels(
+  snapshot: CodexModelEntitlementSnapshot,
+  mode: "direct" | "pool",
+): ReadonlySet<string> {
+  const available = new Set(availableAccountGatedNativeModels(
+    snapshot,
+    mode === "direct" ? new Set([MAIN_CODEX_ACCOUNT_ID]) : undefined,
+  ));
+  if (mode === "direct") {
+    for (const modelId of DIRECT_MODE_STATIC_ACCOUNT_GATED_NATIVE_OPENAI_MODELS) {
+      available.add(modelId);
+    }
+  }
+  return available;
 }
 
 /** Synchronous projection for management/catalog readers after a discovery pass. */
@@ -618,6 +647,25 @@ export function cachedAvailableAccountGatedNativeModels(
       && entry.models.has(modelId)
     ))
   )));
+}
+
+/** Synchronous counterpart of availableBareAccountGatedNativeModels for management readers. */
+export function cachedAvailableBareAccountGatedNativeModels(
+  mode: "direct" | "pool",
+  now = Date.now(),
+  clientVersion?: string | null,
+): ReadonlySet<string> {
+  const available = new Set(cachedAvailableAccountGatedNativeModels(
+    now,
+    mode === "direct" ? new Set([MAIN_CODEX_ACCOUNT_ID]) : undefined,
+    clientVersion,
+  ));
+  if (mode === "direct") {
+    for (const modelId of DIRECT_MODE_STATIC_ACCOUNT_GATED_NATIVE_OPENAI_MODELS) {
+      available.add(modelId);
+    }
+  }
+  return available;
 }
 
 export function isCodexModelEntitlementSnapshotCurrent(snapshot: CodexModelEntitlementSnapshot): boolean {

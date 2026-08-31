@@ -515,6 +515,29 @@ test("Direct convergence does not borrow a Pool-only Daybreak grant for the bare
   expect(models.filter(entry => entry.slug === "team/gpt-daybreak-blue-latest")).toHaveLength(1);
 });
 
+test("Direct convergence retains shipped GPT-5.6 rows when roster discovery is unavailable", async () => {
+  writeCatalog([nativeEntry()]);
+  const rosterAwareFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    if (url.hostname === "chatgpt.com" && url.pathname.endsWith("/models")) {
+      return new Response("unavailable", { status: 503 });
+    }
+    return rosterAwareFetch(input, init);
+  }) as typeof fetch;
+
+  const directConfig = config(true);
+  directConfig.providers.openai!.codexAccountMode = "direct";
+  const catalog = await convergeCatalog(directConfig);
+  const slugs = (catalog.models ?? []).map(entry => entry.slug);
+
+  for (const modelId of GPT56_NATIVE_MODELS) expect(slugs).toContain(modelId);
+  expect(slugs).not.toContain("gpt-daybreak-blue-latest");
+  for (const selector of ["desktop", "team"]) {
+    for (const modelId of GPT56_NATIVE_MODELS) expect(slugs).not.toContain(`${selector}/${modelId}`);
+  }
+});
+
 test("convergence preserves unrelated foreign rows alongside fresh configured provider rows", async () => {
   writeCatalog([
     nativeEntry(),

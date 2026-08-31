@@ -50,6 +50,11 @@ implied by configuration changes and requires explicit operator authorization.
 - Helper-turn model settings accept canonical provider names and unique
   case-insensitive provider aliases, matching runtime routing while unknown
   namespaces still fail closed before an unattended helper turn.
+- Direct ChatGPT routing distinguishes an unavailable account-model roster from
+  a confirmed denial. The shipped Sol/Terra/Luna rows remain selectable while
+  discovery is transiently unavailable, and the credential-owning upstream
+  request remains the final authority. Confirmed omissions still fail locally;
+  Pool accounts, exact account selectors, and Daybreak remain evidence-gated.
 - Invalid config recovery keeps the last known user cost overlays instead of
   silently replacing them with defaults.
 - External review and compaction retain their configured safe failure behavior.

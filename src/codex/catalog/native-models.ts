@@ -10,6 +10,21 @@ export const ACCOUNT_GATED_NATIVE_OPENAI_MODELS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Statically supported rows retained in the bare Direct catalog.
+ *
+ * Direct forwards the request owner's ChatGPT credential, which can differ from every stored
+ * account available during background catalog sync. Its picker therefore cannot treat missing
+ * local roster evidence as a denial for these shipped native models. Request-time discovery still
+ * rejects a confirmed omission; an unconfirmed discovery lets the canonical upstream request
+ * decide. Daybreak is intentionally absent because it is an account-native observed product row.
+ */
+export const DIRECT_MODE_STATIC_ACCOUNT_GATED_NATIVE_OPENAI_MODELS: ReadonlySet<string> = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
+
+/**
  * Account-native aliases whose Codex capabilities track another pinned native row.
  *
  * This is catalog metadata inheritance only. Routing always preserves the requested

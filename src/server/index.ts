@@ -66,6 +66,7 @@ import { codexAccountNamespaceEntries, isMainCodexAccountTarget } from "../codex
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
 import {
   availableAccountGatedNativeModels,
+  availableBareAccountGatedNativeModels,
   resolveCodexModelEntitlements,
 } from "../codex/model-entitlements";
 export {
@@ -1179,13 +1180,13 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         const { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } = await import("../codex/catalog/native-models");
         const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
         const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
-        const bareEligibleAccountIds = providerCodexAccountMode(
+        const openAiAccountMode = providerCodexAccountMode(
           OPENAI_CODEX_PROVIDER_ID,
           config.providers[OPENAI_CODEX_PROVIDER_ID],
-        ) === "direct" ? new Set([MAIN_CODEX_ACCOUNT_ID]) : undefined;
-        const availableBareGatedNativeSlugs = availableAccountGatedNativeModels(
+        ) === "direct" ? "direct" : "pool";
+        const availableBareGatedNativeSlugs = availableBareAccountGatedNativeModels(
           modelEntitlements,
-          bareEligibleAccountIds,
+          openAiAccountMode,
         );
         const availableAccountGatedNativeSlugs = availableAccountGatedNativeModels(modelEntitlements);
         const availableBareNativeSlugs = NATIVE_OPENAI_MODELS.filter(slug => (
@@ -1195,9 +1196,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableAccountGatedNativeSlugs.has(slug)
         ));
         const nativeSlugs = includeNativeOpenAi
-          ? nativeOpenAiSlugs().filter(slug => (
-              !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableBareGatedNativeSlugs.has(slug)
-            ))
+          ? nativeOpenAiSlugs(availableBareGatedNativeSlugs)
           : [];
         const disabledNatives = disabledNativeSlugs(config);
         const disabledModels = new Set(config.disabledModels ?? []);

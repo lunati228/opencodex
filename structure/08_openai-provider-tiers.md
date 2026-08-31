@@ -159,10 +159,14 @@ preserving a stale one would block every later migration.
   `gpt-daybreak-blue-latest` byte-for-byte; it never expands the bare list or substitutes Sol.
 - Account-gated native rows use each account's authenticated Codex `/models` roster as the
   availability authority. Pool selection excludes accounts whose confirmed roster omits the model;
-  selector rows are generated only for the mapped entitled account. The bare row uses any eligible
-  account in Pool mode but only main-account evidence in Direct mode; a Direct turn independently
-  checks the forwarded caller credential, or stored main when an admission bearer is substituted.
-  Discovery failures fail closed. If an
+  selector rows are generated only for the mapped entitled account. The Pool bare row uses any
+  eligible account. Direct retains the statically shipped Sol/Terra/Luna bare rows because its
+  request-owned credential may not exist during background catalog sync; Daybreak still requires
+  main-account evidence. A Direct turn independently checks the forwarded caller credential, or
+  stored main when an admission bearer is substituted. A confirmed roster omission is denied
+  locally. For Sol/Terra/Luna, unavailable or malformed Direct discovery falls through to the
+  canonical ChatGPT request as the final authority; Daybreak, Pool, and exact-account discovery
+  remain fail-closed. If an
   entitled account still receives the exact pre-stream unsupported-model 400, opencodex invalidates
   that account's roster and permits at most seven additional same-account sends, re-confirming the
   exact rejection and fresh grant before each later send; otherwise ordinary eligible-account
@@ -205,9 +209,11 @@ preserving a stale one would block every later migration.
 - 다른 대안 대신 이 방식을 선택한 이유: Plan labels and account position do not prove a grant;
   failure-only learning wastes a turn; permanent main binding rejects valid secondary grants; wire
   rewriting changes the requested product identity.
-- 장점, 단점 및 영향: Entitled accounts retain clean-install discovery while unentitled accounts
-  never receive the gated dispatch. A cold gated request may pay one bounded roster fetch per
-  account, and an unavailable discovery temporarily hides the model rather than guessing.
+- 장점, 단점 및 영향: Entitled accounts retain clean-install discovery while Pool and exact-account
+  dispatch never guess. A cold gated request may pay one bounded roster fetch per account. An
+  unavailable discovery temporarily hides Pool/selector rows; Direct keeps the shipped
+  Sol/Terra/Luna rows and lets the credential-owning upstream request decide instead of manufacturing
+  an account denial.
 - The two GPT-5.6 surfaces advertise different windows on purpose. API rows use 1,050,000
   context with 922,000 max input. Codex-login rows default to the live catalog 272,000
   (auto-compact 244,800) and only rise to 922,000 / 829,800 when the user turns the 1M

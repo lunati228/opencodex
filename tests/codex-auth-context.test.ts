@@ -70,7 +70,11 @@ import {
   codexAccountSelectionForTurn,
   tryAdmitTurn,
 } from "../src/server/lifecycle";
-import type { CodexModelEntitlementSnapshot } from "../src/codex/model-entitlements";
+import {
+  isDirectCallerEntitledToCodexModel,
+  resetCodexModelEntitlementCacheForTests,
+  type CodexModelEntitlementSnapshot,
+} from "../src/codex/model-entitlements";
 import { hasForwardableCodexBearer } from "../src/server/auth-cors";
 
 let testDir: string;
@@ -467,6 +471,60 @@ describe("Codex auth context", () => {
     expect(localDiscoveries).toBe(0);
   });
 
+  test("Direct roster discovery unavailability falls through to upstream authority", async () => {
+    resetCodexModelEntitlementCacheForTests();
+    const headers = new Headers({
+      authorization: "Bearer caller-token",
+      "chatgpt-account-id": "caller-account",
+    });
+
+    await expect(resolveCodexAuthContext(headers, config(), "direct", {
+      modelId: "gpt-5.6-sol",
+      isDirectCallerEntitledToCodexModel: (received, modelId) =>
+        isDirectCallerEntitledToCodexModel(received, modelId, {
+          clientVersion: "0.151.0-alpha.7.2",
+          fetcher: (async () => new Response("unavailable", { status: 503 })) as typeof fetch,
+          now: 1_000,
+        }),
+    })).resolves.toEqual({ kind: "main", accountId: null });
+  });
+
+  test("Direct Daybreak roster discovery unavailability remains fail-closed", async () => {
+    resetCodexModelEntitlementCacheForTests();
+    const headers = new Headers({
+      authorization: "Bearer caller-token",
+      "chatgpt-account-id": "caller-account",
+    });
+
+    await expect(resolveCodexAuthContext(headers, config(), "direct", {
+      modelId: "gpt-daybreak-blue-latest",
+      isDirectCallerEntitledToCodexModel: (received, modelId) =>
+        isDirectCallerEntitledToCodexModel(received, modelId, {
+          clientVersion: "0.151.0-alpha.7.2",
+          fetcher: (async () => new Response("unavailable", { status: 503 })) as typeof fetch,
+          now: 1_000,
+        }),
+    })).rejects.toThrow("The selected ChatGPT account does not support this model");
+  });
+
+  test("Direct roster confirmation without Sol remains a confirmed account denial", async () => {
+    resetCodexModelEntitlementCacheForTests();
+    const headers = new Headers({
+      authorization: "Bearer caller-token",
+      "chatgpt-account-id": "caller-account",
+    });
+
+    await expect(resolveCodexAuthContext(headers, config(), "direct", {
+      modelId: "gpt-5.6-sol",
+      isDirectCallerEntitledToCodexModel: (received, modelId) =>
+        isDirectCallerEntitledToCodexModel(received, modelId, {
+          clientVersion: "0.151.0-alpha.7.2",
+          fetcher: (async () => Response.json({ models: [] })) as typeof fetch,
+          now: 1_000,
+        }),
+    })).rejects.toThrow("The selected ChatGPT account does not support this model");
+  });
+
   test("Direct admission-bearer substitution checks the stored main account grant", async () => {
     const entitledMain: CodexModelEntitlementSnapshot = {
       modelsByAccount: new Map([[MAIN_CODEX_ACCOUNT_ID, new Set(["gpt-daybreak-blue-latest"])]]),
@@ -506,6 +564,74 @@ describe("Codex auth context", () => {
     expect(callerChecks).toBe(0);
     expect(claimCalls).toBe(1);
     expect(selectionReleases).toBe(1);
+  });
+
+  test("Direct admission-bearer substitution falls through an unconfirmed stored-main roster", async () => {
+    let selectionReleases = 0;
+    await expect(resolveCodexAuthContext(
+      new Headers({ authorization: "Bearer ocx-admission" }),
+      config(),
+      "direct",
+      {
+        modelId: "gpt-5.6-sol",
+        substituteMainCredentialForDirect: true,
+        beginCodexAccountSelection: () => ({
+          mainProfileDraining: false,
+          claimMainProfile: () => true,
+          release: () => { selectionReleases += 1; },
+        }),
+        resolveCodexModelEntitlements: async () => ({
+          modelsByAccount: new Map([[MAIN_CODEX_ACCOUNT_ID, new Set()]]),
+          confirmedAccountIds: new Set(),
+          credentialIdentities: new Map(),
+        }),
+      },
+    )).resolves.toEqual({ kind: "main", accountId: null });
+    expect(selectionReleases).toBe(1);
+  });
+
+  test("Direct admission-bearer substitution keeps unconfirmed Daybreak fail-closed", async () => {
+    await expect(resolveCodexAuthContext(
+      new Headers({ authorization: "Bearer ocx-admission" }),
+      config(),
+      "direct",
+      {
+        modelId: "gpt-daybreak-blue-latest",
+        substituteMainCredentialForDirect: true,
+        beginCodexAccountSelection: () => ({
+          mainProfileDraining: false,
+          claimMainProfile: () => true,
+          release: () => {},
+        }),
+        resolveCodexModelEntitlements: async () => ({
+          modelsByAccount: new Map([[MAIN_CODEX_ACCOUNT_ID, new Set()]]),
+          confirmedAccountIds: new Set(),
+          credentialIdentities: new Map(),
+        }),
+      },
+    )).rejects.toThrow("The selected ChatGPT account does not support this model");
+  });
+
+  test("Direct admission-bearer substitution preserves a confirmed stored-main denial", async () => {
+    await expect(resolveCodexAuthContext(
+      new Headers({ authorization: "Bearer ocx-admission" }),
+      config(),
+      "direct",
+      {
+        modelId: "gpt-5.6-sol",
+        substituteMainCredentialForDirect: true,
+        beginCodexAccountSelection: () => ({
+          mainProfileDraining: false,
+          claimMainProfile: () => true,
+          release: () => {},
+        }),
+        resolveCodexModelEntitlements: async () => ({
+          modelsByAccount: new Map([[MAIN_CODEX_ACCOUNT_ID, new Set()]]),
+          confirmedAccountIds: new Set([MAIN_CODEX_ACCOUNT_ID]),
+          credentialIdentities: new Map(),
+        }),
+      },
+    )).rejects.toThrow("The selected ChatGPT account does not support this model");
   });
 
   test("Direct admission-bearer substitution fails closed during native-main drain", async () => {
