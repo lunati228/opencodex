@@ -45,6 +45,8 @@ function deferred<T>() {
 function harness(options: {
   portFree?: boolean;
   failContexts?: Set<number>;
+  hostMemoryOutcomes?: readonly ("ok" | "low")[];
+  probeOutcomes?: readonly ("ok" | "readiness-failed" | "host-memory-low")[];
   terminateFailures?: number;
 } = {}) {
   const launches: LocalRuntimeCandidate[] = [];
@@ -56,10 +58,17 @@ function harness(options: {
   let holdFirstLaunch = false;
   let nextPid = 4000;
   let terminateFailures = options.terminateFailures ?? 0;
+  const hostMemoryOutcomes = [...(options.hostMemoryOutcomes ?? [])];
+  const probeOutcomes = [...(options.probeOutcomes ?? [])];
   const handles: LocalRuntimeHandle[] = [];
   const deps: LocalRuntimeSupervisorDeps = {
     now: () => 1_722_000_000_000,
     assertProfileFiles: profileId => { verifiedProfiles.push(profileId); },
+    assertHostMemoryAvailable: () => {
+      if ((hostMemoryOutcomes.shift() ?? "ok") === "low") {
+        throw new Error("LOCAL_RUNTIME_HOST_MEMORY_LOW");
+      }
+    },
     isPortFree: async () => options.portFree !== false,
     launch: async candidate => {
       launches.push(candidate);
@@ -81,6 +90,13 @@ function harness(options: {
       return handle;
     },
     probe: async (_handle, candidate) => {
+      const probeOutcome = probeOutcomes.shift() ?? "ok";
+      if (probeOutcome === "host-memory-low") {
+        throw new Error("LOCAL_RUNTIME_HOST_MEMORY_LOW");
+      }
+      if (probeOutcome === "readiness-failed") {
+        throw new Error("LOCAL_RUNTIME_READINESS_FAILED");
+      }
       if (options.failContexts?.has(candidate.nCtx)) {
         throw new Error("LOCAL_RUNTIME_READINESS_FAILED");
       }
@@ -165,6 +181,42 @@ describe("LocalRuntimeSupervisor", () => {
     expect(supervisor.status(cfg)).toMatchObject({
       state: "blocked-foreign-port",
       failure: "foreign-port",
+    });
+  });
+
+  test("reports low host memory before launch without creating a child", async () => {
+    const h = harness({ hostMemoryOutcomes: ["low"] });
+    const supervisor = new LocalRuntimeSupervisor(h.deps);
+    const cfg = config();
+
+    supervisor.requestStart(cfg);
+    await supervisor.whenIdle();
+
+    expect(h.launches).toHaveLength(0);
+    expect(h.stops).toHaveLength(0);
+    expect(supervisor.status(cfg)).toMatchObject({
+      state: "failed",
+      failure: "host-memory-low",
+    });
+  });
+
+  test("terminates the exact child when host memory falls during readiness", async () => {
+    const h = harness({
+      hostMemoryOutcomes: ["ok"],
+      probeOutcomes: ["host-memory-low"],
+    });
+    const supervisor = new LocalRuntimeSupervisor(h.deps);
+    const cfg = config();
+
+    supervisor.requestStart(cfg);
+    await supervisor.whenIdle();
+
+    expect(h.launches).toHaveLength(1);
+    expect(h.stops).toEqual([4000]);
+    expect(supervisor.status(cfg)).toMatchObject({
+      state: "failed",
+      failure: "host-memory-low",
+      pid: null,
     });
   });
 
@@ -287,6 +339,64 @@ describe("LocalRuntimeSupervisor", () => {
     expect(cfg.localRuntime?.nCtx).toBe(131072);
   });
 
+  test("does not launch a candidate or rollback while the host-memory reserve is violated", async () => {
+    const h = harness({
+      hostMemoryOutcomes: ["ok", "low", "low"],
+    });
+    const supervisor = new LocalRuntimeSupervisor(h.deps);
+    const cfg = config();
+    supervisor.requestStart(cfg);
+    await supervisor.whenIdle();
+
+    const revision = supervisor.status(cfg).revision;
+    supervisor.requestApply(cfg, {
+      profileId: LOCAL_RUNTIME_PROFILE_ID,
+      nCtx: 131_072,
+      expectedRevision: revision,
+    });
+    await supervisor.whenIdle();
+
+    expect(h.launches).toHaveLength(1);
+    expect(h.stops).toEqual([4000]);
+    expect(supervisor.status(cfg)).toMatchObject({
+      state: "failed",
+      failure: "host-memory-low",
+      pid: null,
+    });
+  });
+
+  test("rolls back after memory recovers while preserving the candidate diagnostic", async () => {
+    const h = harness({
+      hostMemoryOutcomes: ["ok", "ok", "ok"],
+      probeOutcomes: ["ok", "host-memory-low", "ok"],
+    });
+    const supervisor = new LocalRuntimeSupervisor(h.deps);
+    const cfg = config();
+    supervisor.requestStart(cfg);
+    await supervisor.whenIdle();
+
+    const revision = supervisor.status(cfg).revision;
+    supervisor.requestApply(cfg, {
+      profileId: LOCAL_RUNTIME_PROFILE_ID,
+      nCtx: 131_072,
+      expectedRevision: revision,
+    });
+    await supervisor.whenIdle();
+
+    expect(h.launches.map(candidate => candidate.nCtx)).toEqual([
+      QWEN_DEFAULT_CONTEXT,
+      131_072,
+      QWEN_DEFAULT_CONTEXT,
+    ]);
+    expect(h.stops).toEqual([4000, 4001]);
+    expect(supervisor.status(cfg)).toMatchObject({
+      state: "rolled-back",
+      failure: "host-memory-low",
+      effective: { nCtx: QWEN_DEFAULT_CONTEXT },
+      pid: 4002,
+    });
+  });
+
   test("retains ownership and effective state after a failed stop so it can be retried", async () => {
     const h = harness({ terminateFailures: 1 });
     const supervisor = new LocalRuntimeSupervisor(h.deps);
@@ -372,6 +482,10 @@ describe("local runtime readiness errors", () => {
     [
       { kind: "failed", failure: "start-failed" } as const,
       "Local model failed to start.",
+    ],
+    [
+      { kind: "failed", failure: "host-memory-low" } as const,
+      "Local model could not start because available system memory fell below its configured safety reserve.",
     ],
     [
       { kind: "failed", failure: "candidate-readiness-failed" } as const,

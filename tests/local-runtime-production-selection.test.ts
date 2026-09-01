@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { selectManagedLocalRuntimeReadyOperation } from "../src/local-runtime/production";
+import {
+  hasMinimumAvailableHostMemory,
+  selectManagedLocalRuntimeReadyOperation,
+} from "../src/local-runtime/production";
 import { QWEN_DEFAULT_CONTEXT } from "../src/local-runtime/context-tiers";
 import { LOCAL_RUNTIME_PROFILE_ID } from "../src/local-runtime/profile";
 import type { LocalRuntimeStatus } from "../src/local-runtime/supervisor";
@@ -40,6 +43,14 @@ function status(overrides: Partial<LocalRuntimeStatus>): LocalRuntimeStatus {
 }
 
 describe("managed local runtime on-demand operation selection", () => {
+  test("compares available bytes against an optional MiB safety reserve", () => {
+    const oneMiB = 1024 * 1024;
+
+    expect(hasMinimumAvailableHostMemory(1, undefined)).toBe(true);
+    expect(hasMinimumAvailableHostMemory(6_144 * oneMiB, 6_144)).toBe(true);
+    expect(hasMinimumAvailableHostMemory((6_144 * oneMiB) - 1, 6_144)).toBe(false);
+  });
+
   test("a stopped supervisor cold-starts the desired context instead of applying and rolling back", () => {
     const operation = selectManagedLocalRuntimeReadyOperation(
       config(),

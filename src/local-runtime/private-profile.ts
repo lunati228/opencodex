@@ -7,6 +7,10 @@ export const PRIVATE_LOCAL_RUNTIME_PROFILE_ENV =
   "OPENCODEX_LOCAL_RUNTIME_PROFILE";
 const PRIVATE_LOCAL_RUNTIME_PROFILE_FILE = "local-runtime.private.json";
 const MAX_PRIVATE_PROFILE_BYTES = 128 * 1024;
+const BYTES_PER_MIB = 1024 * 1024;
+const MAX_MINIMUM_AVAILABLE_MEMORY_MIB = Math.floor(
+  Number.MAX_SAFE_INTEGER / BYTES_PER_MIB,
+);
 
 const PRIVATE_PROFILE_KEYS = new Set([
   "schemaVersion",
@@ -24,6 +28,7 @@ const PRIVATE_PROFILE_KEYS = new Set([
   "serverPredictionLimit",
   "launchArgs",
   "environment",
+  "minimumAvailableMemoryMiB",
   "measuredTokensPerSecond",
   "measurementNote",
 ]);
@@ -66,6 +71,7 @@ export interface PrivateLocalRuntimeProfile {
   readonly serverPredictionLimit: number;
   readonly launchArgs: readonly string[];
   readonly environment: Readonly<Record<string, string>>;
+  readonly minimumAvailableMemoryMiB?: number;
   readonly measuredTokensPerSecond: number;
   readonly measurementNote: string;
 }
@@ -169,6 +175,14 @@ export function parsePrivateLocalRuntimeProfile(
     || parsed.measuredTokensPerSecond < 0
     || !isBoundedString(parsed.measurementNote, 4096)
   ) invalid();
+  const minimumAvailableMemoryMiB = parsed.minimumAvailableMemoryMiB;
+  if (
+    minimumAvailableMemoryMiB !== undefined
+    && (
+      !isPositiveSafeInteger(minimumAvailableMemoryMiB)
+      || minimumAvailableMemoryMiB > MAX_MINIMUM_AVAILABLE_MEMORY_MIB
+    )
+  ) invalid();
 
   return Object.freeze({
     schemaVersion: 1,
@@ -186,6 +200,9 @@ export function parsePrivateLocalRuntimeProfile(
     serverPredictionLimit: parsed.serverPredictionLimit,
     launchArgs: validateLaunchArgs(parsed.launchArgs),
     environment: validateEnvironment(parsed.environment),
+    ...(minimumAvailableMemoryMiB === undefined
+      ? {}
+      : { minimumAvailableMemoryMiB }),
     measuredTokensPerSecond: parsed.measuredTokensPerSecond,
     measurementNote: parsed.measurementNote,
   });

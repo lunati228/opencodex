@@ -166,6 +166,7 @@ export type EnsureReadyResult =
 
 const LOCAL_RUNTIME_FAILURE_MESSAGES = {
   "foreign-port": "Local model could not start because its loopback port is already in use.",
+  "host-memory-low": "Local model could not start because available system memory fell below its configured safety reserve.",
   "candidate-readiness-failed": "Local model failed its readiness check.",
   "rollback-failed": "Local model failed its readiness check and rollback also failed.",
   "stop-failed": "Local model could not start because the previous runtime could not be stopped.",

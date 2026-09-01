@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
 } from "node:fs";
+import { freemem } from "node:os";
 import { parse, resolve, sep } from "node:path";
 import { isPortAvailable } from "../server/ports";
 import {
@@ -48,6 +49,7 @@ import {
 const STARTUP_DEADLINE_MS = 15 * 60 * 1000;
 const POLL_MS = 2_000;
 const PROBE_TIMEOUT_MS = 3_000;
+const BYTES_PER_MIB = 1024 * 1024;
 const verifiedPrivateProfiles = new Map<
   LocalRuntimeProfileId,
   PrivateLocalRuntimeProfile
@@ -117,6 +119,24 @@ function verifiedPrivateProfile(
     throw new Error("LOCAL_RUNTIME_PRIVATE_PROFILE_NOT_VERIFIED");
   }
   return privateProfile;
+}
+
+export function hasMinimumAvailableHostMemory(
+  availableBytes: number,
+  minimumAvailableMemoryMiB: number | undefined,
+): boolean {
+  return minimumAvailableMemoryMiB === undefined
+    || (
+      Number.isFinite(availableBytes)
+      && availableBytes >= minimumAvailableMemoryMiB * BYTES_PER_MIB
+    );
+}
+
+function assertHostMemoryAvailable(profileId: LocalRuntimeProfileId): void {
+  const { minimumAvailableMemoryMiB } = verifiedPrivateProfile(profileId);
+  if (!hasMinimumAvailableHostMemory(freemem(), minimumAvailableMemoryMiB)) {
+    throw new Error("LOCAL_RUNTIME_HOST_MEMORY_LOW");
+  }
 }
 
 /**
@@ -275,7 +295,9 @@ async function probe(
   let exited = false;
   void handle.exited.then(() => { exited = true; });
   while (Date.now() < deadline) {
+    assertHostMemoryAvailable(candidate.profileId);
     if (exited) throw new Error("LOCAL_RUNTIME_READINESS_FAILED");
+    let identityVerified = false;
     try {
       const health = await fetch(fixedEndpoint("/health"), {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -297,7 +319,7 @@ async function probe(
         const buildInfo = props.build_info;
         const modelPath = props.model_path;
         const ownerPid = listenerPid();
-        if (
+        identityVerified = Boolean(
           modelFound
           && nCtx === candidate.nCtx
           && props.total_slots === 1
@@ -308,16 +330,19 @@ async function probe(
           && normalizeWindowsPath(modelPath) === normalizeWindowsPath(privateProfile.modelPath)
           && (process.platform !== "win32" || ownerPid === handle.pid)
           && !exited
-        ) {
-          return {
-            ...candidate,
-            model: profile.modelId,
-            verifiedAt: new Date().toISOString(),
-          };
-        }
+        );
       }
     } catch {
       // Loading returns non-200 health and transient connection errors.
+    }
+    if (identityVerified) {
+      assertHostMemoryAvailable(candidate.profileId);
+      if (exited) throw new Error("LOCAL_RUNTIME_READINESS_FAILED");
+      return {
+        ...candidate,
+        model: profile.modelId,
+        verifiedAt: new Date().toISOString(),
+      };
     }
     await Bun.sleep(POLL_MS);
   }
@@ -346,6 +371,7 @@ function persistLastKnownGood(
 export const productionLocalRuntimeDeps: LocalRuntimeSupervisorDeps = {
   now: Date.now,
   assertProfileFiles,
+  assertHostMemoryAvailable,
   isPortFree: () => isPortAvailable(LOCAL_RUNTIME_PORT, LOCAL_RUNTIME_HOST),
   launch: spawnHandle,
   probe,

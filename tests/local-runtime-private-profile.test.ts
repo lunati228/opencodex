@@ -29,10 +29,32 @@ const fixture = {
 
 describe("private managed-local runtime profile", () => {
   test("parses a bounded machine-local profile without publishing it in source", () => {
-    expect(parsePrivateLocalRuntimeProfile(
+    const parsed = parsePrivateLocalRuntimeProfile(
       JSON.stringify(fixture),
       "qwen38-27b-q6kl",
-    )).toEqual(fixture);
+    );
+
+    expect(parsed).toEqual(fixture);
+    expect("minimumAvailableMemoryMiB" in parsed).toBe(false);
+  });
+
+  test("accepts and preserves an optional host-memory safety reserve", () => {
+    const parsed = parsePrivateLocalRuntimeProfile(JSON.stringify({
+      ...fixture,
+      minimumAvailableMemoryMiB: 6_144,
+    }), "qwen38-27b-q6kl");
+
+    expect(parsed.minimumAvailableMemoryMiB).toBe(6_144);
+  });
+
+  test("rejects host-memory reserves that cannot be converted safely to bytes", () => {
+    const firstUnsafeMiB = Math.floor(Number.MAX_SAFE_INTEGER / (1024 * 1024)) + 1;
+    for (const value of [0, -1, 1.5, "6144", firstUnsafeMiB]) {
+      expect(() => parsePrivateLocalRuntimeProfile(JSON.stringify({
+        ...fixture,
+        minimumAvailableMemoryMiB: value,
+      }), "qwen38-27b-q6kl")).toThrow("LOCAL_RUNTIME_PRIVATE_PROFILE_INVALID");
+    }
   });
 
   test("rejects endpoint, context, and reasoning overrides in private launch args", () => {

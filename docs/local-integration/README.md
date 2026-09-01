@@ -12,6 +12,10 @@ runtime integration. It is intentionally not an operator runbook.
 - Model identity, artifact verification, launch arguments, device placement,
   local paths, measurements, and recovery data are loaded only from ignored
   machine-local configuration.
+- Large local model files may use substantial host memory while loading; a
+  machine-local profile may disable memory mapping when preserving available
+  system RAM matters. This is an operational setting, not part of the public
+  model identity or catalog contract.
 - The local runtime is loopback-only and is not started without explicit
   operator authorization.
 - First-request cold loading remains bounded, while a terminal supervisor

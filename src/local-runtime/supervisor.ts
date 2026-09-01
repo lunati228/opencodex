@@ -19,6 +19,7 @@ export type LocalRuntimeState =
 
 export type LocalRuntimeFailure =
   | "foreign-port"
+  | "host-memory-low"
   | "candidate-readiness-failed"
   | "rollback-failed"
   | "start-failed"
@@ -43,6 +44,9 @@ export interface LocalRuntimeSupervisorDeps {
    * profile's model no matter which one is being launched.
    */
   assertProfileFiles(profileId: LocalRuntimeProfileId): void | Promise<void>;
+  assertHostMemoryAvailable(
+    profileId: LocalRuntimeProfileId,
+  ): void | Promise<void>;
   isPortFree(): Promise<boolean>;
   launch(candidate: LocalRuntimeCandidate): Promise<LocalRuntimeHandle>;
   probe(
@@ -126,6 +130,11 @@ function cloneCandidate(
   value: LocalRuntimeCandidate | null,
 ): LocalRuntimeCandidate | null {
   return value ? { ...value } : null;
+}
+
+function isHostMemoryLow(error: unknown): boolean {
+  return error instanceof Error
+    && error.message === "LOCAL_RUNTIME_HOST_MEMORY_LOW";
 }
 
 export class LocalRuntimeSupervisor implements LocalRuntimeControl {
@@ -283,6 +292,9 @@ export class LocalRuntimeSupervisor implements LocalRuntimeControl {
       if (error instanceof Error && error.message === "LOCAL_RUNTIME_FOREIGN_PORT") {
         this.state = "blocked-foreign-port";
         this.failure = "foreign-port";
+      } else if (isHostMemoryLow(error)) {
+        this.state = "failed";
+        this.failure = "host-memory-low";
       } else {
         this.state = "failed";
         this.failure = "start-failed";
@@ -310,15 +322,19 @@ export class LocalRuntimeSupervisor implements LocalRuntimeControl {
       this.failure = "stop-failed";
       return;
     }
+    let candidateFailure: LocalRuntimeFailure;
     try {
       const effective = await this.launchAndVerify(config, candidate);
       this.effective = effective;
       this.lastKnownGood = { ...candidate };
       this.state = "running";
       return;
-    } catch {
+    } catch (error) {
       this.effective = null;
-      this.failure = "candidate-readiness-failed";
+      candidateFailure = isHostMemoryLow(error)
+        ? "host-memory-low"
+        : "candidate-readiness-failed";
+      this.failure = candidateFailure;
     }
 
     if (!rollback) {
@@ -330,11 +346,13 @@ export class LocalRuntimeSupervisor implements LocalRuntimeControl {
       this.effective = effective;
       this.lastKnownGood = rollback;
       this.state = "rolled-back";
-      this.failure = "candidate-readiness-failed";
-    } catch {
+      this.failure = candidateFailure;
+    } catch (error) {
       this.effective = null;
       this.state = "failed";
-      this.failure = "rollback-failed";
+      this.failure = candidateFailure === "host-memory-low" || isHostMemoryLow(error)
+        ? "host-memory-low"
+        : "rollback-failed";
     }
   }
 
@@ -356,6 +374,8 @@ export class LocalRuntimeSupervisor implements LocalRuntimeControl {
     candidate: LocalRuntimeCandidate,
   ): Promise<LocalRuntimeEffective> {
     await this.deps.assertProfileFiles(candidate.profileId);
+    if (this.shutdownRequested) throw new Error("LOCAL_RUNTIME_SHUTDOWN");
+    await this.deps.assertHostMemoryAvailable(candidate.profileId);
     if (this.shutdownRequested) throw new Error("LOCAL_RUNTIME_SHUTDOWN");
     if (!(await this.deps.isPortFree())) {
       throw new Error("LOCAL_RUNTIME_FOREIGN_PORT");
