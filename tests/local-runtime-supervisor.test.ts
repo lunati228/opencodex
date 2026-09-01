@@ -5,6 +5,10 @@ import {
   type LocalRuntimeSupervisorDeps,
 } from "../src/local-runtime/supervisor";
 import {
+  ensureLocalRuntimeReady,
+  localRuntimeReadinessErrorMessage,
+} from "../src/local-runtime/on-demand";
+import {
   LOCAL_RUNTIME_PROFILE_ID,
   type LocalRuntimeCandidate,
 } from "../src/local-runtime/profile";
@@ -164,6 +168,72 @@ describe("LocalRuntimeSupervisor", () => {
     });
   });
 
+  test.each([
+    {
+      label: "a foreign listener",
+      options: { portFree: false },
+      expectedState: "blocked-foreign-port",
+      expectedFailure: "foreign-port",
+    },
+    {
+      label: "a readiness failure",
+      options: { failContexts: new Set([QWEN_DEFAULT_CONTEXT]) },
+      expectedState: "failed",
+      expectedFailure: "start-failed",
+    },
+  ] as const)(
+    "on-demand startup reports $label after the first poll",
+    async ({ options, expectedState, expectedFailure }) => {
+      const h = harness(options);
+      const supervisor = new LocalRuntimeSupervisor(h.deps);
+      const cfg = config();
+      let now = 0;
+
+      const result = await ensureLocalRuntimeReady({
+        canRoute: () => supervisor.canRoute(),
+        requestStart: () => {
+          supervisor.requestStart(cfg);
+        },
+        readStatus: () => supervisor.status(cfg),
+        now: () => now,
+        sleep: async ms => {
+          await supervisor.whenIdle();
+          now += ms;
+        },
+        pollMs: 500,
+        timeoutMs: 5_000,
+      });
+
+      expect(result).toEqual({ kind: "failed", failure: expectedFailure });
+      expect(now).toBe(500);
+      expect(now).toBeLessThan(5_000);
+      expect(supervisor.status(cfg)).toMatchObject({
+        state: expectedState,
+        failure: expectedFailure,
+      });
+    },
+  );
+
+  test("a terminal failure observed exactly at the deadline beats a generic timeout", async () => {
+    let now = 0;
+    let failed = false;
+    const result = await ensureLocalRuntimeReady({
+      canRoute: () => false,
+      requestStart: () => {},
+      readStatus: () => failed
+        ? { state: "failed", failure: "start-failed" }
+        : { state: "starting", failure: null },
+      now: () => now,
+      sleep: async ms => {
+        now += ms;
+        if (now >= 5_000) failed = true;
+      },
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toEqual({ kind: "failed", failure: "start-failed" });
+  });
+
   test("rejects concurrent and stale mutations", async () => {
     const h = harness();
     h.setHoldFirstLaunch(true);
@@ -213,6 +283,7 @@ describe("LocalRuntimeSupervisor", () => {
       lastKnownGood: { profileId: LOCAL_RUNTIME_PROFILE_ID, nCtx: 131072 },
       failure: "candidate-readiness-failed",
     });
+    expect(supervisor.canRoute()).toBe(true);
     expect(cfg.localRuntime?.nCtx).toBe(131072);
   });
 
@@ -288,5 +359,38 @@ describe("LocalRuntimeSupervisor", () => {
       effective: null,
       pid: null,
     });
+  });
+});
+
+describe("local runtime readiness errors", () => {
+  test.each([
+    ["timeout", "Local model is still loading. Send the message again in a moment."],
+    [
+      { kind: "failed", failure: "foreign-port" } as const,
+      "Local model could not start because its loopback port is already in use.",
+    ],
+    [
+      { kind: "failed", failure: "start-failed" } as const,
+      "Local model failed to start.",
+    ],
+    [
+      { kind: "failed", failure: "candidate-readiness-failed" } as const,
+      "Local model failed its readiness check.",
+    ],
+    [
+      { kind: "failed", failure: "rollback-failed" } as const,
+      "Local model failed its readiness check and rollback also failed.",
+    ],
+    [
+      { kind: "failed", failure: "stop-failed" } as const,
+      "Local model could not start because the previous runtime could not be stopped.",
+    ],
+  ] as const)("maps %j to a safe 503 message", (result, message) => {
+    expect(localRuntimeReadinessErrorMessage(result)).toBe(message);
+  });
+
+  test("successful results have no error message", () => {
+    expect(localRuntimeReadinessErrorMessage("already-ready")).toBeUndefined();
+    expect(localRuntimeReadinessErrorMessage("started")).toBeUndefined();
   });
 });

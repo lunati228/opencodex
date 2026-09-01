@@ -14,6 +14,9 @@ runtime integration. It is intentionally not an operator runbook.
   machine-local configuration.
 - The local runtime is loopback-only and is not started without explicit
   operator authorization.
+- First-request cold loading remains bounded, while a terminal supervisor
+  failure returns a sanitized 503 on the next readiness poll rather than
+  consuming the remainder of the load timeout.
 
 ## Publication rule
 

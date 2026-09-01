@@ -337,7 +337,9 @@ import {
 import { qwenContextVariantForModelId } from "../../local-runtime/context-tiers";
 import {
   acquireManagedLocalRuntimeUse,
+  localRuntimeReadinessErrorMessage,
   localRuntimeUseOnDone,
+  type EnsureReadyResult,
   type ManagedLocalRuntimeUseLease,
 } from "../../local-runtime/on-demand";
 import { ensureManagedLocalRuntimeReady } from "../../local-runtime/production";
@@ -2779,11 +2781,12 @@ async function handleResponsesInner(
   logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
   logCtx.configuredSpeedLabel = requestLogSpeedLabel(logCtx.configuredServiceTier);
 
-  const localStillLoadingResponse = () => formatErrorResponse(
-    503,
-    "server_error",
-    "Local model is still loading. Send the message again in a moment.",
-  );
+  const localRuntimeReadinessFailureResponse = (
+    result: EnsureReadyResult,
+  ): Response | undefined => {
+    const message = localRuntimeReadinessErrorMessage(result);
+    return message ? formatErrorResponse(503, "server_error", message) : undefined;
+  };
   const retainManagedLocalRuntimeUse = (candidate: RouteResult): void => {
     if (isManagedLocalProviderProjection(candidate.providerName, candidate.provider)) {
       localRuntimeUseLease ??= acquireManagedLocalRuntimeUse();
@@ -2941,7 +2944,8 @@ async function handleResponsesInner(
         QWEN_PROFILE.modelId,
       )?.contextWindow;
       const ready = await ensureManagedLocalRuntimeReady(config, requestedLocalContext);
-      if (ready === "timeout") return localStillLoadingResponse();
+      const readinessFailure = localRuntimeReadinessFailureResponse(ready);
+      if (readinessFailure) return readinessFailure;
       try {
         selection = selectInitialRoute();
         route = selection.route;
@@ -3262,7 +3266,8 @@ async function handleResponsesInner(
   if (isManagedLocalProviderProjection(route.providerName, route.provider)
     && finalLocalContext !== undefined) {
     const ready = await ensureManagedLocalRuntimeReady(config, finalLocalContext);
-    if (ready === "timeout") return localStillLoadingResponse();
+    const readinessFailure = localRuntimeReadinessFailureResponse(ready);
+    if (readinessFailure) return readinessFailure;
   }
 
   // Encrypted child tasks may only reach the canonical native backend. This check

@@ -17,6 +17,9 @@
   discovery from a confirmed account denial. Sol/Terra/Luna remain present in
   the Direct bare catalog; Pool, exact account selectors, and Daybreak retain
   confirmed-evidence requirements.
+- Managed Qwen on-demand startup now distinguishes a slow load from a terminal
+  supervisor failure. Terminal failures return a sanitized 503 after the next
+  readiness poll instead of holding the Codex turn until the load deadline.
 
 ## Merge reconciliation introduced here
 
@@ -60,6 +63,27 @@
   persisted by the change.
 
 ## Verification checkpoint
+
+### Managed Qwen terminal startup regression
+
+- The RED regression used the real supervisor harness to reproduce both a
+  foreign listener and a failed readiness check. Before the repair, both paths
+  consumed the full fake timeout and returned only `timeout`.
+- After the repair, the focused on-demand, supervisor, profile, production
+  selection, and private-profile slice completed with 61 passed and 0 failed.
+- The adjacent helper-turn and local-runtime management slice completed with
+  55 passed and 0 failed. The complete compaction-routing suite, which imports
+  the changed Responses request core, completed with 50 passed and 0 failed.
+- The core/Lab import-boundary guard completed with 17 passed and 0 failed.
+- The repository-wide wrapper completed once in 921 seconds with exit 1. Its
+  parallel lane reported 147 failures and 70 skips; the failures surfaced in
+  unchanged baseline/environment tests, while all six serial isolation lanes
+  passed. This is recorded as a non-green full-suite result, not as a pass.
+- Typecheck reaches only the same three inherited `RequestInit.timeout`
+  diagnostics produced by the clean integration baseline; no changed file
+  produces a diagnostic.
+- No local model, proxy lifecycle command, loopback request, or live runtime
+  probe was used for this repair.
 
 ### GPT-5.6 Direct entitlement regression
 

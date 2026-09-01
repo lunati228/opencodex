@@ -1,3 +1,8 @@
+import type {
+  LocalRuntimeFailure,
+  LocalRuntimeStatus,
+} from "./supervisor";
+
 /**
  * On-demand lifecycle for the managed local model.
  *
@@ -142,20 +147,61 @@ export interface EnsureReadyDeps {
   canRoute: () => boolean;
   /** Ask the supervisor to start. Idempotent — a start already in flight must not be duplicated. */
   requestStart: () => void;
+  /**
+   * Observe supervisor state without waiting for the outer timeout. A terminal startup failure is
+   * different from a slow load and must be returned as soon as the supervisor publishes it.
+   */
+  readStatus?: () => Pick<LocalRuntimeStatus, "state" | "failure">;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   timeoutMs?: number;
   pollMs?: number;
 }
 
-export type EnsureReadyResult = "already-ready" | "started" | "timeout";
+export type EnsureReadyResult =
+  | "already-ready"
+  | "started"
+  | "timeout"
+  | { kind: "failed"; failure: LocalRuntimeFailure };
+
+const LOCAL_RUNTIME_FAILURE_MESSAGES = {
+  "foreign-port": "Local model could not start because its loopback port is already in use.",
+  "candidate-readiness-failed": "Local model failed its readiness check.",
+  "rollback-failed": "Local model failed its readiness check and rollback also failed.",
+  "stop-failed": "Local model could not start because the previous runtime could not be stopped.",
+  "start-failed": "Local model failed to start.",
+} satisfies Record<LocalRuntimeFailure, string>;
+
+function observedTerminalFailure(
+  status: Pick<LocalRuntimeStatus, "state" | "failure"> | undefined,
+): LocalRuntimeFailure | null {
+  if (
+    !status
+    || (status.state !== "failed" && status.state !== "blocked-foreign-port")
+  ) {
+    return null;
+  }
+  return status.failure;
+}
+
+/** Safe user-facing explanation for a non-successful readiness result. */
+export function localRuntimeReadinessErrorMessage(
+  result: EnsureReadyResult,
+): string | undefined {
+  if (result === "already-ready" || result === "started") return undefined;
+  if (result === "timeout") {
+    return "Local model is still loading. Send the message again in a moment.";
+  }
+  return LOCAL_RUNTIME_FAILURE_MESSAGES[result.failure];
+}
 
 /**
  * Bring the local engine up and wait until it can serve, so a request that names the local model
  * blocks on the load instead of being rejected.
  *
- * Returns `"timeout"` rather than throwing: the caller turns that into a retryable error naming
- * the real cause, which is strictly more useful than the "at capacity" message this replaces.
+ * Returns `"timeout"` for a genuinely slow load and a structured failure once the supervisor has
+ * reached a terminal state. The caller turns either result into a safe 503 rather than leaving the
+ * request looking active after startup has already stopped.
  */
 export async function ensureLocalRuntimeReady(deps: EnsureReadyDeps): Promise<EnsureReadyResult> {
   if (deps.canRoute()) return "already-ready";
@@ -171,6 +217,10 @@ export async function ensureLocalRuntimeReady(deps: EnsureReadyDeps): Promise<En
   while (deps.now() < deadline) {
     await deps.sleep(pollMs);
     if (deps.canRoute()) return "started";
+    const failure = observedTerminalFailure(deps.readStatus?.());
+    if (failure) return { kind: "failed", failure };
   }
-  return deps.canRoute() ? "started" : "timeout";
+  if (deps.canRoute()) return "started";
+  const failure = observedTerminalFailure(deps.readStatus?.());
+  return failure ? { kind: "failed", failure } : "timeout";
 }

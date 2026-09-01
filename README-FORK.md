@@ -25,6 +25,10 @@ logs, screenshots, credentials, account data, and recovery layout.
 
 The managed local listener remains loopback-only. A local Qwen run is never
 implied by configuration changes and requires explicit operator authorization.
+An on-demand request waits only while the supervisor is still starting or
+restarting. A terminal launch, readiness, stop, rollback, or foreign-listener
+failure returns a sanitized 503 on the next readiness poll instead of leaving
+the Codex turn apparently active until the cold-load timeout.
 
 ## Integrated routing behavior
 

@@ -461,6 +461,7 @@ export async function ensureManagedLocalRuntimeReady(
       }
       managedSupervisor.requestStart(config, operation.candidate);
     },
+    readStatus: () => managedSupervisor.status(config),
     now: Date.now,
     sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
   });
