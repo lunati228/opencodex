@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { handleAccessCommand } from "../src/cli/access";
 import { handleAgentCommand } from "../src/cli/agent";
 import { handleComboCommand } from "../src/cli/combo";
@@ -11,6 +12,8 @@ import { handleModelsRuntimeCommand } from "../src/cli/models-runtime";
 import { handleProviderRuntimeCommand } from "../src/cli/provider-runtime";
 import { providerQuotaLine } from "../src/cli/account-extended";
 import { formatAccountTable } from "../src/cli/account";
+import { handleConnectCommand } from "../src/cli/connect";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 type Recorded = { path: string; method: string; body: unknown };
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
@@ -263,9 +266,19 @@ describe("headless GUI parity CLI", () => {
       // today — listed now so wiring the GUI later cannot introduce an unreachable endpoint.
       ["/api/external-bundles", "ocx provider bundles"],
       ["/api/helper-turn-models", "ocx models helper-turns"],
+      ["/api/keys/rotate", "ocx access key rotate"],
+      ["/api/keys/rotate/commit", "ocx access key rotate commit"],
+      ["/api/session/logout", "(none — GUI current-session logout)"],
       ["/api/logs", "ocx observe"],
       ["/api/lab", "ocx lab"],
       ["/api/config", "ocx config"],
+      // The client machine plane. These are served by the connected client's own loopback
+      // listener rather than the hub, and each one mirrors a connect-family command:
+      // status/clients -> `ocx connect status`, sync -> `ocx sync`, shim -> the client
+      // integration commands, disconnect -> `ocx disconnect`. hub-relay is the fixed-target
+      // relay those same commands use to reach the hub, so it has no separate CLI verb of
+      // its own — it is the transport selected by `--management-transport relay`.
+      ["/api/machine", "ocx connect/disconnect/sync"],
       // The prompt composer is a GUI-first surface: it reads Codex's own layer
       // inventory and writes one config key. There is no headless equivalent
       // today, and claiming one would be worse than saying so here.
@@ -322,6 +335,38 @@ describe("headless GUI parity CLI", () => {
     const clearCode = await handleProviderRuntimeCommand("edit", ["agw", "--headers", "-", "--json"], clearRuntime.deps);
     expect(clearCode).toBe(0);
     expect(clearRuntime.requests[0]?.body).toEqual({ headers: null });
+  });
+
+  test("provider keychain status/store/restore drive /api/providers/keychain", async () => {
+    const status = fakeRuntime();
+    expect(await handleProviderRuntimeCommand("keychain", ["relay", "--json"], status.deps)).toBe(0);
+    expect(status.requests[0]).toMatchObject({ path: "/api/providers/keychain?name=relay" });
+
+    const store = fakeRuntime();
+    expect(await handleProviderRuntimeCommand("keychain", ["relay", "store", "--json"], store.deps)).toBe(0);
+    expect(store.requests[0]).toMatchObject({ path: "/api/providers/keychain", method: "POST", body: { name: "relay", action: "store" } });
+
+    const bad = fakeRuntime();
+    expect(await handleProviderRuntimeCommand("keychain", ["relay", "explode"], bad.deps)).toBe(2);
+    expect(bad.requests).toEqual([]);
+  });
+
+  test("provider edit --retain-models sends the csv list and - clears it", async () => {
+    const runtime = fakeRuntime();
+    const code = await handleProviderRuntimeCommand("edit", [
+      "agw", "--retain-models", " gemini-3.7-flash, other-id ,gemini-3.7-flash", "--json",
+    ], runtime.deps);
+    expect(code).toBe(0);
+    expect(runtime.requests).toEqual([{
+      path: "/api/providers?name=agw",
+      method: "PATCH",
+      body: { retainModels: ["gemini-3.7-flash", "other-id"] },
+    }]);
+
+    const clearRuntime = fakeRuntime();
+    const clearCode = await handleProviderRuntimeCommand("edit", ["agw", "--retain-models", "-", "--json"], clearRuntime.deps);
+    expect(clearCode).toBe(0);
+    expect(clearRuntime.requests[0]?.body).toEqual({ retainModels: null });
   });
 
   test("provider edit rejects malformed --headers JSON without a request", async () => {
@@ -576,6 +621,25 @@ describe("headless GUI parity CLI", () => {
     }
   });
 
+  test("remote connect status is headless and revoke refuses disconnected state before hub traffic", async () => {
+    let requests = 0;
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await handleConnectCommand(["status", "--json"], {
+        fetchImpl: async () => { requests += 1; return new Response(); },
+      })).toBe(0);
+      expect(await handleConnectCommand(["revoke", "--admin-token-stdin", "--json"], {
+        stdinImpl: Readable.from(["ocx_admin_test\n"]),
+        fetchImpl: async () => { requests += 1; return new Response(); },
+      })).toBe(1);
+      expect(requests).toBe(0);
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   test("Grok include edits the persisted exclusion set before apply", async () => {
     const runtime = fakeRuntime((req) => {
       const url = new URL(req.url);
@@ -614,6 +678,41 @@ describe("headless GUI parity CLI", () => {
     ]);
   });
 
+  test("enable can waive a conflict, and only when the flag is typed", async () => {
+    /*
+     * The parity this closes: the dashboard could resolve a conflict and the CLI
+     * could not, which strands the user who has no browser -- an SSH session, or
+     * an agent driving the proxy. That dead end is the reason the overwrite path
+     * exists, so leaving it GUI-only reproduces it for half the users.
+     */
+    const runtime = fakeRuntime();
+    expect(await handleClientIntegrationCommand(["enable", "--client", "hermes", "--json"], runtime.deps)).toBe(0);
+    expect(await handleClientIntegrationCommand(
+      ["enable", "--client", "hermes", "--overwrite-conflict", "--json"],
+      runtime.deps,
+    )).toBe(0);
+    expect(runtime.requests.map(row => row.body)).toEqual([
+      // Absent rather than false: an older proxy sees the request it always saw.
+      { enabled: true },
+      { enabled: true, overwriteConflict: true },
+    ]);
+  });
+
+  test("a conflict waiver cannot ride along with disable", async () => {
+    /*
+     * Forcing a DISABLE over a conflict deletes a block we do not own, which is
+     * the one thing the refusal exists to prevent. The route answers 400; failing
+     * locally names the offending flag instead of surfacing a generic request
+     * failure, and sends nothing.
+     */
+    const runtime = fakeRuntime();
+    expect(await handleClientIntegrationCommand(
+      ["disable", "--client", "hermes", "--overwrite-conflict", "--json"],
+      runtime.deps,
+    )).not.toBe(0);
+    expect(runtime.requests).toEqual([]);
+  });
+
   test("a client integration command without its required target fails instead of guessing", async () => {
     const runtime = fakeRuntime();
     // No `--client`: picking one for the user would write a config they never named.
@@ -639,7 +738,7 @@ describe("headless GUI parity CLI", () => {
     } finally {
       if (previous === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previous;
-      rmSync(home, { recursive: true, force: true });
+      removeTreeWithRetry(home);
     }
   });
 
@@ -669,7 +768,7 @@ describe("headless GUI parity CLI", () => {
     } finally {
       if (previous === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previous;
-      rmSync(home, { recursive: true, force: true });
+      removeTreeWithRetry(home);
     }
   });
 
@@ -709,7 +808,7 @@ describe("headless GUI parity CLI", () => {
     } finally {
       if (previous === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previous;
-      rmSync(home, { recursive: true, force: true });
+      removeTreeWithRetry(home);
     }
   });
 
@@ -734,7 +833,7 @@ describe("headless GUI parity CLI", () => {
     } finally {
       if (previous === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previous;
-      rmSync(home, { recursive: true, force: true });
+      removeTreeWithRetry(home);
     }
   });
   test("config set releases the manual pin when it writes the selection order", async () => {
@@ -772,7 +871,7 @@ describe("headless GUI parity CLI", () => {
     } finally {
       if (previous === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previous;
-      rmSync(home, { recursive: true, force: true });
+      removeTreeWithRetry(home);
     }
   });
 });

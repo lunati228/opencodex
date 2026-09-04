@@ -172,6 +172,8 @@ function isTestFixtureFile(file: string): boolean {
 }
 
 function isAllowedHomePath(file: string, username: string): boolean {
+  // The official oven/bun image's fixed service user, not a workstation identity.
+  if ((file.startsWith("docs-site/") || file.startsWith("devlog/")) && username === "bun") return true;
   if (file === DEVLOG_PUBLICATION_PROOF_FILE && username === DEVLOG_PUBLICATION_PROOF_HOME_USERNAME) return true;
   if (isTestFixtureFile(file)) {
     return true;
@@ -330,7 +332,14 @@ function addOperatorDocumentFindings(findings: Finding[], file: string, text: st
   );
 }
 
-export function scanTextForPrivacy(file: string, text: string): Finding[] {
+/**
+ * Scan already-read text.
+ *
+ * Split out of `scanFile` so a test can exercise the REAL detectors. This module runs its
+ * scan on import, so a test that cannot call a function ends up re-declaring the patterns
+ * instead — and then stays green even if a detector here is deleted.
+ */
+export function scanText(file: string, text: string): Finding[] {
   const findings: Finding[] = [];
   addFindingsForPattern(
     findings,
@@ -374,6 +383,19 @@ export function scanTextForPrivacy(file: string, text: string): Finding[] {
     /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{35}|npm_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})\b/g,
     match => isAllowedTokenLooking(file, match[0]),
   );
+  /*
+   * Meta Model API keys. The pattern above does not match them: the measured shape is
+   * `LLM|<16 digits>|<27 chars>`, verified against a real key's grammar (never its value).
+   * The `meta-muse` provider imports one of these, so a leak has to be detectable here.
+   */
+  addFindingsForPattern(
+    findings,
+    file,
+    text,
+    "meta-api-key",
+    /\bLLM\|\d+\|[A-Za-z0-9_-]{10,}\b/g,
+    match => isAllowedTokenLooking(file, match[0]),
+  );
   addFindingsForPattern(
     findings,
     file,
@@ -413,8 +435,10 @@ export function scanTextForPrivacy(file: string, text: string): Finding[] {
   return findings;
 }
 
+export const scanTextForPrivacy = scanText;
+
 function scanFile(file: string): Finding[] {
-  return scanTextForPrivacy(file, readFileSync(file, "utf-8"));
+  return scanText(file, readFileSync(file, "utf-8"));
 }
 
 export function formatFinding(finding: Finding): string {

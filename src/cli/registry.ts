@@ -65,7 +65,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     summary: "Run as a background service.",
     details: [
       "With no subcommand, installs when absent or repairs/restarts an existing service.",
-      "`restart` is an alias of `repair` and does not re-register an installed service.",
+      "`restart` aliases `repair`; healthy Windows tasks are reused, while stale definitions may re-register and elevate.",
       "Use `ocx service status` to see diagnostics and log paths.",
     ],
   },
@@ -95,6 +95,24 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     ],
   },
   { name: "ensure", usage: "ocx ensure", summary: "Ensure the proxy is running and Codex config/cache are current." },
+  {
+    name: "connect",
+    usage: "ocx connect <url> [--management-url <url>] (--pairing-code-stdin | --admin-token-stdin) [--clients codex,claude] [--management-transport direct|relay] [--catalog-timeout <seconds>] [--no-sync]",
+    summary: "Connect this machine to a remote OpenCodex hub without persisting the one-time authority.",
+    details: [
+      "Status: ocx connect status [--json]",
+      "Rotate or recover: ocx connect rotate (--pairing-code-stdin | --admin-token-stdin) [--json]",
+      "Revoke while connected: ocx connect revoke --admin-token-stdin [--json]",
+      "Machine resources: /api/machine/status, /api/machine/shim, /api/machine/clients, /api/machine/sync, /api/machine/disconnect, and the fixed /api/machine/hub-relay namespace.",
+      "Remote browser self-logout uses /api/session/logout from the GUI; it is distinct from client disconnect and key revocation.",
+      "Credentials are accepted only through stdin; argv and environment credential forms are not supported.",
+    ],
+  },
+  {
+    name: "disconnect",
+    usage: "ocx disconnect [--keep-catalog] [--json]",
+    summary: "Restore local client state offline and clear the remote-hub connection.",
+  },
   {
     name: "sync",
     usage: "ocx sync [--restart-codex] [--restart-desktop-app]",
@@ -137,7 +155,15 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   { name: "login", usage: "ocx login <provider>", summary: "OAuth or API-key login for a provider." },
   { name: "logout", usage: "ocx logout <provider>", summary: "Remove a stored provider login." },
-  { name: "gui", usage: "ocx gui", summary: "Open the opencodex dashboard." },
+  {
+    name: "gui",
+    usage: "ocx gui [pair --origin <browser-origin> [--json]]",
+    summary: "Open the opencodex dashboard or create a secret single-use remote pairing grant.",
+    details: [
+      "Pairing requires an explicit allowed --origin; there is no localhost or config-derived default.",
+      "The printed grant is secret, single-use, short-lived, and must not be persisted.",
+    ],
+  },
   {
     name: "update",
     usage: "ocx update [--tag latest|preview]",
@@ -254,12 +280,16 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     name: "access",
     usage: "ocx access <key|endpoints|models|test> ...",
     summary: "Manage OpenCodex admission API keys and inspect external endpoints.",
+    details: [
+      "Key rotation start uses POST /api/keys/rotate and returns the replacement secret once.",
+      "Commit uses POST /api/keys/rotate/commit; abort uses DELETE /api/keys/rotate with the returned rotation id.",
+    ],
   },
-  { name: "api-key", usage: "ocx api-key <list|create|remove> ...", summary: "Alias of ocx access key." },
+  { name: "api-key", usage: "ocx api-key <list|create|rotate|remove> ...", summary: "Alias of ocx access key." },
   {
     name: "export",
-    usage: "ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh|mcode|zcode|prime> [--json] [--out <path>] [--force]",
-    summary: "Print a client config (OpenCode, Pi, OMP, Hermes, OpenClaw, Kimi Code, Gajae Code, DeepSeek Harness, MiniMax Code, ZCode, Prime Agent) wired to the running proxy.",
+    usage: "ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh|mcode|zcode|prime|aside> [--json] [--out <path>] [--force]",
+    summary: "Print a client config (OpenCode, Pi, OMP, Hermes, OpenClaw, Kimi Code, Gajae Code, DeepSeek Harness, MiniMax Code, ZCode, Prime Agent, Aside) wired to the running proxy.",
     details: [
       "--json prints the generated document as JSON on stdout; use --out for the client's native format.",
       "--out <path> writes the native config there and refuses to replace an existing file without --force.",
@@ -282,8 +312,13 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   {
     name: "system",
-    usage: "ocx system <status|settings|startup|diagnostics|sync|update> ...",
-    summary: "Manage headless runtime settings, startup, sync, diagnostics, and updates.",
+    usage: "ocx system <status|settings|startup|diagnostics|sync|codex-app-server|codex-restart|update|codex-cli-update> ...",
+    summary: "Manage headless runtime settings, startup, sync, diagnostics, OpenCodex updates, and read-only Codex CLI inspection.",
+    details: [
+      "system update manages OpenCodex itself.",
+      "ocx system codex-cli-update check [--json]",
+      "The Codex CLI inspection command makes no package-registry request, does not execute Codex or npm, install or repair software, control a process, or write configuration or cache state.",
+    ],
   },
   {
     name: "config",
@@ -323,11 +358,12 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     summary: "Launch opencode wired to the proxy (runtime provider config).",
     details: [
       "Ensures the proxy is running, then execs `opencode` with the generated `provider.opencodex`",
-      "block injected through OpenCode's inline runtime layer (`OPENCODE_CONFIG_CONTENT`). Any",
-      "existing inline config in the environment is preserved and only `provider.opencodex` is",
-      "overwritten for this launch.",
-      "Global/project opencode.json may be read to warn about an existing provider.opencodex",
-      "override; on-disk files are never modified.",
+      "and `providers.opencodex` blocks injected through OpenCode's inline runtime layer",
+      "(`OPENCODE_CONFIG_CONTENT`). Any existing inline config in the environment is preserved",
+      "and only `provider.opencodex` and `providers.opencodex` are overwritten for this launch.",
+      "Only the V2 block (`providers.opencodex`) carries the reasoning-effort variants.",
+      "Global/project opencode.json may be read to warn about an existing provider.opencodex or",
+      "providers.opencodex override; on-disk files are never modified.",
       "Routed models appear in the model picker as opencodex/<provider>/<model>.",
       "Stop using `ocx opencode` and plain `opencode` behaves exactly as before.",
     ],

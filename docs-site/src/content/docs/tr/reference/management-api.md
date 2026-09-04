@@ -240,7 +240,7 @@ dolaşmamalıdır. Depoya yıldız verip vermeyeceğini kullanıcı seçmelidir.
 | --- | --- | --- |
 | `GET /api/system/memory` | Skaler süreç, yığın (heap), akış, yanıt durumu, denetleyici ve aktif tur metriklerini döndürün | — |
 | `POST /api/system/restart` | İstemci enjeksiyonunu kaldırmadan boşaltma duyarlı bir süreç yeniden başlatması başlatın | 202 döndürür; tekrarlanan çağrılar mevcut boşaltmayı bildirir |
-| `POST /api/stop` | Servisi durdurun, yerel Codex'i geri yükleyin, yönetilen Grok enjeksiyonunu kaldırın ve proxy'yi boşaltın | 409 servis sahipliği çakışması |
+| `POST /api/stop` | Servisi durdurun, yerel Codex'i geri yükleyin, yönetilen Grok enjeksiyonunu kaldırın ve proxy'yi boşaltın | 409 servis sahipliği çakışması; çağıran `ocx stop` değilken bir Windows Görev Zamanlayıcı sarmalayıcısı proxy'yi yeniden başlatabiliyorsa 409 `respawnable_service` (hiçbir şey değiştirilmez); kurulu yönetici durmayı reddederse 409; Görev Zamanlayıcı durumu okunamıyorsa 409 `service_state_unknown` (hiçbir şey değiştirilmez; sorguyu onarıp yeniden deneyin) |
 
 ### Codex kimlik doğrulama yetkilendirmesi
 
@@ -307,4 +307,8 @@ rehberli iş akışını sağlar. Başsız ana bilgisayarlar ve otomasyon için 
 olduğunda veya işlem başarısız olduğunda sıfır olmayan bir sonuç döndürürler.
 Doğrudan HTTP, yukarıdaki tam uç nokta sözleşmelerine ihtiyaç duyan
 entegrasyonlar için en yararlıdır.
+
+## Uzak oturumlar ve veri anahtarı döndürme
+
+`POST /api/keys/rotate {id}` on dakikalık geçişi başlatır ve yeni sırrı yalnızca bir kez döndürür. `POST /api/keys/rotate/commit {id,rotationId}` onaylar, `DELETE /api/keys/rotate {id,rotationId}` iptal eder. Yönetim kimlik doğrulaması gerekir; veri anahtarı bunları çağıramaz. `POST /api/session/logout` mevcut `gui-session`, eşleşen Origin ve CSRF ister. Admin token 403 alır ve onay oturumu oluşturamaz.
 

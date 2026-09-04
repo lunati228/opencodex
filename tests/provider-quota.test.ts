@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as authApi from "../src/codex/auth-api";
@@ -19,6 +20,7 @@ import {
   parseXaiCreditsResponse,
   QUOTA_RESPONSE_MAX_BYTES,
   readProviderQuotaJsonForTests,
+  setAntigravityAccountQuotaTransportForTests,
   setProviderQuotaBeforePublishForTests,
 } from "../src/providers/quota";
 import type { OcxConfig } from "../src/types";
@@ -89,12 +91,21 @@ beforeEach(() => {
   clearCodexUpstreamHealth();
   clearProviderQuotaCache();
   setProviderQuotaBeforePublishForTests(null);
+  // Antigravity now uses the pinned transport; keep these report-level fixtures
+  // offline while the dedicated account-quota tests exercise transport policy.
+  setAntigravityAccountQuotaTransportForTests({
+    resolveAddresses: async () => ({ hostname: "daily-cloudcode-pa.googleapis.com", addresses: [{ address: "8.8.8.8", family: 4 }], privateNetwork: false }),
+    pinnedPost: async (url, _address, body, signal, options) => globalThis.fetch(url, {
+      method: "POST", body, signal, headers: options?.headers, redirect: "manual",
+    }),
+  });
 });
 
 afterEach(() => {
   setPlatformForTests("linux");
   resetHardenedStateForTests();
   globalThis.fetch = originalFetch;
+  setAntigravityAccountQuotaTransportForTests(null);
   clearAccountQuota();
   clearProviderQuotaCache();
   setProviderQuotaBeforePublishForTests(null);
@@ -102,8 +113,8 @@ afterEach(() => {
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = previousCodexHome;
-  rmSync(opencodexHome, { recursive: true, force: true });
-  rmSync(codexHome, { recursive: true, force: true });
+  removeTreeWithRetry(opencodexHome);
+  removeTreeWithRetry(codexHome);
   setPlatformForTests(null);
   resetHardenedStateForTests();
 });
@@ -347,7 +358,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen.find(row => row.url.includes("anthropic.com"))?.authorization).toBe("Bearer claude-access-secret");
     expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.authorization).toBe("Bearer agy-access-secret");
     expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.body).toBe(JSON.stringify({ project: "agy-project-secret" }));
-    expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.redirect).toBe("error");
+    expect(seen.find(row => row.url.includes("cloudcode-pa.googleapis.com"))?.redirect).toBe("manual");
     expect(seen.find(row => row.url === "https://api.kimi.com/coding/v1/usages")?.authorization).toBe("Bearer kimi-access-secret");
   });
 
@@ -446,7 +457,7 @@ describe("fetchProviderQuotaReports", () => {
       url: "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
       authorization: "Bearer agy-access-secret",
       body: JSON.stringify({ project: "agy-project-secret" }),
-      redirect: "error",
+      redirect: "manual",
     }]);
   });
 
@@ -1973,6 +1984,12 @@ describe("fetchProviderQuotaReports", () => {
     expect(JSON.stringify(openai?.aggregation)).not.toMatch(/(?:total|consumed|remaining)Weight|projectedUsedPercent/i);
   });
 
+  // #3198 changed what "tolerate" means here: an uncalibrated plan — a name the weight map
+  // does not list, or a malformed non-string value like the `{ tier: "pro" }` below (both
+  // normalize to undefined via codexPlanKey) — is now counted at the baseline seat weight
+  // instead of being excluded from the aggregate. Exclusion silently overstated coverage;
+  // baseline counting is the visibly conservative estimate. The account still shows up in
+  // `unknownPlanAccounts` so the operator can see the estimate is conservative for that seat.
   test("pool reports tolerate a malformed persisted plan through cache and aggregation", async () => {
     saveCodexAccountCredential("added", {
       accessToken: "added-access",
@@ -2001,12 +2018,14 @@ describe("fetchProviderQuotaReports", () => {
 
     const refreshed = await fetchProviderQuotaReports(config, true);
     const openai = refreshed.reports.find(row => row.provider === "openai");
-    expect(openai?.quota.weeklyPercent).toBe(11);
+    // Both seats weigh the same (malformed -> baseline, "plus" -> calibrated baseline), so the
+    // blend of 77 and 11 lands at 44 — not the 11 the old exclusion contract produced.
+    expect(openai?.quota.weeklyPercent).toBe(44);
     expect(openai?.aggregation).toMatchObject({
-      includedAccounts: 1,
-      excludedAccounts: 1,
+      includedAccounts: 2,
+      excludedAccounts: 0,
       unknownPlanAccounts: 1,
-      incomplete: true,
+      incomplete: false,
       currentAccount: { quota: { weeklyPercent: 77 } },
     });
     expect(openai?.aggregation?.currentAccount).not.toHaveProperty("plan");

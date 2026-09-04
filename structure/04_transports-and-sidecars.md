@@ -15,7 +15,7 @@ existing task. Explicit `ocx service install` remains the operator-owned registr
 - 검토한 주요 대안: Always repair; keep a boolean installed check; infer presence from saved state alone; use a tri-state live registration probe.
 - 선택한 방식: Validate arguments first, then use a narrow tri-state platform probe only for a bare backend-neutral invocation; route installed to repair, absent to install, and unknown to a refusal.
 - 다른 대안 대신 이 방식을 선택한 이유: Saved state can be stale and unconditional repair breaks first install, while a boolean cannot represent the exact uncertainty that must fail closed.
-- 장점, 단점 및 영향: Existing services avoid UAC and registration churn, invalid input performs no status I/O, and uncertain Windows hosts require one explicit status/installation decision instead of risking a destructive guess.
+- 장점, 단점 및 영향: Healthy existing services avoid UAC and registration churn; stale Windows scheduler definitions may be refreshed and require elevation. Invalid input performs no status I/O, and uncertain Windows hosts require one explicit status/installation decision instead of risking a destructive guess.
 
 ## Windows startup ownership listing reuse
 
@@ -625,6 +625,39 @@ and terminal events remain buffered until the iteration validates. Only the firs
 response headers/status and any 429 key rotations are handled eagerly. A failure before downstream
 SSE starts returns non-2xx JSON; once headers have started the final response, a generation failure
 is emitted as `response.failed` SSE.
+
+### Pre-stream provider input overflow
+
+A provider HTTP 413 received before streaming starts is unambiguous request-size refusal, but raw
+relay is not compatible with Codex: Codex classifies the unknown status as retryable and resends the
+same oversized turn through its reconnect budget. For a streaming Responses caller, OpenCodex
+therefore converts the final 413 (after any adapter-owned bounded image retry) into one HTTP-200 SSE
+`response.failed` event with `error.code = context_length_exceeded` and `retryable = false`. Codex
+recognizes that terminal contract, marks the context as full, and can run its own compaction policy
+on the next turn. Combo routing treats 413 as a stop condition and performs the conversion only at
+the outer client boundary, so the failed target is never recorded as a successful combo attempt.
+
+Non-streaming callers retain the original 413 status/body contract. The proxy never silently drops
+prompts or images: it does not own the client's transcript, and deleting input would hide data that
+was never analyzed. The streaming error message is proxy-owned and bounded instead of relaying the
+upstream 413 body, which may echo request content.
+
+[Decision Log]
+- 목적과 의도: Stop Codex from replaying a provider-rejected oversized turn and hand the failure
+  to the client's existing context-compaction semantics.
+- 기존 구현 및 제약 조건: Providers can reject before SSE starts; Codex retries raw HTTP 413,
+  while it recognizes terminal `response.failed` `context_length_exceeded`; the proxy cannot edit
+  Codex's persisted transcript safely.
+- 검토한 주요 대안: Relay 413 unchanged; return HTTP 400 JSON; silently remove media or old turns;
+  synthesize a successful assistant warning.
+- 선택한 방식: Preserve 413 for non-streaming clients, but map the final streaming 413 to one
+  redacted non-retryable Responses failure at the outer request boundary.
+- 다른 대안 대신 이 방식을 선택한 이유: Raw 413 causes a retry loop, HTTP JSON does not enter
+  Codex's context-window path, and silent deletion or fake success loses user intent without fixing
+  transcript ownership.
+- 장점, 단점 및 영향: Codex stops reconnecting and can compact on the next turn; no input is
+  silently lost. The failed turn itself is not auto-replayed, and callers must retry after Codex
+  compacts or reduce the current input.
 
 Kiro transient HTTP 429 recovery is coordinated process-wide after the first throttle: healthy
 traffic remains parallel, but throttled followers wait behind one abort-aware probe and share a

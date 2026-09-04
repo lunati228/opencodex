@@ -17,6 +17,7 @@ import {
 } from "../src/claude/desktop-3p";
 import { moveDesktopRoute, reconcileDesktopProfile, setDesktopFamilyDefault } from "../src/claude/desktop-profile";
 import { resolveInboundModel } from "../src/claude/inbound";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 describe("Claude Desktop 3P models", () => {
   test("resolves the actual cross-platform Claude Desktop config library (#539)", () => {
@@ -271,7 +272,7 @@ describe("Claude Desktop 3P models", () => {
       expect(readFileSync(path, "utf8")).toBe("stable bytes\n");
       expect(readFileSync(`${path}.bak`, "utf8")).toBe("stable bytes\n");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeTreeWithRetry(dir);
     }
   });
 
@@ -323,7 +324,7 @@ describe("Claude Desktop 3P models", () => {
     } finally {
       if (previous === undefined) delete process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
       else process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = previous;
-      rmSync(dir, { recursive: true, force: true });
+      removeTreeWithRetry(dir);
     }
   });
 

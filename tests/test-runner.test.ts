@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import {
@@ -28,6 +28,7 @@ import {
   windowsIdentityPowerShellCommandForTests,
   windowsIdentityPowerShellSpawnOptionsForTests,
 } from "../src/codex/user-identity";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 
 function runGit(cwd: string, ...args: string[]): string {
@@ -354,7 +355,7 @@ describe("bun test argv", () => {
         changedFiles: ["head.txt"],
       });
     } finally {
-      for (const fixture of fixtures) rmSync(fixture, { recursive: true, force: true });
+      for (const fixture of fixtures) removeTreeWithRetry(fixture);
     }
   });
 
@@ -406,7 +407,7 @@ describe("bun test argv", () => {
       expect(output).toContain("PARALLEL");
       expect(existsSync(markerPath)).toBe(true);
     } finally {
-      rmSync(fixtureRoot, { recursive: true, force: true });
+      removeTreeWithRetry(fixtureRoot);
     }
   });
 });
@@ -689,7 +690,7 @@ describe("bun test user lock", () => {
       expect(entry.uid).toBe(process.getuid());
       expect(entry.mode & 0o777).toBe(0o700);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 
@@ -757,7 +758,7 @@ describe("bun test user lock", () => {
       owner.release();
       expect(existsSync(lockPath)).toBe(false);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 
@@ -792,7 +793,7 @@ describe("bun test user lock", () => {
       })).rejects.toThrow("refusing to create or reclaim");
       expect(existsSync(lockPath)).toBe(false);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 
@@ -814,7 +815,7 @@ describe("bun test user lock", () => {
       replacement.release();
       expect(existsSync(lockPath)).toBe(false);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 
@@ -834,7 +835,7 @@ describe("bun test user lock", () => {
       expect(waits).toBe(1);
       owner.release();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 
@@ -850,7 +851,7 @@ describe("bun test user lock", () => {
       expect(lock.acquired).toBe(false);
       expect(existsSync(lockPath)).toBe(false);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 });

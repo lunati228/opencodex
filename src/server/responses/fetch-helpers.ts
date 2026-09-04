@@ -79,7 +79,8 @@ export function providerFetch(
     // Managed external credentials are bound to an exact configured HTTPS
     // origin. Never let Fetch replay Authorization through an upstream redirect.
     const guardedInit = provider.externalProviderRef ? { ...init, redirect: "error" as const } : init;
-    if (typeof input === "string" && guardedInit && shouldUseCodexWsUpstream(input, guardedInit, runtime)) {
+    const upstreamWebsocket = provider.upstreamWebsocket === true;
+    if (typeof input === "string" && guardedInit && shouldUseCodexWsUpstream(input, guardedInit, runtime, upstreamWebsocket)) {
       // A WS fallback must retain the same HTTP-version policy as the non-WS branch.
       return codexWsUpstreamFetch(input, guardedInit, httpFetch, runtime);
     }

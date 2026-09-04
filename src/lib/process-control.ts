@@ -29,6 +29,24 @@ export interface GracefulStopIo {
   waitExit?: (pid: number, timeoutMs: number) => boolean;
   env?: Record<string, string | undefined>;
   exitTimeoutMs?: number;
+  /**
+   * Nonce of the pending-teardown receipt this caller claimed.
+   *
+   * `ocx stop` sets it because it restores shared client config itself, only after
+   * proving a stopped Task Scheduler did not respawn the proxy (#3008). The nonce is what
+   * makes the deferral an owned obligation rather than a flag anyone can set: the proxy
+   * honours it only when it names the receipt actually on disk. Direct callers omit it
+   * and keep the self-contained behaviour.
+   */
+  deferSharedTeardownNonce?: string;
+  /**
+   * Endpoint the caller already resolved for this pid.
+   *
+   * `ocx stop` records this same snapshot in its pending-teardown receipt. Re-reading the
+   * runtime file here could pick up a different one, which would make the receipt name an
+   * endpoint the stop never contacted — and recovery probes exactly that endpoint.
+   */
+  runtimeEndpoint?: { hostname: string; port: number };
 }
 
 /**
@@ -81,7 +99,7 @@ export async function stopProxyGracefully(
   keepCodexRouting = false,
 ): Promise<GracefulStopResult> {
   const readRuntime = io.readRuntime ?? readRuntimePort;
-  const runtime = readRuntime(pid);
+  const runtime = io.runtimeEndpoint ?? readRuntime(pid);
   if (!runtime?.port) return false;
   const env = io.env ?? process.env;
   const headers: Record<string, string> = {};
@@ -89,8 +107,17 @@ export async function stopProxyGracefully(
   if (token) headers["x-opencodex-api-key"] = token;
   const fetchFn = io.fetchFn ?? fetch;
   try {
+    // `ocx stop` asks the proxy NOT to restore shared client config: it does that itself,
+    // after verifying a stopped Task Scheduler did not respawn the proxy (#3008). Letting
+    // the child do it means a survivor found seconds later has already lost its config.
+    const query = new URLSearchParams();
+    if (keepCodexRouting) query.set("keep-codex-routing", "1");
+    if (io.deferSharedTeardownNonce) {
+      query.set("deferSharedTeardown", "1");
+      query.set("teardownNonce", io.deferSharedTeardownNonce);
+    }
     const stopUrl = `http://${gracefulStopHost(runtime.hostname)}:${runtime.port}/api/stop`
-      + (keepCodexRouting ? "?keep-codex-routing=1" : "");
+      + (query.size > 0 ? `?${query}` : "");
     const res = await fetchFn(stopUrl, {
       method: "POST",
       headers,
@@ -123,10 +150,10 @@ function drainDeadlineMs(): number {
 }
 
 /** Graceful-first stop: management-API drain, then the platform kill ladder. */
-export async function stopProxy(pid: number): Promise<void> {
-  if (!isProcessAlive(pid)) return;
-  const runtime = readRuntimePort(pid);
-  const graceful = await stopProxyGracefully(pid);
+export async function stopProxy(pid: number, io: GracefulStopIo = {}): Promise<boolean> {
+  if (!isProcessAlive(pid)) return false;
+  const runtime = io.runtimeEndpoint ?? readRuntimePort(pid);
+  const graceful = await stopProxyGracefully(pid, io);
   if (graceful === "refused") {
     // The proxy refused on purpose (foreign service owns it). Forcing would strip shared
     // config while that service keeps the proxy alive.
@@ -137,10 +164,11 @@ export async function stopProxy(pid: number): Promise<void> {
   }
   if (graceful) {
     await waitForStoppedPort(runtime, pid);
-    return;
+    return true;
   }
   killProxy(pid);
   await waitForStoppedPort(runtime, pid);
+  return false;
 }
 
 /** After stop/kill, wait for the former listen port to become bindable (Windows drain). */

@@ -40,7 +40,9 @@ provider — xAI, Kimi, DeepSeek, GLM, Groq, OpenRouter, Ollama (local), and mor
   `xhigh` and `max` remain distinct labels unless a provider explicitly configures an alias. The
   adapter **omits it entirely** for ids in `provider.noReasoningModels`.
 - Streams `delta.content` (text), `delta.reasoning_content` (thinking), and `delta.tool_calls[]`;
-  collects `usage`.
+  collects `usage`. Providers listed in `reasoningDetailsModels` (MiniMax M-series) instead read
+  structured `delta.reasoning_details` segments, whose `text` arrives as cumulative snapshots and
+  is prefix-diffed, and replay preserved reasoning as a `reasoning_details` array.
 - ClinePass uses the live-verified gateway format `reasoning: { enabled: true, effort }` (or
   `{ enabled: false }` when reasoning is disabled); its public API docs do not currently specify
   this request shape. The adapter preserves requested `low`, `medium`, `high`, `xhigh`, and `max`
@@ -254,6 +256,15 @@ starts or the stream ends, then releases it as commentary unless the private too
 answer. When the web-search sidecar is active, released
 commentary still streams ahead of the terminal event; only the events needed to decide whether the
 model requested a synthetic search remain buffered.
+
+A question the model cannot proceed without is also a final answer. The injected contract tells a
+routed model that when it needs a decision, a piece of information, or a clarification only the user
+can give, it should deliver that question through `codex_kiro_final_answer` and stop, rather than
+writing the question as ordinary text and continuing. Such a turn arrives like any other completed
+answer: final text with the turn ended, not commentary and not a client tool call. Without this,
+the contract described only "still working" and "fully complete", and a model holding a blocking
+question had no way to say so — the observed result was a question and a self-override emitted as one
+message, followed by another tool call from the same inference.
 
 If Kiro stops without calling the completion tool, the adapter makes one continuation. Reasoning-
 only retries preserve the original valid user/tool-result turn rather than manufacturing an empty

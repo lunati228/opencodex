@@ -237,6 +237,30 @@ function stripCanonicalOnlyToolFields(body: unknown, includeCapabilityGated: boo
 }
 
 /**
+ * Codex keeps this ChatGPT-internal item metadata when its configured provider name is `openai`.
+ * Loopback OpenCodex injection intentionally retains that provider identity for history continuity,
+ * even when the proxy ultimately routes the request to a public Responses destination. Those
+ * destinations reject the private field as an unknown `input[*]` parameter, so remove it at the
+ * noncanonical boundary without mutating the caller-owned raw body.
+ */
+function stripInternalChatMessageMetadataPassthrough(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+
+  let changed = false;
+  const input = body.input.map(item => {
+    if (!isPlainObject(item) || !Object.hasOwn(item, "internal_chat_message_metadata_passthrough")) {
+      return item;
+    }
+    changed = true;
+    const next = { ...item };
+    delete next.internal_chat_message_metadata_passthrough;
+    return next;
+  });
+
+  return changed ? { ...body, input } : body;
+}
+
+/**
  * When `store` is false, the upstream API does not persist response items. Any item ID
  * forwarded in `input` is then interpreted as a reference to a stored item that does not
  * exist, producing a 404. Strip all item IDs in this case — `call_id` pairing is unaffected.
@@ -443,7 +467,12 @@ function normalizeConfiguredReasoningSummaryDelivery(
  * namespace, tool_search, web_search, custom) plus extensions (defer_loading,
  * parallel_tool_calls, tool_search_call/output items). Spark's serving path only
  * supports flat function tools and hosted web_search. This function:
- * - Flattens namespace tools → promotes inner functions to top level
+ * - Flattens MCP-style namespace tools → promotes inner functions to top level. The reserved
+ *   `functions` group is kept as a group (#3217): Codex 0.147+ sends every ordinary client tool
+ *   inside it on Responses Lite, the backend accepts the group as-is, and flattening it changes
+ *   what the backend answers with — a `custom_tool_call` carrying `namespace: "exec"`, which
+ *   codex-rs concatenates into the unroutable `execexec`. Traced on a live proxy: with the
+ *   group intact the same backend returns the bare `exec` call and the turn completes.
  * - Drops unsupported tool types (tool_search, custom)
  * - Strips defer_loading from function tools
  * - Strips namespace from input items
@@ -458,12 +487,39 @@ function stripSparkCompatibility(body: unknown): unknown {
   let changed = false;
 
   const SPARK_SAFE_TOOL_TYPES = new Set(["function", "web_search", "web_search_preview"]);
+  // Inside the reserved group Codex sends freeform `custom` tools (code-mode `exec`) and the
+  // backend accepts them there; the top-level "drop custom" rule stays for flattened groups.
+  const SPARK_SAFE_FUNCTIONS_GROUP_CHILD_TYPES = new Set(["function", "custom"]);
+  const filterSparkFunctionsGroup = (group: Record<string, unknown>): Record<string, unknown> | undefined => {
+    if (!Array.isArray(group.tools)) return undefined;
+    let groupChanged = false;
+    const children: unknown[] = [];
+    for (const child of group.tools) {
+      if (!isPlainObject(child) || typeof child.type !== "string" || !SPARK_SAFE_FUNCTIONS_GROUP_CHILD_TYPES.has(child.type)) {
+        groupChanged = true;
+        continue;
+      }
+      if (child.type === "function" && "defer_loading" in child) {
+        const { defer_loading: _, ...rest } = child;
+        groupChanged = true;
+        children.push(rest);
+        continue;
+      }
+      children.push(child);
+    }
+    if (children.length === 0) return undefined;
+    return groupChanged ? { ...group, tools: children } : group;
+  };
 
   let tools = body.tools;
   if (Array.isArray(tools)) {
     const flattened: unknown[] = [];
     for (const t of tools) {
-      if (isPlainObject(t) && t.type === "namespace") {
+      if (isPlainObject(t) && t.type === "namespace" && t.name === SPARK_RESERVED_FUNCTIONS_NAMESPACE) {
+        const kept = filterSparkFunctionsGroup(t);
+        if (kept !== t) changed = true;
+        if (kept) flattened.push(kept);
+      } else if (isPlainObject(t) && t.type === "namespace") {
         changed = true;
         if (Array.isArray(t.tools)) {
           for (const inner of t.tools) flattened.push(inner);
@@ -503,7 +559,11 @@ function stripSparkCompatibility(body: unknown): unknown {
         const innerTools = item.tools as unknown[];
         const filteredInner: unknown[] = [];
         for (const t of innerTools) {
-          if (isPlainObject(t) && t.type === "namespace") {
+          if (isPlainObject(t) && t.type === "namespace" && t.name === SPARK_RESERVED_FUNCTIONS_NAMESPACE) {
+            const kept = filterSparkFunctionsGroup(t);
+            if (kept !== t) changed = true;
+            if (kept) filteredInner.push(kept);
+          } else if (isPlainObject(t) && t.type === "namespace") {
             changed = true;
             if (Array.isArray(t.tools)) {
               for (const fn of t.tools) filteredInner.push(fn);
@@ -549,6 +609,9 @@ function stripSparkCompatibility(body: unknown): unknown {
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
+
+/** Codex's reserved client-tool group on Responses Lite; carries no wire prefix. */
+const SPARK_RESERVED_FUNCTIONS_NAMESPACE = "functions";
 
 /**
  * Apply the routed provider's real effort ladder to an existing Responses reasoning field.
@@ -901,13 +964,23 @@ function annotateEmptyResponsesToolOutputs(body: unknown, enabled: boolean): unk
  * Runs on every forward request; with intact pairs it returns the original reference.
  */
 /**
- * Backfill `queries` on a replayed single-query `web_search_call`.
+ * Repair a replayed `web_search_call` action that is missing either key.
  *
  * `webSearchAction()` in the bridge now emits both keys, but that only helps items
  * created after the fix. A conversation that already recorded
- * `{type:"search", query:"..."}` replays that stored item on every subsequent turn, and
- * DeepSeek's native Responses parser requires `queries` — so upgrading alone leaves
- * those threads permanently 400ing with `missing field 'queries'` (#930).
+ * `{type:"search", query:"..."}` or `{type:"search", queries:[...]}` replays that stored
+ * item on every subsequent turn. DeepSeek's native Responses parser requires `queries`
+ * (#930) and Console Go's validator requires `query` (#3071), so upgrading alone leaves
+ * those threads permanently 400ing in one direction or the other. The repair runs both
+ * ways.
+ *
+ * Input items carry a loose schema, so a stored `queries` is not necessarily an array of
+ * strings. A partly- or wholly-malformed array is left alone rather than used as a source
+ * for the singular field: writing `query: 123` would satisfy the presence check and still
+ * fail the validator this repair exists to satisfy, and deriving `query` from
+ * `["a", 42]` would satisfy Console Go while leaving DeepSeek to reject the same replay.
+ * An empty `queries: []` canonicalizes to the shape the bridge emits for an empty search,
+ * keeping an existing `query` when the item has one.
  *
  * Runs on every Responses request, on both `input` items and the `action` nested inside
  * them. Returns the original reference when nothing needs repair, so the common path
@@ -920,9 +993,35 @@ function backfillWebSearchQueries(body: unknown): unknown {
     if (!isPlainObject(item) || item.type !== "web_search_call") return item;
     const action = item.action;
     if (!isPlainObject(action) || action.type !== "search") return item;
-    if (typeof action.query !== "string" || Array.isArray(action.queries)) return item;
-    changed = true;
-    return { ...item, action: { ...action, queries: [action.query] } };
+    // Repair whichever side is missing so both strict parsers pass:
+    // DeepSeek native Responses requires `queries`; Console Go requires `query`.
+    const rep: Record<string, unknown> = { ...action };
+    let itemChanged = false;
+    const hasQuery = typeof action.query === "string";
+    const queries = Array.isArray(action.queries) ? action.queries : undefined;
+    if (queries !== undefined && queries.length === 0) {
+      // An empty array satisfies neither validator. Canonicalize to the empty-search
+      // shape the bridge emits, keeping an existing query rather than discarding it.
+      const query = hasQuery ? action.query as string : "";
+      rep.query = query;
+      rep.queries = [query];
+      itemChanged = true;
+    } else if (!hasQuery && queries !== undefined) {
+      // A plural array is only a usable source for the singular field when EVERY member
+      // is a string: deriving `query` from a partly-malformed array would satisfy Console
+      // Go while leaving DeepSeek to reject the same replay. Wholly malformed arrays are
+      // left untouched — coercing or dropping members would invent semantics the stored
+      // item never had.
+      if (queries.every(entry => typeof entry === "string")) {
+        rep.query = queries[0];            // multi-query item recorded before the fix
+        itemChanged = true;
+      }
+    } else if (hasQuery && queries === undefined) {
+      rep.queries = [action.query];        // single-query item recorded before the fix
+      itemChanged = true;
+    }
+    if (itemChanged) changed = true;
+    return itemChanged ? { ...item, action: rep } : item;
   });
   return changed ? { ...body, input } : body;
 }
@@ -1867,6 +1966,18 @@ export function stripOpenAiOnlyWebSearchFields(body: unknown): unknown {
 }
 
 /**
+ * Muse Spark ids whose Responses gateway refuses `search_content_types` on a plain
+ * `web_search` tool. Membership, not equality: 1.3 shipped 2026-09-02 as the
+ * same-shaped successor to 1.2 on the same Zen wire, and an equality check would
+ * have let a Codex-emitted `web_search` + `search_content_types` body reach the
+ * gateway and come back 400 for every request the moment 1.3 was selected.
+ */
+const MUSE_SPARK_WEB_SEARCH_STRICT_MODELS = new Set([
+  "muse-spark-1.3-contributor",
+  "muse-spark-1.2-contributor",
+]);
+
+/**
  * OpenCode Zen / Go Muse Spark Responses gateway refuses `search_content_types`
  * on a plain `web_search` tool (400) but accepts it on `web_search_preview`; a
  * plain `web_search` is also accepted. Probed directly against the gateway on
@@ -1877,7 +1988,8 @@ export function stripOpenAiOnlyWebSearchFields(body: unknown): unknown {
  */
 function stripMuseSparkUnsupportedWebSearchFields(body: unknown, modelId: unknown): unknown {
   if (!isPlainObject(body)) return body;
-  if (typeof modelId !== "string" || modelId.trim().toLowerCase() !== "muse-spark-1.2-contributor") return body;
+  if (typeof modelId !== "string") return body;
+  if (!MUSE_SPARK_WEB_SEARCH_STRICT_MODELS.has(modelId.trim().toLowerCase())) return body;
 
   const rewriteTools = (tools: unknown[]): { tools: unknown[]; changed: boolean } => {
     let changed = false;
@@ -2097,11 +2209,13 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         outBody = repairOversizedReplayCallIds(outBody);
       }
       outBody = stripUnsupportedReasoningSummaryDelivery(outBody, parsed.modelId);
-      // Repair stored history from before the bridge emitted both keys: a conversation
-      // that already recorded a single-query web_search_call replays it every turn, and
-      // a strict parser rejects the whole request over it (#930).
+      // Repair stored history from before the bridge emitted both keys, in either
+      // direction: a conversation that already recorded a web_search_call replays it
+      // every turn, and a strict parser rejects the whole request over the missing key —
+      // `queries` for DeepSeek (#930), `query` for Console Go (#3071).
       outBody = backfillWebSearchQueries(outBody);
       if (!isCanonicalOpenAiForwardProvider(provider)) {
+        outBody = stripInternalChatMessageMetadataPassthrough(outBody);
         outBody = promoteClientLoadedTools(outBody);
       }
       if (!isCanonicalOpenAiForwardProvider(provider)) {
@@ -2224,6 +2338,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       let doneText = "";
       let snapshot = "";
       let usage: OcxUsage | undefined;
+      let compactionEncryptedContent: string | undefined;
       for await (const event of decodeServerSentEvents(response.body, { translatorBudget: budget })) {
         let payload: unknown;
         try { payload = JSON.parse(event.data); } catch { continue; }
@@ -2258,6 +2373,17 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
             return;
           case "response.completed":
             {
+              const responsePayload = isPlainObject(payload.response) ? payload.response : undefined;
+              const output = Array.isArray(responsePayload?.output) ? responsePayload.output : [];
+              const compaction = output.find(item => isPlainObject(item) && item.type === "compaction");
+              if (isPlainObject(compaction) && typeof compaction.encrypted_content === "string") {
+                const nextEncryptedContent = compaction.encrypted_content;
+                const previousBytes = budgetEncoder.encode(compactionEncryptedContent ?? "").byteLength;
+                const reservation = budget.reserveTransient(budgetEncoder.encode(nextEncryptedContent).byteLength, { kind: "retained_collectors" });
+                compactionEncryptedContent = nextEncryptedContent;
+                reservation.commitRetained();
+                budget.releaseRetained(previousBytes, { kind: "retained_collectors" });
+              }
               const next = responsesPayloadText(payload.response);
               const previousBytes = budgetEncoder.encode(snapshot).byteLength;
               const reservation = budget.reserveTransient(budgetEncoder.encode(next).byteLength, { kind: "retained_collectors" });
@@ -2274,7 +2400,11 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       const text = snapshot || doneText || deltas;
       if (text) yield { type: "text_delta", text };
       budget.releaseRetained(budgetEncoder.encode(deltas).byteLength + budgetEncoder.encode(doneText).byteLength + budgetEncoder.encode(snapshot).byteLength, { kind: "retained_collectors" });
-      yield { type: "done", ...(usage ? { usage } : {}) };
+      yield {
+        type: "done",
+        ...(usage ? { usage } : {}),
+        ...(compactionEncryptedContent ? { compactionEncryptedContent } : {}),
+      };
     },
 
     async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
@@ -2292,14 +2422,23 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       if (payload.status === "incomplete") {
         return [{ type: "incomplete", reason: responsesErrorMessage(payload) }];
       }
+      const usage = usageFromResponsesPayload(payload);
+      const output = Array.isArray(payload.output) ? payload.output : [];
+      const compaction = output.find(item => isPlainObject(item) && item.type === "compaction");
+      const compactionEncryptedContent = isPlainObject(compaction) && typeof compaction.encrypted_content === "string"
+        ? compaction.encrypted_content
+        : undefined;
       const text = responsesPayloadText(payload);
-      if (!text) {
-        // A completed turn with no usable text cannot become a summary; saying so is
-        // better than installing an empty compaction as replacement history.
+      if (!text && !compactionEncryptedContent) {
+        // A completed turn with neither text nor a native compaction blob cannot become a
+        // replacement-history item. A ciphertext-only native completion is valid, though.
         return [{ type: "error", message: "upstream compaction returned no summary text" }];
       }
-      const usage = usageFromResponsesPayload(payload);
-      return [{ type: "text_delta", text }, { type: "done", ...(usage ? { usage } : {}) }];
+      return [...(text ? [{ type: "text_delta" as const, text }] : []), {
+        type: "done",
+        ...(usage ? { usage } : {}),
+        ...(compactionEncryptedContent ? { compactionEncryptedContent } : {}),
+      }];
     },
   };
 }

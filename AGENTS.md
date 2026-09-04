@@ -263,6 +263,17 @@ than nudged.
   `Closes #<number>` to link it. GitHub auto-closes the linked issue only
   when the PR merges into the default branch (`main`); PRs here target
   `dev`, so close the issue manually once the change is on `dev`.
+- **Landing another author's work:** reimplementing, superseding, carrying, or
+  rebasing someone else's pull request requires a `Co-authored-by` trailer
+  naming that author, in the description or in a branch commit so it survives
+  the squash. Saying it in prose is not equivalent — the trailer is what GitHub
+  reads for the contributor graph, and a sentence in a commit body is read by
+  nothing. This repository did it both ways for months: `53c09a247` says "Clean
+  reimplementation of #3193" and names the author in a trailer, `5734a1caf` says
+  "Reimplements #2797 by @rrmlima" and names nobody, so that contribution is
+  invisible on its author's profile. The 27 landings already in that state are
+  recorded in [`CREDITS.md`](./CREDITS.md); `missing_coauthor_credit` in
+  `.github/scripts/pr-carry-attribution.cjs` is why the list should not grow.
 
 ## Branch policy
 
@@ -305,8 +316,11 @@ repository CI; a maintainer has to — so the gate never disproves it; a new
 push still resets every box. A disproved claim unticks the matching box and
 keeps the PR a draft.
 Authors with repository push permission skip the ancestry heuristic only. As with approval requirements in
-[`MAINTAINERS.md`](./MAINTAINERS.md), this is enforced by convention until
-branch protection is configured.
+[`MAINTAINERS.md`](./MAINTAINERS.md), the ancestry heuristic is a CI check
+rather than a branch rule. The branches themselves are protected: `dev`,
+`main`, and `preview` each carry an active ruleset requiring a reviewed pull
+request and blocking force-pushes and deletion, so a direct push to `dev` is
+rejected regardless of `--no-verify`.
 
 [`MAINTAINERS.md`](./MAINTAINERS.md) is authoritative for review and merge
 policy (approvals, CI requirements, security review, promotion). This file

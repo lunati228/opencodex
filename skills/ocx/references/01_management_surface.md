@@ -300,6 +300,23 @@ JSON mode: `payload`.
 
 - The GUI reads this state directly; without a verb an agent could not tell whether the Codex app-server was reachable at all.
 
+### `ocx system codex-cli-update check`
+
+Inspect a configured Codex CLI candidate and its ownership provenance.
+
+Drives no management route.
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--json` | boolean | Emit the redacted provenance report as JSON. |
+
+JSON mode: `envelope`.
+
+- Proof-bound published-launcher context authenticates the configured candidate snapshot, not successful Codex execution; this check does not attest or admit a selected runtime.
+- On Windows this first slice performs no candidate or configuration filesystem I/O: only a proof-captured absolute environment candidate can receive lexical app-bundle or version-manager labels; every other Windows candidate fails closed.
+- Makes no package-registry request.
+- Does not execute Codex or npm, install or repair software, control a process, or write configuration or cache state.
+
 ### `ocx claude desktop status`
 
 Applied-vs-desired Claude Desktop state, including staleness, drift, and health.
@@ -319,6 +336,45 @@ JSON mode: `payload`.
 ## State-changing capabilities
 
 Each of these writes. Check the flags column before running one unattended.
+
+### `ocx connect rotate`
+
+Rotate the connected client's data key against the hub, with commit and abort.
+
+| Method | Route |
+|---|---|
+| POST | `/api/keys/rotate` |
+| POST | `/api/keys/rotate/commit` |
+| DELETE | `/api/keys/rotate` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--pairing-code-stdin` | boolean | Read a one-time pairing code from stdin as the rotation authority. |
+| `--admin-token-stdin` | boolean | Read the hub admin token from stdin as the rotation authority. |
+| `--json` | boolean | Emit the rotation result as JSON. |
+
+JSON mode: `payload`.
+
+- Requires transient authority on stdin; the credential is never persisted or echoed.
+- A rotation left pending by a crash is resumed here — startup and status stop rather than guess which key generation is live.
+
+### `ocx provider keychain`
+
+Move a provider's API key into the OS keychain, restore it, or report where it lives.
+
+| Method | Route |
+|---|---|
+| GET | `/api/providers/keychain` |
+| POST | `/api/providers/keychain` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--json` | boolean | Emit the keychain status or result as JSON. |
+
+JSON mode: `payload`.
+
+- `store` verifies every keychain write by read-back before config.json is rewritten with keychain: references; an unavailable keychain refuses with 503 and leaves the file untouched.
+- Headless services usually have no unlocked keychain session; prefer ${ENV_VAR} references there.
 
 ### `ocx account pause`
 
@@ -492,7 +548,7 @@ JSON mode: `payload`.
 
 ### `ocx integration native`
 
-Show or toggle the native Claude, Claude Desktop, Codex, and Grok integrations.
+Show or toggle the native Claude, Claude Desktop, Codex, and Grok integrations, and read the Cursor status (which builds are installed, gateway values, last request seen).
 
 | Method | Route |
 |---|---|
@@ -501,6 +557,7 @@ Show or toggle the native Claude, Claude Desktop, Codex, and Grok integrations.
 | PUT | `/api/native-integrations/claude-desktop` |
 | PUT | `/api/native-integrations/codex` |
 | PUT | `/api/native-integrations/grok` |
+| GET | `/api/native-integrations/cursor` |
 
 | Flag | Value | Meaning |
 |---|---|---|
@@ -530,6 +587,6 @@ JSON mode: `payload`.
 
 ## Counts
 
-- declared capabilities: 29
-- of those, state-changing: 11
+- declared capabilities: 32
+- of those, state-changing: 13
 - head-resolved invocations: 2

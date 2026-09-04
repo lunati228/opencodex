@@ -195,7 +195,7 @@ Session 簽發在需要 data-plane 認證時停用，這包含遠端綁定。遠
 | --- | --- | --- |
 | `GET /api/system/memory` | 回傳純量行程、heap、串流、回應狀態、看門狗與活躍回合指標 | — |
 | `POST /api/system/restart` | 在不移除客戶端注入的情況下開始感知排空的行程重啟 | 回傳 202；重複呼叫回報既有的排空 |
-| `POST /api/stop` | 停止服務、還原原生 Codex、移除受管 Grok 注入並排空代理 | 409 服務擁有權衝突 |
+| `POST /api/stop` | 停止服務、還原原生 Codex、移除受管 Grok 注入並排空代理 | 409 服務擁有權衝突；當 Windows 工作排程器包裝程序可能重新啟動 Proxy 且呼叫端不是 `ocx stop` 時回傳 409 `respawnable_service`（不會做任何變更）；已安裝的管理器拒絕停止時回傳 409；無法讀取工作排程器狀態時回傳 409 `service_state_unknown`（不會做任何變更；修復查詢後重試） |
 
 ### Codex 認證委派
 
@@ -225,3 +225,7 @@ Session 簽發在需要 data-plane 認證時停用，這包含遠端綁定。遠
 ## 選擇客戶端
 
 對於普通管理，[網頁儀表板](/zh-tw/guides/web-dashboard/)提供最安全的引導工作流程。對於無頭主機與自動化，請使用對應的 `ocx` 指令：它們呼叫此相同的即時 API，並在代理不可達或操作失敗時回傳非零結果。直接 HTTP 對需要上述精確端點契約的整合最為有用。
+
+## 遠端工作階段與資料金鑰輪替
+
+`POST /api/keys/rotate {id}` 開始十分鐘重疊期，且只回傳一次新金鑰。`POST /api/keys/rotate/commit {id,rotationId}` 提交，`DELETE /api/keys/rotate {id,rotationId}` 中止。全部都需要管理驗證，資料金鑰不能呼叫。`POST /api/session/logout` 需要目前的 `gui-session`、相符的 Origin 與 CSRF。Admin token 會收到 403，永遠不能建立使用者同意工作階段。

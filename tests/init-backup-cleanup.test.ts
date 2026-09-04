@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupOpenAiTierBackupAfterInit } from "../src/cli/init";
@@ -10,6 +10,7 @@ import {
   setPlatformForTests,
 } from "../src/lib/windows-secret-acl";
 import { setWindowsPrincipalRunnerForTests } from "../src/lib/windows-user-principal";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 describe("cleanupOpenAiTierBackupAfterInit", () => {
   const dirs: string[] = [];
@@ -23,7 +24,7 @@ describe("cleanupOpenAiTierBackupAfterInit", () => {
     resetHardenedStateForTests();
   });
   afterEach(() => {
-    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+    while (dirs.length) removeTreeWithRetry(dirs.pop()!);
     setIcaclsRunnerForTests(null);
     setWindowsPrincipalRunnerForTests(null);
     setPlatformForTests(null);
