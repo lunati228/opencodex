@@ -10,6 +10,18 @@ keeps both the fork tip and canonical `lidge-jun/opencodex:main` as parents; the
 fork changes are not squashed, rebased, or copied into an unrelated history.
 `ornith-setup` remains available as a rollback reference.
 
+The current integration includes canonical main through 2.42.0. GPT-6 Astra
+uses its own upstream catalog row, context ceiling, and reasoning ladder;
+it does not inherit Sol's identity or context limit. Gemini 3.8 Flash is the
+current Antigravity Flash selection. Older identifiers remain supported at
+compatibility boundaries and in historical records.
+
+For mixed native/routed delegation, `multiAgentMode: "v2"` together with
+`keepNativeChatGptOnV1: true` keeps native assignments plaintext while routed
+models retain the V2 tool surface. The global Codex V2 override must be off.
+These catalog settings apply to new tasks; they do not rewrite an existing
+task's tool surface. Unreadable encrypted native assignments still fail closed.
+
 ## Public local-runtime contract
 
 The managed Qwen profile has a 180K (184,320-token) default context window and

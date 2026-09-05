@@ -108,15 +108,16 @@ Codex コンテキスト compaction はルーティングされたモデルで�
 
 ## Reasoning effort
 
-`reasoning-effort.ts` は Codex の reasoning ラベルを各プロバイダーの wire 値に変換します。
-明示的に宣言された非 GPT ラダーは合成レベルを追加せず、そのままカタログに表示されます。宣言のないエントリは互換デフォルトを維持し、GPT ファミリーは既存の Codex 製品レベルを維持します。このモジュールは:
+`reasoning-effort.ts` は Codex の推論レベルをプロバイダー固有の送信値に変換します。送信する値はプロバイダーが対応するレベルに従い、通常のルーティング対象モデルの選択画面には合成の製品レベルも表示できます。このモジュールは次の処理を行います。
 
 - 標準 `CODEX_REASONING_LEVELS` とその整列順序を定義します。
 - 要求された effort を正確なレベルがないとき最も近いサポート段階にクランプします。
 - カスタム wire マッピングのためのモデル別・プロバイダー別 `reasoningEffortMap` override を解釈します。
 - `noReasoningModels` に列挙されたモデルについては effort を完全に削除します。
 
-たとえば Gemini 3.8 Flash は `low` / `medium` / `high` のみを表示します。管理対象のローカル Qwen は `low` / `medium` / `xhigh` を表示し、既定値は `xhigh` です。古い保存値のクランプや変換は wire 境界でのみ行われます。
+通常のルーティング対象モデルは、選択画面で合成レベル `max` と `ultra` を維持します。
+Gemini 3.8 Flash では、どちらもプロバイダーへの送信時に `high` に変換されます。
+管理対象のローカル Qwen は `low` / `medium` / `xhigh` のみで、既定値は `xhigh` です。
 
 ## コア型
 

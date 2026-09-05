@@ -147,10 +147,9 @@ Models 페이지의 v1/base/v2 컨트롤은 각 Codex 협업 서피스가 어떤
 
 ## 추론 최상위 단계
 
-reasoning-tier 표시 여부는 v1/base/v2 서피스 모드와 무관합니다. 명시된 비 GPT ladder는 합성
-`max`나 `ultra` 없이 정확히 표시됩니다. Gemini 3.8 Flash는 `low` / `medium` / `high`, 관리형 로컬
-Qwen은 `low` / `medium` / `xhigh`만 표시합니다. GPT 동작은 바뀌지 않으며 정확한 업스트림 GPT-5.6
-ladder도 그대로 보존됩니다.
+일반 라우팅 모델은 선택기에 합성 단계 `max`와 `ultra`를 유지합니다.
+Gemini 3.8 Flash에서는 두 값 모두 프로바이더에 전송할 때 `high`로 매핑됩니다.
+관리형 로컬 Qwen은 `low` / `medium` / `xhigh`만 표시하며 기본값은 `xhigh`입니다.
 
 wire에서는 라우팅 어댑터가 지원하지 않는 tier를 매핑하거나 제한합니다. 실제 ladder가 `xhigh`에서 끝나는
 이전 네이티브 모델에서는 `nativeEffortClamp`가 직접 지정한 `max` 또는 `ultra` 선택을 `xhigh`로 바꿉니다.

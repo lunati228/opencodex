@@ -191,10 +191,7 @@ turlarını işler.
 
 ## Akıl yürütme çabası
 
-`reasoning-effort.ts`, Codex'in akıl yürütme etiketlerini her sağlayıcının hat
-değerlerine çevirir. Açıkça bildirilen GPT dışı bir merdiven, sentetik katman
-eklenmeden aynen gösterilir. Bildirilmemiş girdiler uyumluluk varsayılanlarını,
-GPT ailesi ise mevcut Codex ürün katmanlarını korur. Modül:
+`reasoning-effort.ts`, Codex akıl yürütme etiketlerini sağlayıcıya özgü protokol değerlerine dönüştürür. Giden istek sağlayıcının desteklediği katmanları kullanır; standart yönlendirilen modeller seçicide sentetik ürün katmanları da gösterebilir. Modül:
 
 - Kurallı `CODEX_REASONING_LEVELS` ve sıralama düzenlerini tanımlar.
 - Tam seviye kullanılamadığında talep edilen çabayı en yakın desteklenen katmana
@@ -203,9 +200,9 @@ GPT ailesi ise mevcut Codex ürün katmanlarını korur. Modül:
   geçersiz kılmalarını çözer.
 - `noReasoningModels` içinde listelenen modeller için çabayı tamamen bırakır.
 
-Örneğin Gemini 3.8 Flash yalnızca `low` / `medium` / `high` gösterir. Yönetilen
-yerel Qwen `low` / `medium` / `xhigh` gösterir ve varsayılanı `xhigh`'dır. Eski
-kayıtlı değerler yalnızca hat sınırında eşlenir veya sabitlenir.
+Standart yönlendirilen modeller seçicide sentetik `max` ve `ultra` katmanlarını korur.
+Gemini 3.8 Flash için her ikisi de sağlayıcıya gönderilirken desteklenen `high` düzeyine eşlenir.
+Yönetilen yerel Qwen yalnızca `low` / `medium` / `xhigh` sunar; varsayılanı `xhigh` olur.
 
 Qwen3.8-Max, eski Qwen3.x bütçe sözleşmesine açık bir doğrudan çaba
 istisnasıdır. Alibaba Token Plan yukarı akışta desteklenen merdivenini `low`,

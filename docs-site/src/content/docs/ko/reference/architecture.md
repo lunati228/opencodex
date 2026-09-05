@@ -143,18 +143,16 @@ Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `
 
 ## Reasoning effort
 
-`reasoning-effort.ts`는 Codex의 reasoning 레이블을 각 프로바이더의 와이어 값으로 변환합니다.
-명시적으로 선언된 비 GPT ladder는 합성 단계를 추가하지 않고 그대로 표시됩니다. 선언되지 않은 항목은
-호환 기본값을 유지하고, GPT 계열은 기존 Codex 제품 단계를 유지합니다. 이 모듈은:
+`reasoning-effort.ts`는 Codex 추론 단계를 프로바이더별 전송 값으로 변환합니다. 실제 요청은 프로바이더가 지원하는 단계를 따르며, 일반 라우팅 모델의 선택기는 합성 제품 단계를 추가로 표시할 수 있습니다. 이 모듈은 다음을 수행합니다.
 
 - 표준 `CODEX_REASONING_LEVELS`와 그 정렬 순서를 정의합니다.
 - 요청된 effort를 정확한 레벨이 없을 때 가장 가까운 지원 단계로 클램핑합니다.
 - 커스텀 와이어 매핑을 위한 모델별 및 프로바이더별 `reasoningEffortMap` 오버라이드를 해석합니다.
 - `noReasoningModels`에 나열된 모델에 대해서는 effort를 완전히 제거합니다.
 
-예를 들어 Gemini 3.8 Flash는 `low` / `medium` / `high`만 표시합니다. 관리형 로컬 Qwen은
-`low` / `medium` / `xhigh`를 표시하고 기본값은 `xhigh`입니다. 오래된 저장 값은 와이어 경계에서만
-클램프되거나 매핑됩니다.
+일반 라우팅 모델은 선택기에 합성 단계 `max`와 `ultra`를 유지합니다.
+Gemini 3.8 Flash에서는 두 값 모두 프로바이더에 전송할 때 `high`로 매핑됩니다.
+관리형 로컬 Qwen은 `low` / `medium` / `xhigh`만 표시하며 기본값은 `xhigh`입니다.
 
 ## 코어 타입
 

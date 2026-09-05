@@ -211,11 +211,9 @@ Arayüzü](/tr/guides/sub-agent-surface/) sayfasına bakın.
 
 ## Akıl yürütme üst katmanları
 
-Akıl yürütme katmanı görünürlüğü, v1/base/v2 yüzey modundan bağımsızdır. Açıkça
-bildirilen GPT dışı merdivenler sentetik `max` veya `ultra` eklenmeden aynen
-gösterilir. Gemini 3.8 Flash yalnızca `low` / `medium` / `high`, yönetilen yerel
-Qwen ise yalnızca `low` / `medium` / `xhigh` gösterir. GPT davranışı değişmez ve
-tam yukarı akış GPT-5.6 merdivenleri korunur.
+Standart yönlendirilen modeller seçicide sentetik `max` ve `ultra` katmanlarını korur.
+Gemini 3.8 Flash için her ikisi de sağlayıcıya gönderilirken desteklenen `high` düzeyine eşlenir.
+Yönetilen yerel Qwen yalnızca `low` / `medium` / `xhigh` sunar; varsayılanı `xhigh` olur.
 
 Hatta, yönlendirilen adaptörler desteklenmeyen katmanları eşler veya sabitler.
 Gerçek merdiveni `xhigh` ile duran daha eski yerel modeller için
@@ -313,4 +311,3 @@ ocx sync
 opencodex, katalog görünürlüğü, önceliği veya meta verileri her değiştiğinde
 `models_cache.json` dosyasını kasıtlı olarak eski bir önbellek sarmalayıcısıyla
 yeniden yazar, böylece bir sonraki Codex model yenilemesi yeni kataloğu okur.
-

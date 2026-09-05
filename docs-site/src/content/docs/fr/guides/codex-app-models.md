@@ -178,10 +178,9 @@ la délégation, l'héritage, le repli et le comportement des tâches chiffrées
 
 ## Niveaux de raisonnement supérieurs
 
-La visibilité des niveaux de raisonnement est indépendante du mode de surface v1/base/v2. Une échelle
-non-GPT déclarée est affichée à l’identique, sans `max` ni `ultra` synthétique : Gemini 3.8 Flash affiche
-`low` / `medium` / `high`, et le Qwen local géré affiche `low` / `medium` / `xhigh`. Le comportement GPT
-reste inchangé et les échelles amont exactes de GPT-5.6 sont préservées.
+Les modèles routés ordinaires conservent les niveaux synthétiques `max` et `ultra` dans le sélecteur.
+Pour Gemini 3.8 Flash, les deux sont convertis en `high` sur le protocole du fournisseur.
+Le Qwen local géré conserve exactement `low` / `medium` / `xhigh`, avec `xhigh` par défaut.
 
 Sur le réseau, les adaptateurs routés convertissent ou plafonnent les niveaux non pris en charge. Pour les
 anciens modèles natifs dont l'échelle réelle s'arrête à `xhigh`, `nativeEffortClamp` convertit une sélection

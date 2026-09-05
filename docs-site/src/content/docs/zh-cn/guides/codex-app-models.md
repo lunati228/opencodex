@@ -98,7 +98,9 @@ Models 页面上的 v1/base/v2 控件会改变每个选择器条目使用的 Cod
 
 ## 推理顶档
 
-推理档位的可见性与 v1/base/v2 界面模式无关。已声明的非 GPT 阶梯会原样显示，不会加入合成的 `max` 或 `ultra`；例如 Gemini 3.8 Flash 只有 `low` / `medium` / `high`，托管 Qwen 只有 `low` / `medium` / `xhigh`。GPT 行为保持不变，精确的 GPT-5.6 阶梯也会原样保留。
+普通路由模型在选择器中保留合成档位 `max` 和 `ultra`。
+对于 Gemini 3.8 Flash，这两个值都会在发送给提供商时映射为支持的 `high`。
+托管本地 Qwen 仅提供 `low` / `medium` / `xhigh`，默认值为 `xhigh`。
 
 在传输层面，路由 adapter 会映射或钳制不受支持的档位。对于真实阶梯止于 `xhigh` 的较老原生模型，`nativeEffortClamp` 会把直接的 `max` 或 `ultra` 选择映射到 `xhigh`，例如 GPT-5.5。Sol、Terra 和 Luna 都有真实的 `max` 档位。
 

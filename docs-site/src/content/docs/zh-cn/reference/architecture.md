@@ -150,17 +150,16 @@ Codex context compaction 同样适用于路由模型。`server/responses/compact
 
 ## Reasoning effort
 
-`reasoning-effort.ts` 把 Codex 的 reasoning 标签转换为各 provider 的 wire 值。已明确声明的
-非 GPT 阶梯会按配置原样显示，不会合成额外档位；未声明的条目保留兼容默认值，而 GPT 系列保留
-既有的 Codex 产品档位。该模块会：
+`reasoning-effort.ts` 将 Codex 推理档位转换为提供商的协议值。出站请求遵循提供商支持的档位；普通路由模型也可以在选择器中显示合成产品档位。该模块：
 
 - 定义标准的 `CODEX_REASONING_LEVELS` 及其排序。
 - 精确级别不可用时，把请求的 effort 限制到最接近的支持层级。
 - 解析模型级和 provider 级 `reasoningEffortMap` override，用于自定义 wire 映射。
 - 对 `noReasoningModels` 中的模型完全移除 effort。
 
-例如 Gemini 3.8 Flash 只显示 `low` / `medium` / `high`；托管 Qwen 只显示
-`low` / `medium` / `xhigh`，并默认使用 `xhigh`。旧配置值只会在 wire 边界被钳制或映射。
+普通路由模型在选择器中保留合成档位 `max` 和 `ultra`。
+对于 Gemini 3.8 Flash，这两个值都会在发送给提供商时映射为支持的 `high`。
+托管本地 Qwen 仅提供 `low` / `medium` / `xhigh`，默认值为 `xhigh`。
 
 Qwen3.8-Max 是旧版 Qwen3.x budget 契约之外、明确使用直接 effort 的例外。Alibaba Token
 Plan 把其上游支持等级记录为 `low`、`medium` 和 `xhigh`（默认值），并通过

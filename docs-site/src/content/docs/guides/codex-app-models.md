@@ -186,11 +186,9 @@ metadata instead of an older-template approximation.
 | Cursor | Static fallback includes `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, and `cursor/gpt-5.6-luna` (1,000,000), plus regular/Fast rows for Grok 4.5 and 4.6 (500,000); 4.6 adds `xhigh`, and live account discovery decides which rows remain visible. |
 | xAI | Live discovery is authoritative. The fallback catalog includes `xai/grok-4.6` and defaults to `xai/grok-4.5`; both have 500,000-token windows. Grok 4.6 exposes `low` / `medium` / `high` / `xhigh` (upstream default: `high`), while Grok 4.5 stops at `high`. |
 
-Declared non-GPT reasoning ladders are picker-authoritative. OpenCodex does not append synthetic
-`max` or `ultra` choices to them: Gemini 3.8 Flash shows `low` / `medium` / `high`, and the managed
-local Qwen row shows `low` / `medium` / `xhigh` with `xhigh` as its default. Compatibility mapping
-for stale saved values happens only when building the provider request. GPT-family catalog behavior
-is unchanged.
+Ordinary routed models retain synthetic `max` and `ultra` picker tiers. For Gemini 3.8 Flash,
+both are mapped to the supported wire effort `high`; they are not additional provider reasoning
+levels. Managed local Qwen remains exact: `low` / `medium` / `xhigh`, with `xhigh` as its default.
 
 The pinned GPT-5.6 entries preserve the exact upstream ladder. Sol and Terra expose `low` through
 `ultra`; Luna stops at `max`. Sol defaults to `low`, while Terra and Luna default to `medium`.

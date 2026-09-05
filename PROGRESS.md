@@ -2,6 +2,22 @@
 
 ## Current public checkpoint
 
+- Canonical main is integrated through 2.42.0 in two additional
+  history-preserving merges. GPT-6 Astra uses its own shipped capabilities,
+  including its default and opt-in context limits.
+- Reconciled the Antigravity effort resolver, protected journal ownership,
+  pinned quota transport, and the fork's stopped-local compaction routing.
+  Restored the effort-map own-property guard; inherited object keys are not
+  valid provider model ids.
+- Gemini 3.8 examples are current. Compatibility mappings and historical model
+  records retain their original identifiers where wire correctness requires it.
+- The latest catalog, entitlement, local-runtime, Spark, and DeepSeek focused
+  checks pass, as do the dashboard build, documentation build, and typecheck.
+  Machine-local identification results and private runtime settings are not
+  published in this file.
+- The broad `test:changed` gate exceeded the runner's 15-minute limit; it is
+  not a passing repository-wide result. The focused and build checks above
+  are the completed verification evidence.
 - `auto-compact-n-review` integrates the fork tip with canonical
   `lidge-jun/opencodex:main` through a history-preserving two-parent merge.
 - `ornith-setup` is retained as a rollback branch. It is not scheduled for
@@ -11,8 +27,8 @@
 - Ordinary routed models retain upstream's synthetic `max` and `ultra` picker
   tiers for agent validation. Provider adapters clamp those choices to each
   model's real highest wire effort; the managed Qwen ladder remains exact.
-- No Qwen request was run during this integration. A future live run requires
-  explicit operator authorization.
+- Local model execution requires explicit operator authorization; enabling
+  its picker rows alone does not launch the model.
 - Direct ChatGPT routing now distinguishes transient or malformed model-roster
   discovery from a confirmed account denial. Sol/Terra/Luna remain present in
   the Direct bare catalog; Pool, exact account selectors, and Daybreak retain

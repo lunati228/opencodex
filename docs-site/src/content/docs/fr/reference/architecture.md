@@ -98,14 +98,16 @@ Le compactage du contexte Codex fonctionne avec les modèles routés. `server/re
 
 ## Effort de raisonnement
 
-`reasoning-effort.ts` traduit les libellés de raisonnement de Codex dans les valeurs de protocole propres à chaque fournisseur. Une échelle non-GPT déclarée est publiée à l’identique, sans niveaux synthétiques. Les entrées sans échelle déclarée conservent les valeurs de compatibilité, et les modèles GPT conservent leurs niveaux produit Codex. Le module :
+`reasoning-effort.ts` traduit les niveaux de raisonnement de Codex en valeurs propres au protocole du fournisseur. L’échelle prise en charge détermine la requête sortante ; les modèles routés ordinaires peuvent aussi afficher des niveaux produit synthétiques. Le module :
 
 - définit les `CODEX_REASONING_LEVELS` canoniques et leur ordre de tri ;
 - ramène un effort demandé au niveau pris en charge le plus proche lorsque le niveau exact n’est pas disponible ;
 - résout les substitutions `reasoningEffortMap` par modèle et par fournisseur pour les correspondances de protocole personnalisées ;
 - omet entièrement l’effort pour les modèles répertoriés dans `noReasoningModels`.
 
-Par exemple, Gemini 3.8 Flash affiche uniquement `low` / `medium` / `high`. Le Qwen local géré affiche `low` / `medium` / `xhigh` et utilise `xhigh` par défaut. Les anciennes valeurs ne sont converties ou plafonnées qu’à la frontière du protocole.
+Les modèles routés ordinaires conservent les niveaux synthétiques `max` et `ultra` dans le sélecteur.
+Pour Gemini 3.8 Flash, les deux sont convertis en `high` sur le protocole du fournisseur.
+Le Qwen local géré conserve exactement `low` / `medium` / `xhigh`, avec `xhigh` par défaut.
 
 Qwen3.8-Max constitue une exception explicite d’effort direct par rapport à l’ancien contrat de budget Qwen3.x. Alibaba Token Plan enregistre les niveaux pris en charge en amont `low`, `medium` et `xhigh` (valeur par défaut), puis envoie la valeur effective dans `reasoning_effort`. Les niveaux de compatibilité propres à Codex qui les dépassent sont limités à `xhigh` sur le protocole. L’enrichissement du registre à l’exécution corrige les anciennes métadonnées de préréglage persistantes qui classent encore ce modèle comme un modèle `thinking_budget`.
 

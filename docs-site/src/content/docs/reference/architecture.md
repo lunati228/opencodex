@@ -172,19 +172,18 @@ history, while `responses/parser.ts` and `bridge.ts` handle remote compaction v2
 
 ## Reasoning effort
 
-`reasoning-effort.ts` translates Codex's reasoning labels into each provider's wire values. A
-declared non-GPT ladder is published exactly as configured, so the picker never promises a tier
-that the model does not support. Undeclared rows retain conservative compatibility defaults, and
-GPT-family rows retain their established Codex product tiers. The module:
+`reasoning-effort.ts` translates Codex reasoning labels into provider-specific wire values.
+The provider's supported ladder governs the outgoing request; ordinary routed picker rows may
+also expose synthetic product tiers. The module:
 
 - Defines the canonical `CODEX_REASONING_LEVELS` and their sort order.
 - Clamps a requested effort to the closest supported tier when the exact level is unavailable.
 - Resolves per-model and per-provider `reasoningEffortMap` overrides for custom wire mappings.
 - Drops the effort entirely for models listed in `noReasoningModels`.
 
-For example, Gemini 3.8 Flash exposes `low` / `medium` / `high`, while the managed local Qwen row
-exposes `low` / `medium` / `xhigh` and defaults to `xhigh`. Stale saved requests can still be
-clamped or aliased at the wire boundary without adding those compatibility values to the picker.
+Ordinary routed models retain synthetic `max` and `ultra` picker tiers. For Gemini 3.8 Flash,
+both are mapped to the supported wire effort `high`; they are not additional provider reasoning
+levels. Managed local Qwen remains exact: `low` / `medium` / `xhigh`, with `xhigh` as its default.
 
 Qwen3.8-Max is an explicit direct-effort exception to the older Qwen3.x budget contract. Alibaba
 Token Plan records its upstream-supported ladder as `low`, `medium`, and `xhigh` (the default), and
