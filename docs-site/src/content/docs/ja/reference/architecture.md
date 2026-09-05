@@ -116,7 +116,7 @@ Codex コンテキスト compaction はルーティングされたモデルで�
 - カスタム wire マッピングのためのモデル別・プロバイダー別 `reasoningEffortMap` override を解釈します。
 - `noReasoningModels` に列挙されたモデルについては effort を完全に削除します。
 
-たとえば Gemini 3.7 Flash は `low` / `medium` / `high` のみを表示します。管理対象のローカル Qwen は `low` / `medium` / `xhigh` を表示し、既定値は `xhigh` です。古い保存値のクランプや変換は wire 境界でのみ行われます。
+たとえば Gemini 3.8 Flash は `low` / `medium` / `high` のみを表示します。管理対象のローカル Qwen は `low` / `medium` / `xhigh` を表示し、既定値は `xhigh` です。古い保存値のクランプや変換は wire 境界でのみ行われます。
 
 ## コア型
 

@@ -179,7 +179,7 @@ la délégation, l'héritage, le repli et le comportement des tâches chiffrées
 ## Niveaux de raisonnement supérieurs
 
 La visibilité des niveaux de raisonnement est indépendante du mode de surface v1/base/v2. Une échelle
-non-GPT déclarée est affichée à l’identique, sans `max` ni `ultra` synthétique : Gemini 3.7 Flash affiche
+non-GPT déclarée est affichée à l’identique, sans `max` ni `ultra` synthétique : Gemini 3.8 Flash affiche
 `low` / `medium` / `high`, et le Qwen local géré affiche `low` / `medium` / `xhigh`. Le comportement GPT
 reste inchangé et les échelles amont exactes de GPT-5.6 sont préservées.
 

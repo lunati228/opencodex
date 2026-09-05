@@ -127,7 +127,7 @@ Models 頁面的 v1/base/v2 控制會改變每個選擇器條目使用的 Codex 
 ## 頂級 reasoning 檔位
 
 目錄中顯示哪些 reasoning 檔位與 v1/base/v2 介面模式無關。已宣告的非 GPT 階梯會原樣顯示，
-不會加入合成的 `max` 或 `ultra`；例如 Gemini 3.7 Flash 只有 `low` / `medium` / `high`，
+不會加入合成的 `max` 或 `ultra`；例如 Gemini 3.8 Flash 只有 `low` / `medium` / `high`，
 受管 Qwen 只有 `low` / `medium` / `xhigh`。GPT 行為維持不變，精確的 GPT-5.6 階梯也會原樣保留。
 
 在實際請求中，路由 adapter 會對映或限制不受支援的檔位。對於真實最高檔位為 `xhigh` 的舊原生

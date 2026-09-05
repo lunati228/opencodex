@@ -152,7 +152,7 @@ Codex 컨텍스트 compaction은 라우팅된 모델에서도 동작합니다. `
 - 커스텀 와이어 매핑을 위한 모델별 및 프로바이더별 `reasoningEffortMap` 오버라이드를 해석합니다.
 - `noReasoningModels`에 나열된 모델에 대해서는 effort를 완전히 제거합니다.
 
-예를 들어 Gemini 3.7 Flash는 `low` / `medium` / `high`만 표시합니다. 관리형 로컬 Qwen은
+예를 들어 Gemini 3.8 Flash는 `low` / `medium` / `high`만 표시합니다. 관리형 로컬 Qwen은
 `low` / `medium` / `xhigh`를 표시하고 기본값은 `xhigh`입니다. 오래된 저장 값은 와이어 경계에서만
 클램프되거나 매핑됩니다.
 

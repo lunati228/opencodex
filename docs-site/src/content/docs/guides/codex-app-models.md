@@ -187,7 +187,7 @@ metadata instead of an older-template approximation.
 | xAI | Live discovery is authoritative. The fallback catalog includes `xai/grok-4.6` and defaults to `xai/grok-4.5`; both have 500,000-token windows. Grok 4.6 exposes `low` / `medium` / `high` / `xhigh` (upstream default: `high`), while Grok 4.5 stops at `high`. |
 
 Declared non-GPT reasoning ladders are picker-authoritative. OpenCodex does not append synthetic
-`max` or `ultra` choices to them: Gemini 3.7 Flash shows `low` / `medium` / `high`, and the managed
+`max` or `ultra` choices to them: Gemini 3.8 Flash shows `low` / `medium` / `high`, and the managed
 local Qwen row shows `low` / `medium` / `xhigh` with `xhigh` as its default. Compatibility mapping
 for stale saved values happens only when building the provider request. GPT-family catalog behavior
 is unchanged.

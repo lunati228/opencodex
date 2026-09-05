@@ -351,18 +351,18 @@ describe("tri-state entitlement authority", () => {
       fetcher: backend,
       now: 1_000,
       clientVersion: "0.140.0",
-    })).toBe(false);
+    })).toBeUndefined();
     expect(await isDirectCallerEntitledToCodexModel(directHeaders(), SOL, {
       fetcher: backend,
       now: 15_999,
       clientVersion: "0.140.0",
-    })).toBe(false);
+    })).toBeUndefined();
     expect(fetches).toBe(1);
     expect(await isDirectCallerEntitledToCodexModel(directHeaders(), SOL, {
       fetcher: backend,
       now: 16_001,
       clientVersion: "0.140.0",
-    })).toBe(false);
+    })).toBeUndefined();
     expect(fetches).toBe(2);
 
     const snapshot = await resolveCodexModelEntitlements({ codexAccounts: [] }, {
@@ -437,7 +437,7 @@ describe("tri-state entitlement authority", () => {
       fetcher: (async () => roster("gpt-5.5")) as typeof fetch,
       now: 1_000,
       clientVersion: "0.140.0",
-    })).toBe(false);
+    })).toBeUndefined();
   });
 
   test("CHARACTERIZATION: an unconfirmed roster cannot grant a present gated slug", () => {
@@ -1341,7 +1341,7 @@ describe("entitlement client version (#2886)", () => {
     release[1]!();
 
     expect(await newer).toBe(true);
-    expect(await older).toBe(false);
+    expect(await older).toBeUndefined();
 
     // Each version's evidence survives independently: the late, empty roster did not erase
     // the newer client's confirmation.
@@ -1362,7 +1362,7 @@ describe("entitlement client version (#2886)", () => {
     })).toBe(true);
     expect(await isDirectCallerEntitledToCodexModel(directHeaders("tok-race"), SOL, {
       fetcher: inverted, now: 1_000, clientVersion: "0.140.0",
-    })).toBe(false);
+    })).toBeUndefined();
     expect(refetches).toBe(0);
   });
 
@@ -1503,16 +1503,16 @@ describe("entitlement client version (#2886)", () => {
       { fetcher: empty, now, clientVersion: "0.146.0" },
     );
 
-    expect(await ask(1_000)).toBe(false);
+    expect(await ask(1_000)).toBeUndefined();
     expect(fetches).toBe(1);
 
     // Still inside the 15s failure window: served from the cached unconfirmed entry.
-    expect(await ask(1_000 + 14_999)).toBe(false);
+    expect(await ask(1_000 + 14_999)).toBeUndefined();
     expect(fetches).toBe(1);
 
     // Past the failure TTL: exactly one refetch. Under the old five-minute success TTL this
     // stayed at 1 until 300,001 ms, which is the wrong answer held for twenty times too long.
-    expect(await ask(1_000 + 15_001)).toBe(false);
+    expect(await ask(1_000 + 15_001)).toBeUndefined();
     expect(fetches).toBe(2);
   });
 
@@ -1537,7 +1537,7 @@ describe("entitlement client version (#2886)", () => {
   test("an all-filtered roster is unconfirmed and retried on the failure TTL", async () => {
     // Rows arrived, but every one was hidden or api-disabled, so the parse yields an empty set.
     // Same situation as a zero-row response: no usable evidence. Every gated projection needs
-    // both confirmation and membership, so an empty set denies identically either way — which
+    // both confirmation and membership; Direct instead keeps this unknown — which
     // is exactly why calling it "confirmed" buys nothing and costs a five-minute wrong answer.
     let fetches = 0;
     const filtered = (async () => {
@@ -1554,13 +1554,13 @@ describe("entitlement client version (#2886)", () => {
       { fetcher: filtered, now, clientVersion: "0.146.0" },
     );
 
-    expect(await ask(1_000)).toBe(false);
+    expect(await ask(1_000)).toBeUndefined();
     expect(fetches).toBe(1);
-    expect(await ask(1_000 + 14_999)).toBe(false);
+    expect(await ask(1_000 + 14_999)).toBeUndefined();
     expect(fetches).toBe(1);
     // The TTL half is asserted separately from the flag: flipping `confirmed` while leaving the
     // success TTL in place would pass an assertion about the flag alone.
-    expect(await ask(1_000 + 15_001)).toBe(false);
+    expect(await ask(1_000 + 15_001)).toBeUndefined();
     expect(fetches).toBe(2);
   });
 });

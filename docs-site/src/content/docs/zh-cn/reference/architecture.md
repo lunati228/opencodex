@@ -159,7 +159,7 @@ Codex context compaction 同样适用于路由模型。`server/responses/compact
 - 解析模型级和 provider 级 `reasoningEffortMap` override，用于自定义 wire 映射。
 - 对 `noReasoningModels` 中的模型完全移除 effort。
 
-例如 Gemini 3.7 Flash 只显示 `low` / `medium` / `high`；托管 Qwen 只显示
+例如 Gemini 3.8 Flash 只显示 `low` / `medium` / `high`；托管 Qwen 只显示
 `low` / `medium` / `xhigh`，并默认使用 `xhigh`。旧配置值只会在 wire 边界被钳制或映射。
 
 Qwen3.8-Max 是旧版 Qwen3.x budget 契约之外、明确使用直接 effort 的例外。Alibaba Token

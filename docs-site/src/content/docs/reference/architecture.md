@@ -182,7 +182,7 @@ GPT-family rows retain their established Codex product tiers. The module:
 - Resolves per-model and per-provider `reasoningEffortMap` overrides for custom wire mappings.
 - Drops the effort entirely for models listed in `noReasoningModels`.
 
-For example, Gemini 3.7 Flash exposes `low` / `medium` / `high`, while the managed local Qwen row
+For example, Gemini 3.8 Flash exposes `low` / `medium` / `high`, while the managed local Qwen row
 exposes `low` / `medium` / `xhigh` and defaults to `xhigh`. Stale saved requests can still be
 clamped or aliased at the wire boundary without adding those compatibility values to the picker.
 

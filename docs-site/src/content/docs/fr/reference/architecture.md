@@ -105,7 +105,7 @@ Le compactage du contexte Codex fonctionne avec les modèles routés. `server/re
 - résout les substitutions `reasoningEffortMap` par modèle et par fournisseur pour les correspondances de protocole personnalisées ;
 - omet entièrement l’effort pour les modèles répertoriés dans `noReasoningModels`.
 
-Par exemple, Gemini 3.7 Flash affiche uniquement `low` / `medium` / `high`. Le Qwen local géré affiche `low` / `medium` / `xhigh` et utilise `xhigh` par défaut. Les anciennes valeurs ne sont converties ou plafonnées qu’à la frontière du protocole.
+Par exemple, Gemini 3.8 Flash affiche uniquement `low` / `medium` / `high`. Le Qwen local géré affiche `low` / `medium` / `xhigh` et utilise `xhigh` par défaut. Les anciennes valeurs ne sont converties ou plafonnées qu’à la frontière du protocole.
 
 Qwen3.8-Max constitue une exception explicite d’effort direct par rapport à l’ancien contrat de budget Qwen3.x. Alibaba Token Plan enregistre les niveaux pris en charge en amont `low`, `medium` et `xhigh` (valeur par défaut), puis envoie la valeur effective dans `reasoning_effort`. Les niveaux de compatibilité propres à Codex qui les dépassent sont limités à `xhigh` sur le protocole. L’enrichissement du registre à l’exécution corrige les anciennes métadonnées de préréglage persistantes qui classent encore ce modèle comme un modèle `thinking_budget`.
 

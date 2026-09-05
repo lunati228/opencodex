@@ -49,6 +49,13 @@ interface Journal {
    */
   injectedOpenaiBaseUrl?: string | null;
   /**
+   * The root `experimental_realtime_ws_base_url` this injection wrote, when it wrote one.
+   * Recorded on its own rather than inferred from `injectedOpenaiBaseUrl`: a user can own a
+   * realtime override whose value happens to equal the proxy URL, and restore must not treat
+   * that as ours. Null when the key was preserved or not injected.
+   */
+  injectedRealtimeWsBaseUrl?: string | null;
+  /**
    * The catalog path this injection actually wrote to.
    *
    * #1798: restore re-resolves the catalog from the CURRENT config, so a Codex app rewrite
@@ -139,6 +146,7 @@ export function writeJournal(options: WriteJournalOptions = {}): void {
 
 export interface InjectedJournalOwnership {
   injectedOpenaiBaseUrl: string | null;
+  injectedRealtimeWsBaseUrl: string | null;
   injectedCatalogPath: string | null;
 }
 
@@ -160,6 +168,7 @@ export function markJournalInjectedState(
   // Only the caller knows which values it actually owns. Deriving these from the final TOML
   // would mistake a preserved user override for injected routing.
   journal.injectedOpenaiBaseUrl = ownership.injectedOpenaiBaseUrl;
+  journal.injectedRealtimeWsBaseUrl = ownership.injectedRealtimeWsBaseUrl;
   journal.injectedCatalogPath = ownership.injectedCatalogPath;
   delete journal.intentionalShutdown;
   hardenConfigDirForSecretWrite();
@@ -185,6 +194,11 @@ export function markJournalIntentionalShutdown(): void {
  */
 export function journaledInjectedOpenaiBaseUrl(): string | null {
   return readJournal()?.injectedOpenaiBaseUrl ?? null;
+}
+
+/** The root `experimental_realtime_ws_base_url` the last injection wrote, or null. */
+export function journaledInjectedRealtimeWsBaseUrl(): string | null {
+  return readJournal()?.injectedRealtimeWsBaseUrl ?? null;
 }
 
 /** The catalog path the last injection wrote to, or null when none was recorded. */

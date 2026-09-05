@@ -127,7 +127,7 @@ routed provider-id `provider/model`. Account-qualified id `<selector>/<native-op
 ## Верхние reasoning-tier'ы
 
 Видимость reasoning-tier'ов не зависит от режима поверхности v1/base/v2. Явно объявленная
-лестница не-GPT отображается точно, без синтетических `max` и `ultra`: Gemini 3.7 Flash показывает
+лестница не-GPT отображается точно, без синтетических `max` и `ultra`: Gemini 3.8 Flash показывает
 `low` / `medium` / `high`, а управляемый локальный Qwen — `low` / `medium` / `xhigh`. Поведение GPT
 не меняется, а точные upstream-лестницы GPT-5.6 сохраняются.
 

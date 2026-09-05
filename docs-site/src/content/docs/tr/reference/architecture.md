@@ -203,7 +203,7 @@ GPT ailesi ise mevcut Codex ürün katmanlarını korur. Modül:
   geçersiz kılmalarını çözer.
 - `noReasoningModels` içinde listelenen modeller için çabayı tamamen bırakır.
 
-Örneğin Gemini 3.7 Flash yalnızca `low` / `medium` / `high` gösterir. Yönetilen
+Örneğin Gemini 3.8 Flash yalnızca `low` / `medium` / `high` gösterir. Yönetilen
 yerel Qwen `low` / `medium` / `xhigh` gösterir ve varsayılanı `xhigh`'dır. Eski
 kayıtlı değerler yalnızca hat sınırında eşlenir veya sabitlenir.
 

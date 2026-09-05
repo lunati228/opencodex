@@ -213,7 +213,7 @@ Arayüzü](/tr/guides/sub-agent-surface/) sayfasına bakın.
 
 Akıl yürütme katmanı görünürlüğü, v1/base/v2 yüzey modundan bağımsızdır. Açıkça
 bildirilen GPT dışı merdivenler sentetik `max` veya `ultra` eklenmeden aynen
-gösterilir. Gemini 3.7 Flash yalnızca `low` / `medium` / `high`, yönetilen yerel
+gösterilir. Gemini 3.8 Flash yalnızca `low` / `medium` / `high`, yönetilen yerel
 Qwen ise yalnızca `low` / `medium` / `xhigh` gösterir. GPT davranışı değişmez ve
 tam yukarı akış GPT-5.6 merdivenleri korunur.
 
