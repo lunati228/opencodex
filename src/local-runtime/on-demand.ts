@@ -2,6 +2,7 @@ import type {
   LocalRuntimeFailure,
   LocalRuntimeStatus,
 } from "./supervisor";
+import { managedLocalRuntimeConsumerLeases, type ConsumerLeaseSnapshot } from "./consumer-leases";
 
 /**
  * On-demand lifecycle for the managed local model.
@@ -126,6 +127,7 @@ export interface IdleReleaseObservation {
   lastUsedAt: number | null;
   now: number;
   idleMs?: number;
+  consumers?: ConsumerLeaseSnapshot;
 }
 
 /**
@@ -138,8 +140,10 @@ export interface IdleReleaseObservation {
  */
 export function shouldReleaseIdleLocalRuntime(observation: IdleReleaseObservation): boolean {
   const { running, lastUsedAt: usedAt, now, idleMs = LOCAL_RUNTIME_IDLE_RELEASE_MS } = observation;
-  if (!running || usedAt === null || activeManagedLocalRuntimeUses > 0) return false;
-  return now - usedAt >= idleMs;
+  const consumers = observation.consumers ?? managedLocalRuntimeConsumerLeases.snapshot();
+  if (!running || activeManagedLocalRuntimeUses > 0 || consumers.modelHolds > 0) return false;
+  const times = [usedAt, consumers.lastModelUseAt].filter((time): time is number => time !== null);
+  return times.length > 0 && now - Math.max(...times) >= idleMs;
 }
 
 export interface EnsureReadyDeps {
@@ -162,6 +166,7 @@ export type EnsureReadyResult =
   | "already-ready"
   | "started"
   | "timeout"
+  | { kind: "blocked"; reason: "consumer-in-use" }
   | { kind: "failed"; failure: LocalRuntimeFailure };
 
 const LOCAL_RUNTIME_FAILURE_MESSAGES = {
@@ -193,6 +198,7 @@ export function localRuntimeReadinessErrorMessage(
   if (result === "timeout") {
     return "Local model is still loading. Send the message again in a moment.";
   }
+  if (result.kind === "blocked") return "Local model is in use by another consumer. Retry after that use ends.";
   return LOCAL_RUNTIME_FAILURE_MESSAGES[result.failure];
 }
 

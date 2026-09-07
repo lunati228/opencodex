@@ -299,12 +299,12 @@ export interface CompanionDeps {
   /** Gracefully recycle the exact companion-owned proxy without stripping routing. */
   restartProxy?(): Promise<void | "busy">;
   /** Stop llama-server only. Must NOT stop the proxy — see releaseModelOnClose. */
-  releaseModel(): Promise<void>;
+  releaseModel(): Promise<void | "busy">;
   /**
    * Stop the proxy PROCESS only. Must NOT restore native Codex: the injected
    * `openai_base_url` has to survive, or the next launch bypasses the proxy.
    */
-  stopProxy(): Promise<void>;
+  stopProxy(): Promise<void | "busy">;
   now(): number;
   sleep(ms: number): Promise<void>;
   log(message: string): void;
@@ -381,10 +381,10 @@ export async function runCodexCompanion(deps: CompanionDeps): Promise<void> {
         }
       } else if (decided.action === "release-model") {
         deps.log("Codex has closed — releasing the local model.");
-        await deps.releaseModel();
+        if (await deps.releaseModel() === "busy") state = { ...state, modelReleased: false };
       } else if (decided.action === "stop-proxy") {
         deps.log("Model released — stopping the proxy (Codex routing stays injected).");
-        await deps.stopProxy();
+        if (await deps.stopProxy() === "busy") state = { ...state, startedByCompanion: true };
       }
     } catch (error) {
       // Re-arm on a failed release so the next tick retries, rather than leaving

@@ -1,4 +1,5 @@
 import type { OcxConfig } from "../types";
+import type { ConsumerLeaseRegistry } from "./consumer-leases";
 import {
   LOCAL_RUNTIME_PROFILE_ID,
   type LocalRuntimeCandidate,
@@ -38,6 +39,8 @@ export interface LocalRuntimeHandle {
 
 export interface LocalRuntimeSupervisorDeps {
   now(): number;
+  consumers?: ConsumerLeaseRegistry;
+  activeUseCount?: () => number;
   /**
    * Takes the profile explicitly: each profile has its own model file and
    * expected size, so a parameterless check would silently verify the default
@@ -81,6 +84,7 @@ export type LocalRuntimeMutationResult =
       | "stale-revision"
       | "already-running"
       | "not-running"
+      | "consumer-in-use"
       | "invalid-candidate";
   };
 
@@ -107,7 +111,7 @@ export interface LocalRuntimeControl {
       reasoningEffort?: string;
     },
   ): LocalRuntimeMutationResult;
-  requestStop(): LocalRuntimeMutationResult;
+  requestStop(options?: { idle?: boolean }): LocalRuntimeMutationResult;
   whenIdle(): Promise<void>;
   canRoute(): boolean;
   shutdown(): Promise<void>;
@@ -199,6 +203,7 @@ export class LocalRuntimeSupervisor implements LocalRuntimeControl {
       reasoningEffort?: string;
     },
   ): LocalRuntimeMutationResult {
+    if ((this.deps.consumers?.snapshot().modelHolds ?? 0) > 0) return this.rejected("consumer-in-use");
     if (this.operation) return this.rejected("operation-in-progress");
     if (input.expectedRevision !== this.revision) {
       return this.rejected("stale-revision");
@@ -217,7 +222,10 @@ export class LocalRuntimeSupervisor implements LocalRuntimeControl {
     return this.accept(this.applyOperation(config, candidate));
   }
 
-  requestStop(): LocalRuntimeMutationResult {
+  requestStop(options: { idle?: boolean } = {}): LocalRuntimeMutationResult {
+    const consumers = this.deps.consumers?.snapshot();
+    if ((options.idle ? consumers?.modelHolds ?? 0 : consumers?.proxyHolds ?? 0) > 0
+      || (this.deps.activeUseCount?.() ?? 0) > 0) return this.rejected("consumer-in-use");
     if (this.operation) return this.rejected("operation-in-progress");
     if (!this.handle) return this.rejected("not-running");
     this.state = "stopping";

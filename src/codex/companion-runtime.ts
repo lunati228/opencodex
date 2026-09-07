@@ -13,7 +13,13 @@ import {
   REPLACEMENT_READY_TIMEOUT_MS,
 } from "../lib/system-restart-contract";
 import { findLiveProxy } from "../server/proxy-liveness";
-import { stopProxyGracefully } from "../lib/process-control";
+import { readRuntimePort } from "../config/process-state";
+import { directLocalHttpFetch } from "../server/direct-local-http";
+import {
+  createLocalAttestationChallenge, LOCAL_ATTESTATION_CHALLENGE_HEADER,
+  LOCAL_ATTESTATION_PROOF_HEADER, verifyLocalAttestationProof,
+} from "../lib/local-management-attestation";
+import { createCompanionLifecycleHeaders, type CompanionLifecyclePath } from "../local-runtime/companion-lifecycle-auth";
 import {
   CODEX_COMPANION_LIFECYCLE_OWNER,
   withCompanionLifecycleOwner,
@@ -29,6 +35,39 @@ import type { LiveProxy } from "../server/proxy-liveness";
 const LOCAL_PROXY_HOST = "127.0.0.1";
 const COMPANION_RESTART_OBSERVE_MS =
   MEMORY_DRAIN_RESTART_MS + REPLACEMENT_READY_TIMEOUT_MS + 15_000;
+
+export interface CompanionLifecycleIo {
+  readRuntime?: typeof readRuntimePort;
+  fetchImpl?: typeof fetch;
+}
+
+/** Prove the listener before sending a one-use, exact-process capability over direct loopback. */
+export async function requestCompanionLifecycle(
+  target: LiveProxy, path: CompanionLifecyclePath, io: CompanionLifecycleIo = {},
+): Promise<Response> {
+  const unavailable = () => new Error("companion_lifecycle_unverified");
+  if (target.source !== "runtime" || target.pid === null
+    || (target.hostname !== undefined && target.hostname !== "127.0.0.1" && target.hostname !== "localhost")) throw unavailable();
+  const runtime = (io.readRuntime ?? readRuntimePort)(target.pid);
+  if (!runtime?.attestationSecret || runtime.pid !== target.pid || runtime.port !== target.port) throw unavailable();
+  const fetchImpl = io.fetchImpl ?? directLocalHttpFetch;
+  const base = `http://${LOCAL_PROXY_HOST}:${target.port}`;
+  const challenge = createLocalAttestationChallenge();
+  const local = { attestationSecret: runtime.attestationSecret, pid: target.pid, port: target.port };
+  try {
+    const proof = await fetchImpl(`${base}/healthz`, {
+      headers: { [LOCAL_ATTESTATION_CHALLENGE_HEADER]: challenge }, signal: AbortSignal.timeout(4_000), redirect: "error",
+    });
+    if (!proof.ok || !verifyLocalAttestationProof(local.attestationSecret, challenge, local.pid, local.port,
+      proof.headers.get(LOCAL_ATTESTATION_PROOF_HEADER))) throw unavailable();
+    return await fetchImpl(`${base}${path}`, {
+      method: "POST", headers: createCompanionLifecycleHeaders(local, path),
+      signal: AbortSignal.timeout(10_000), redirect: "error",
+    });
+  } catch {
+    throw unavailable();
+  }
+}
 
 function systemRoot(): string {
   return process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
@@ -310,14 +349,13 @@ export function buildCompanionDeps(
       // stops llama-server only and leaves the proxy (and the injection) alone.
       const live = await findLiveProxy();
       if (!live) return; // No proxy means no local runtime to release.
-      const response = await fetch(
-        `http://${LOCAL_PROXY_HOST}:${live.port}/api/local-runtime/stop`,
-        { method: "POST", signal: AbortSignal.timeout(15_000) },
-      );
-      // 409 "not-running" is success for this purpose: the model is already down.
-      if (!response.ok && response.status !== 409) {
-        throw new Error(`local-runtime stop returned ${response.status}`);
+      const response = await requestCompanionLifecycle(live, "/api/local-runtime/stop");
+      if (response.status === 409) {
+        const body = await response.json().catch(() => null) as { reason?: unknown } | null;
+        if (body?.reason === "not-running") return;
+        return "busy";
       }
+      if (!response.ok) throw new Error("companion_model_release_failed");
     },
     stopProxy: async () => {
       // Same reasoning as releaseModel, one step further: stop the PROCESS, never call
@@ -327,6 +365,7 @@ export function buildCompanionDeps(
       // companion starts it again as soon as it sees codex.exe.
       const live = await findLiveProxy();
       if (!live) return; // Already down.
+      if (live.lifecycleOwner !== CODEX_COMPANION_LIFECYCLE_OWNER) return "busy";
       if (typeof live.pid !== "number") {
         throw new Error("live proxy reported no pid; refusing to guess which process to stop");
       }
@@ -334,7 +373,9 @@ export function buildCompanionDeps(
       // openai_base_url AND model_catalog_json. Doing that on every Codex close meant
       // the next launch read the native catalog with none of the routed rows — the
       // exact outcome this dep's contract forbids.
-      await stopProxyGracefully(live.pid, {}, true);
+      const response = await requestCompanionLifecycle(live, "/api/stop?keep-codex-routing=1");
+      if (response.status === 409) return "busy";
+      if (!response.ok) throw new Error("companion_proxy_stop_failed");
     },
     now: Date.now,
     sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),

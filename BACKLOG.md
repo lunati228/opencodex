@@ -9,6 +9,19 @@
 | QWEN-3 | Deferred | Do not start Qwen without explicit operator authorization. |
 | QWEN-4 | Pending authorization | Run one bounded non-sensitive task and verify its terminal outcome and scoped durable edit. |
 
+## Harness consumer lifecycle
+
+| ID | State | Required outcome |
+| --- | --- | --- |
+| LEASE-1 | Complete in source | Authenticated v1 acquire, heartbeat, status, and idempotent release with owner-bound opaque tokens, 90-second expiry, and 30-second heartbeat. |
+| LEASE-2 | Complete in source | Separate proxy ownership and model-use holds; preserve queued requests, five-minute idle release, manual-start exception, and busy companion retries. |
+| LEASE-3 | Complete in source | Return only the verified numeric-loopback model descriptor; refuse foreign or unverified backends and lifecycle mutations that would interrupt other consumers. |
+| LEASE-4 | Integration validation pending | Connect the Harness direct local adapter, deny redirects, restrict inference to the verified origin and exact chat-completions path, and validate client failure/expiry behavior. |
+
+The management contract is documented in `README-FORK.md`. Consumer leases do
+not create a research inference route, cloud fallback, persistent consumer
+identity, or authorization to start a live model during development checks.
+
 ## Privacy gate
 
 Public material must contain only behavior-level configuration. The ignored

@@ -17,6 +17,7 @@ import {
   clearLocalRuntimeUse,
   ensureLocalRuntimeReady,
   localRuntimeLastUsedAt,
+  localRuntimeActiveUseCount,
   shouldReleaseIdleLocalRuntime,
   type EnsureReadyResult,
 } from "./on-demand";
@@ -45,6 +46,7 @@ import {
   type LocalRuntimeStatus,
   type LocalRuntimeSupervisorDeps,
 } from "./supervisor";
+import { managedLocalRuntimeConsumerLeases } from "./consumer-leases";
 
 const STARTUP_DEADLINE_MS = 15 * 60 * 1000;
 const POLL_MS = 2_000;
@@ -370,6 +372,8 @@ function persistLastKnownGood(
 
 export const productionLocalRuntimeDeps: LocalRuntimeSupervisorDeps = {
   now: Date.now,
+  consumers: managedLocalRuntimeConsumerLeases,
+  activeUseCount: localRuntimeActiveUseCount,
   assertProfileFiles,
   assertHostMemoryAvailable,
   isPortFree: () => isPortAvailable(LOCAL_RUNTIME_PORT, LOCAL_RUNTIME_HOST),
@@ -460,6 +464,12 @@ export async function ensureManagedLocalRuntimeReady(
    */
   desiredNCtx?: number,
 ): Promise<EnsureReadyResult> {
+  if (desiredNCtx !== undefined && managedLocalRuntimeConsumerLeases.snapshot().modelHolds > 0) {
+    const status = managedSupervisor.status(config);
+    if ((status.effective ?? status.requested)?.nCtx !== desiredNCtx) {
+      return { kind: "blocked", reason: "consumer-in-use" };
+    }
+  }
   // Readiness means "routable AND at the size that was asked for". Without the second half an
   // apply-triggered restart would return early: the outgoing engine still answers canRoute()
   // for a moment, so the wait would end before the new window existed.
@@ -498,7 +508,10 @@ export async function ensureManagedLocalRuntimeReady(
  * been idle for the configured window. Started by the server and left running for the process
  * lifetime; `unref` so it never holds the event loop open.
  */
+let stopIdleSweep: (() => void) | null = null;
+
 export function startManagedLocalRuntimeIdleSweep(config: OcxConfig): () => void {
+  if (stopIdleSweep) return stopIdleSweep;
   const timer = setInterval(() => {
     const release = shouldReleaseIdleLocalRuntime({
       running: managedSupervisor.canRoute(),
@@ -506,12 +519,16 @@ export function startManagedLocalRuntimeIdleSweep(config: OcxConfig): () => void
       now: Date.now(),
     });
     if (release) {
-      clearLocalRuntimeUse();
-      managedSupervisor.requestStop();
+      const result = managedSupervisor.requestStop({ idle: true });
+      if (result.accepted) {
+        clearLocalRuntimeUse();
+        managedLocalRuntimeConsumerLeases.clearModelUse();
+      }
     }
   }, LOCAL_RUNTIME_IDLE_SWEEP_MS);
   timer.unref?.();
-  return () => clearInterval(timer);
+  stopIdleSweep = () => { clearInterval(timer); stopIdleSweep = null; };
+  return stopIdleSweep;
 }
 
 /**
@@ -526,5 +543,6 @@ export function managedLocalRuntimeProviderIsValid(config: OcxConfig): boolean {
 }
 
 export async function shutdownManagedLocalRuntime(): Promise<void> {
+  stopIdleSweep?.();
   await managedSupervisor.shutdown();
 }

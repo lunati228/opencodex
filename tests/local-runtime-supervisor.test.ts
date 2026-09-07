@@ -14,6 +14,7 @@ import {
 } from "../src/local-runtime/profile";
 import { QWEN_DEFAULT_CONTEXT } from "../src/local-runtime/context-tiers";
 import type { OcxConfig } from "../src/types";
+import { ConsumerLeaseRegistry } from "../src/local-runtime/consumer-leases";
 
 function config(): OcxConfig {
   return {
@@ -130,6 +131,53 @@ function harness(options: {
 }
 
 describe("LocalRuntimeSupervisor", () => {
+  test("consumer model hold blocks a context restart and stop until expiry", async () => {
+    let now = 0;
+    const consumers = new ConsumerLeaseRegistry(() => now, () => now);
+    const h = harness();
+    const supervisor = new LocalRuntimeSupervisor({ ...h.deps, consumers });
+    const cfg = config();
+    supervisor.requestStart(cfg);
+    await supervisor.whenIdle();
+    consumers.acquire("owner", true);
+    expect(supervisor.requestApply(cfg, { profileId: LOCAL_RUNTIME_PROFILE_ID, nCtx: 131_072, expectedRevision: supervisor.status(cfg).revision }))
+      .toMatchObject({ accepted: false, reason: "consumer-in-use" });
+    expect(supervisor.requestStop()).toMatchObject({ accepted: false, reason: "consumer-in-use" });
+    expect(supervisor.requestStop({ idle: true })).toMatchObject({ accepted: false, reason: "consumer-in-use" });
+    expect(h.stops).toHaveLength(0);
+    now = 90_000;
+    expect(supervisor.requestStop().accepted).toBe(true);
+    await supervisor.whenIdle();
+    expect(h.stops).toHaveLength(1);
+  });
+
+  test("proxy-only lease allows idle model release but protects explicit stop", async () => {
+    const consumers = new ConsumerLeaseRegistry(() => 0, () => 0);
+    const h = harness();
+    const supervisor = new LocalRuntimeSupervisor({ ...h.deps, consumers });
+    const cfg = config();
+    supervisor.requestStart(cfg);
+    await supervisor.whenIdle();
+    consumers.acquire("owner", false);
+    expect(supervisor.requestStop()).toMatchObject({ accepted: false, reason: "consumer-in-use" });
+    expect(supervisor.requestStop({ idle: true }).accepted).toBe(true);
+    await supervisor.whenIdle();
+    expect(consumers.snapshot().proxyHolds).toBe(1);
+  });
+
+  test("queued or streaming local requests protect model stop", async () => {
+    const h = harness();
+    let active = 1;
+    const supervisor = new LocalRuntimeSupervisor({ ...h.deps, activeUseCount: () => active });
+    supervisor.requestStart(config());
+    await supervisor.whenIdle();
+    expect(supervisor.requestStop({ idle: true }).accepted).toBe(false);
+    expect(supervisor.requestStop().accepted).toBe(false);
+    active = 0;
+    expect(supervisor.requestStop().accepted).toBe(true);
+    await supervisor.whenIdle();
+  });
+
   test("owns one launched child and publishes effective state only after verification", async () => {
     const h = harness();
     const supervisor = new LocalRuntimeSupervisor(h.deps);

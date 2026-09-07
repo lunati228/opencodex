@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
+import { admitCompanionLifecycle } from "../local-runtime/companion-lifecycle-auth";
 import {
   LOCAL_MANAGEMENT_CAPABILITY_HEADER,
   LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER,
@@ -281,6 +282,7 @@ export function createManagementSessionControl(state: ManagementAuthState): Mana
  */
 export type ManagementPrincipal =
   | "admin-token"
+  | "local-runtime-lifecycle-capability"
   | "gui-session"
   | "gui-pair-capability"
   | "local-read-capability"
@@ -477,7 +479,8 @@ function resolveManagementAdmission(
   const cached = admittedManagementRequests.get(req);
   if (cached) return cached;
   let principal: ManagementPrincipal | null = null;
-  if (hasSystemRestartCapability(req, local)) principal = "system-restart-capability";
+  if (admitCompanionLifecycle(req, local)) principal = "local-runtime-lifecycle-capability";
+  else if (hasSystemRestartCapability(req, local)) principal = "system-restart-capability";
   else if (hasLocalProviderReloadCapability(req, local)) principal = "local-provider-reload-capability";
   else if (hasLocalReadCapability(req, local)) principal = "local-read-capability";
   else if (hasGuiPairCapability(req, local)) principal = "gui-pair-capability";

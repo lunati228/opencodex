@@ -41,6 +41,7 @@ import {
   REPLACEMENT_READY_TIMEOUT_MS,
 } from "../../lib/system-restart-contract";
 import { findLiveProxy } from "../proxy-liveness";
+import { managedLocalRuntimeConsumerLeases, type ConsumerLeaseRegistry } from "../../local-runtime/consumer-leases";
 
 export { MEMORY_DRAIN_RESTART_MS, REPLACEMENT_READY_TIMEOUT_MS } from "../../lib/system-restart-contract";
 export const DEADLINE_LISTENER_STOP_TIMEOUT_MS = 5_000;
@@ -53,6 +54,7 @@ export interface ReplacementReadinessIo {
 }
 
 export interface SystemRestartIo {
+  consumers?: ConsumerLeaseRegistry;
   drainAndShutdown?: typeof drainAndShutdown;
   /** True when a background service can actually respawn this process after exit(1). */
   isServiceViable?: () => boolean;
@@ -365,7 +367,8 @@ export function acceptSystemRestart(
   const activeTurnCount = (io.getActiveTurnCount ?? getActiveTurnCount)();
   const schedule = io.schedule ?? ((fn, ms) => { setTimeout(() => { void fn(); }, ms); });
 
-  if (requireIdle && !alreadyDraining && activeTurnCount > 0) {
+  const consumers = io.consumers ?? managedLocalRuntimeConsumerLeases;
+  if (!alreadyDraining && ((requireIdle && activeTurnCount > 0) || consumers.snapshot().proxyHolds > 0)) {
     return {
       accepted: false,
       busy: true,

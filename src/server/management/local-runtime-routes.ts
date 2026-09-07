@@ -1,6 +1,7 @@
 import {
   getManagedLocalRuntimeSupervisor,
   managedLocalRuntimeProviderIsValid,
+  startManagedLocalRuntimeIdleSweep,
 } from "../../local-runtime/production";
 import {
   DEFAULT_LOCAL_RUNTIME_PROFILE,
@@ -18,6 +19,76 @@ import type {
 import { jsonResponse } from "../auth-cors";
 import type { ManagementContext } from "./context";
 import { isPlainRecord } from "./shared";
+import { isShutdownDraining } from "../lifecycle";
+import { localRuntimeActiveUseCount } from "../../local-runtime/on-demand";
+import {
+  CONSUMER_LEASE_API_PATH, CONSUMER_LEASE_TTL_MS, CONSUMER_LEASE_HEARTBEAT_MS,
+  consumerLeaseOwner, managedLocalRuntimeConsumerLeases, verifiedLocalRuntimeDescriptor,
+} from "../../local-runtime/consumer-leases";
+
+async function handleConsumerLeases(ctx: ManagementContext): Promise<Response> {
+  const { req, url, config, deps } = ctx;
+  const respond = (body: unknown, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+  const error = (code: string, status: number) => respond({ version: 1, error: code }, status);
+  // These paths require a reusable management principal, never another route's capability.
+  if (ctx.principal !== "admin-token" && ctx.principal !== "gui-session") return error("management_auth_required", 401);
+  if (url.search) return error("query_not_allowed", 400);
+  if (req.method !== "POST") return error("method_not_allowed", 405);
+  const action = url.pathname.slice(CONSUMER_LEASE_API_PATH.length);
+  if (!["acquire", "heartbeat", "release", "status"].includes(action)) return error("not_found", 404);
+  const owner = consumerLeaseOwner(req);
+  if (!owner) return error("invalid_consumer_owner", 400);
+  let body: unknown;
+  try { body = await req.json(); } catch { return error("invalid_json", 400); }
+  const allowed = action === "acquire" ? ["modelUse"] : action === "heartbeat" ? ["leaseToken", "modelUse"] : ["leaseToken"];
+  if (!isPlainRecord(body) || Object.keys(body).some(key => !allowed.includes(key))
+    || (action === "acquire" && typeof body.modelUse !== "boolean")
+    || (body.modelUse !== undefined && typeof body.modelUse !== "boolean")
+    || (action !== "acquire" && (typeof body.leaseToken !== "string" || body.leaseToken.length !== 87))) return error("invalid_body", 400);
+  const leases = deps.localRuntimeConsumerLeases ?? managedLocalRuntimeConsumerLeases;
+  const token = body.leaseToken as string;
+  if (action === "release") {
+    return leases.release(owner, token) ? respond({ version: 1, released: true }) : error("lease_not_found", 404);
+  }
+  const current = action === "acquire" ? null : leases.status(owner, token);
+  if (action !== "acquire" && !current) return error("lease_not_found", 404);
+  const modelUse = body.modelUse as boolean | undefined ?? current?.modelUse ?? false;
+  if (isShutdownDraining()) return error("runtime_draining", 503);
+  if (!controlled(ctx)) return error("runtime_unverified", 503);
+  const supervisor = deps.localRuntimeSupervisor ?? getManagedLocalRuntimeSupervisor();
+  let status = supervisor.status(config);
+  let runtime = verifiedLocalRuntimeDescriptor(status, supervisor.canRoute());
+  if (status.state === "blocked-foreign-port" || status.state === "failed" || status.state === "stopping"
+    || ((status.state === "running" || status.state === "rolled-back") && !runtime)) return error("runtime_unverified", 503);
+  let lease = current;
+  let leaseToken: string | undefined;
+  if (action === "acquire") {
+    const acquired = leases.acquire(owner, modelUse);
+    if (!acquired) return error("lease_capacity_or_shutdown", 503);
+    leaseToken = acquired.leaseToken;
+    lease = { expiresAt: acquired.expiresAt, modelUse: acquired.modelUse };
+  } else if (action === "heartbeat") {
+    lease = leases.heartbeat(owner, token, modelUse);
+  }
+  if (!lease) return error("lease_not_found", 404);
+  if (!deps.localRuntimeSupervisor) startManagedLocalRuntimeIdleSweep(config);
+  // Acquire/heartbeat signal demand; status never starts a process or renews a lease.
+  if (modelUse && action !== "status" && status.state === "stopped") {
+    const started = supervisor.requestStart(config);
+    if (!started.accepted) {
+      if (leaseToken) leases.release(owner, leaseToken);
+      return error("runtime_unavailable", 503);
+    }
+    status = supervisor.status(config);
+    runtime = verifiedLocalRuntimeDescriptor(status, supervisor.canRoute());
+  }
+  const ready = modelUse && runtime !== null;
+  return respond({
+    version: 1, ttlMs: CONSUMER_LEASE_TTL_MS, heartbeatMs: CONSUMER_LEASE_HEARTBEAT_MS,
+    ...lease, ...(leaseToken ? { leaseToken } : {}),
+    state: !modelUse ? "idle" : ready ? "ready" : "loading", runtime: ready ? runtime : null,
+  }, modelUse && !ready ? 202 : 200);
+}
 
 function mutationStatus(result: LocalRuntimeMutationResult): number {
   if (result.accepted) return 202;
@@ -52,8 +123,10 @@ export async function handleLocalRuntimeRoutes(
 ): Promise<Response | null> {
   const { req, url, config, deps } = ctx;
   if (!url.pathname.startsWith("/api/local-runtime/")) return null;
+  if (url.pathname.startsWith(CONSUMER_LEASE_API_PATH)) return handleConsumerLeases(ctx);
   const supervisor = deps.localRuntimeSupervisor
     ?? getManagedLocalRuntimeSupervisor();
+  const consumers = deps.localRuntimeConsumerLeases ?? managedLocalRuntimeConsumerLeases;
 
   if (url.pathname === "/api/local-runtime/status" && req.method === "GET") {
     const status = supervisor.status(config);
@@ -88,6 +161,9 @@ export async function handleLocalRuntimeRoutes(
   }
 
   if (url.pathname === "/api/local-runtime/stop" && req.method === "POST") {
+    if (consumers.snapshot().proxyHolds > 0 || localRuntimeActiveUseCount() > 0) {
+      return jsonResponse({ accepted: false, reason: "consumer-in-use" }, 409);
+    }
     const result = supervisor.requestStop();
     return jsonResponse({
       ...result,
@@ -110,6 +186,9 @@ export async function handleLocalRuntimeRoutes(
    * `saveConfigPreservingClaudeCode` rather than touching config.json directly.
    */
   if (url.pathname === "/api/local-runtime/enable" && req.method === "POST") {
+    if (consumers.snapshot().proxyHolds > 0 || localRuntimeActiveUseCount() > 0) {
+      return jsonResponse({ accepted: false, reason: "consumer-in-use" }, 409);
+    }
     let raw: unknown = {};
     if (req.headers.get("content-type")?.includes("application/json")) {
       try {
@@ -232,6 +311,9 @@ export async function handleLocalRuntimeRoutes(
     // the supervisor resolves an absent value to the profile's own default.
     if (raw.reasoningEffort !== undefined && typeof raw.reasoningEffort !== "string") {
       return jsonResponse({ error: "reasoningEffort must be a string" }, 400);
+    }
+    if (consumers.snapshot().proxyHolds > 0 || localRuntimeActiveUseCount() > 0) {
+      return jsonResponse({ accepted: false, reason: "consumer-in-use" }, 409);
     }
     const result = supervisor.requestApply(config, {
       profileId: raw.profileId,

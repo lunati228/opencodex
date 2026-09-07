@@ -17,6 +17,7 @@ import {
   SYSTEM_RESTART_REQUIRE_IDLE_HEADER,
 } from "../src/lib/system-restart-contract";
 import type { OcxConfig } from "../src/types";
+import { ConsumerLeaseRegistry } from "../src/local-runtime/consumer-leases";
 
 function config(): OcxConfig {
   return {
@@ -39,6 +40,20 @@ afterEach(() => {
 });
 
 describe("acceptSystemRestart", () => {
+  test("consumer ownership blocks explicit and companion restart before drain", () => {
+    const consumers = new ConsumerLeaseRegistry(() => 0, () => 0);
+    consumers.acquire("owner", false);
+    let mutated = false;
+    for (const requireIdle of [true, false]) {
+      expect(acceptSystemRestart({
+        consumers, isDraining: () => false, getActiveTurnCount: () => 0,
+        beginShutdownDrain: () => { mutated = true; return true; },
+        schedule: () => { mutated = true; },
+      }, requireIdle)).toMatchObject({ accepted: false, busy: true });
+    }
+    expect(mutated).toBe(false);
+  });
+
   test("uses the remaining absolute restart budget, spawns start, marks recycle, then exits 0", async () => {
     const calls: string[] = [];
     let scheduled: (() => void | Promise<void>) | null = null;

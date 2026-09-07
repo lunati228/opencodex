@@ -42,6 +42,79 @@ restarting. A terminal launch, readiness, stop, rollback, or foreign-listener
 failure returns a sanitized 503 on the next readiness poll instead of leaving
 the Codex turn apparently active until the cold-load timeout.
 
+### Local consumer leases (management API v1)
+
+Harness consumers acquire an in-memory lease before direct local inference.
+Use the independent management credential only on the verified management
+origin, plus `X-OCX-Consumer-Owner`, a client-generated 32-byte unpadded base64url
+secret. Keep that owner secret stable for the lease lifetime. Tokens bind to
+both this owner and the admitted management credential. They do not authorize
+inference or any other management action.
+
+All four operations use POST with JSON bodies:
+
+| Path | Body |
+| --- | --- |
+| `/api/local-runtime/v1/leases/acquire` | `{ "modelUse": true }` or `{ "modelUse": false }` |
+| `/api/local-runtime/v1/leases/heartbeat` | `{ "leaseToken": "…", "modelUse": true }`; `modelUse` may be omitted to preserve the hold |
+| `/api/local-runtime/v1/leases/status` | `{ "leaseToken": "…" }`; does not renew or start the model |
+| `/api/local-runtime/v1/leases/release` | `{ "leaseToken": "…" }`; idempotent within the proxy lifetime |
+
+Acquire, heartbeat, and status return this allowlisted shape, with no-store
+caching. Only acquire returns `leaseToken`:
+
+```ts
+{
+  version: 1,
+  ttlMs: 90000,
+  heartbeatMs: 30000,
+  expiresAt: number, // Unix milliseconds
+  modelUse: boolean,
+  state: "ready" | "loading" | "idle",
+  runtime: null | {
+    endpoint: string, // verified numeric-loopback HTTP base ending in /v1
+    model: string,
+    contextWindow: number,
+    reasoningEffort: "off" | "low" | "medium" | "xhigh"
+  },
+  leaseToken?: string
+}
+```
+
+Loading returns 202 without an endpoint; ready or idle returns 200. Release
+returns `{ "version": 1, "released": true }`. Invalid input returns 400,
+missing management admission 401, and unknown, expired, or wrong-owner leases
+404. Unavailable, disabled, foreign, or unverified runtimes return a sanitized
+503; release remains available. The registry accepts at most 128 live leases.
+No lease state is persisted or logged. Restart invalidates all lease tokens.
+
+Every live lease protects proxy ownership. `modelUse: true` also holds the
+model while a consumer is queued or running. Heartbeat every 30 seconds; an
+unrenewed lease expires after 90 seconds. Final model-use release or expiry
+starts the existing five-minute idle window, checked every 30 seconds. A
+proxy-only lease can keep management available while this idle sweep releases
+the model. Manual starts with no observed use retain their idle exception.
+
+Lease lifetime, heartbeat eligibility, and settled consumer-use age use a
+monotonic clock. Wall-clock corrections do not shorten or extend these
+intervals. `expiresAt` remains a Unix-millisecond projection of the remaining
+lifetime; a status response can adjust that projection without renewing the
+lease. The idle observer receives the settled-use age projected into its
+current Unix clock, so its existing timestamp comparisons keep the same units.
+
+Companion close and explicit model/proxy stop refuse while any consumer lease
+remains. Restart and context changes cannot silently interrupt an active
+consumer. The companion retries busy operations and authenticates its exact
+stop operations with short-lived, one-use, process-bound capabilities.
+
+Research inference uses the verified model endpoint directly. The consumer
+must restrict its transport to that exact origin and `/v1/chat/completions`,
+reject redirects, and keep `modelUse: true` until queued and active inference
+settles. This management API adds no research inference route or cloud
+fallback. Lease protection coordinates normal lifecycle actions; it cannot
+prevent an operating-system force kill or machine shutdown. Client integration
+and a live model run require separate validation.
+
 ## Integrated routing behavior
 
 - Ordinary routed reasoning models retain OpenCodex's validation-safe `max`

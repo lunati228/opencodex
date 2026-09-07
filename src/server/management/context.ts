@@ -15,6 +15,7 @@ import type { CursorInstall } from "../../integrations/cursor-detect";
 import type { CursorEffortTable } from "../../integrations/cursor-effort-table";
 import type { CatalogDisposition, ConvergeCodex } from "../../codex/convergence-types";
 import type { LocalRuntimeControl } from "../../local-runtime/supervisor";
+import type { ConsumerLeaseRegistry } from "../../local-runtime/consumer-leases";
 import type {
   performCodexRestart,
   readCodexAppServerState,
@@ -86,6 +87,7 @@ export interface ManagementApiDeps {
   };
   /** Managed local-runtime control seam for route-level tests. */
   localRuntimeSupervisor?: LocalRuntimeControl;
+  localRuntimeConsumerLeases?: ConsumerLeaseRegistry;
   /**
    * Log Guard mutation seam. Production leaves this unset and therefore uses the
    * owner-verified process enumerator, trusted L namespace and real config store.

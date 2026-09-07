@@ -50,6 +50,8 @@ import {
 import type { OcxClaudeCodeConfig, OcxClaudeDesktopProfile, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../types";
 import type { DesktopProfileModel } from "../claude/desktop-profile";
 import { drainAndShutdown } from "./lifecycle";
+import { managedLocalRuntimeConsumerLeases } from "../local-runtime/consumer-leases";
+import { localRuntimeActiveUseCount } from "../local-runtime/on-demand";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "./request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../usage/cost";
 import type { PersistedUsageAttempt } from "../usage/log";
@@ -265,6 +267,14 @@ export async function handleManagementAPI(
   if (routed) return routed;
 
   if (url.pathname === "/api/stop" && req.method === "POST") {
+    const consumers = deps.localRuntimeConsumerLeases ?? managedLocalRuntimeConsumerLeases;
+    if (consumers.snapshot().proxyHolds > 0
+      || (url.searchParams.get("keep-codex-routing") === "1" && localRuntimeActiveUseCount() > 0)) {
+      return jsonResponse({ success: false, code: "consumer_in_use" }, 409, req, config);
+    }
+    const resumeAcquisition = consumers.suspendAcquisition();
+    let stopAccepted = false;
+    try {
     const { installedServiceRespawnRisk, stopServiceIfInstalledDetailed, isServiceOwnershipError } = await import("../service");
     // `ocx stop` performs its own shared teardown AFTER verifying the scheduler did not
     // respawn the proxy (#3008). Without this the child restores native Codex and strips
@@ -338,6 +348,7 @@ export async function handleManagementAPI(
     // which is exactly why an intentional stop has to do it here — unless the caller is
     // `ocx stop`, which does it itself once the proxy is proven down.
     const teardown = await performStopTeardown(url, { ownsReceipt: deferralMatchesReceipt });
+    stopAccepted = true;
     setTimeout(async () => {
       let shutdownSucceeded = false;
       try {
@@ -351,6 +362,9 @@ export async function handleManagementAPI(
       process.exit(shutdownSucceeded && teardown.success ? 0 : 1);
     }, 200);
     return jsonResponse(teardown);
+    } finally {
+      if (!stopAccepted) resumeAcquisition();
+    }
   }
 
   if (url.pathname.startsWith("/api/native-main-profiles")) {
