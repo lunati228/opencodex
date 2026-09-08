@@ -166,6 +166,8 @@ export interface VerifiedLocalRuntimeDescriptor {
   model: string;
   contextWindow: number;
   reasoningEffort: LocalRuntimeReasoningEffort;
+  /** Only true authorizes image input; older descriptors may omit this field. */
+  supportsVision?: boolean;
 }
 
 /** Allowlist projection from a currently owned and verified supervisor, never provider routing. */
@@ -186,6 +188,7 @@ export function verifiedLocalRuntimeDescriptor(
     return {
       endpoint: `http://${LOCAL_RUNTIME_HOST}:${LOCAL_RUNTIME_PORT}/v1`,
       model: profile.modelId, contextWindow: candidate.nCtx, reasoningEffort: candidate.reasoningEffort,
+      supportsVision: effective.supportsVision === true,
     };
   } catch {
     return null;

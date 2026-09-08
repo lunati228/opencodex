@@ -286,6 +286,16 @@ function normalizeWindowsPath(path: string): string {
   return resolve(path).replace(/\//g, "\\").toLowerCase();
 }
 
+/** Capability evidence from `/props` only; callers must separately verify runtime identity. */
+export function hasReadyLocalRuntimeVision(props: Record<string, unknown>): boolean {
+  const modalities = props.modalities;
+  return props.is_sleeping === false
+    && modalities !== null
+    && typeof modalities === "object"
+    && !Array.isArray(modalities)
+    && (modalities as { vision?: unknown }).vision === true;
+}
+
 async function probe(
   handle: LocalRuntimeHandle,
   candidate: LocalRuntimeCandidate,
@@ -300,6 +310,7 @@ async function probe(
     assertHostMemoryAvailable(candidate.profileId);
     if (exited) throw new Error("LOCAL_RUNTIME_READINESS_FAILED");
     let identityVerified = false;
+    let supportsVision = false;
     try {
       const health = await fetch(fixedEndpoint("/health"), {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -333,6 +344,7 @@ async function probe(
           && (process.platform !== "win32" || ownerPid === handle.pid)
           && !exited
         );
+        supportsVision = identityVerified && hasReadyLocalRuntimeVision(props);
       }
     } catch {
       // Loading returns non-200 health and transient connection errors.
@@ -344,6 +356,7 @@ async function probe(
         ...candidate,
         model: profile.modelId,
         verifiedAt: new Date().toISOString(),
+        supportsVision,
       };
     }
     await Bun.sleep(POLL_MS);

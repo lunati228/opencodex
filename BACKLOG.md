@@ -15,7 +15,7 @@
 | --- | --- | --- |
 | LEASE-1 | Complete in source | Authenticated v1 acquire, heartbeat, status, and idempotent release with owner-bound opaque tokens, 90-second expiry, and 30-second heartbeat. |
 | LEASE-2 | Complete in source | Separate proxy ownership and model-use holds; preserve queued requests, five-minute idle release, manual-start exception, and busy companion retries. |
-| LEASE-3 | Complete in source | Return only the verified numeric-loopback model descriptor; refuse foreign or unverified backends and lifecycle mutations that would interrupt other consumers. |
+| LEASE-3 | Complete in source | Return only the verified numeric-loopback model descriptor, with optional `supportsVision` captured from awake affirmative `/props` metadata and projected as false otherwise; text readiness is unchanged. Refuse foreign or unverified backends and lifecycle mutations that would interrupt other consumers. |
 | LEASE-4 | Integration validation pending | Connect the Harness direct local adapter, deny redirects, restrict inference to the verified origin and exact chat-completions path, and validate client failure/expiry behavior. |
 
 The management contract is documented in `README-FORK.md`. Consumer leases do

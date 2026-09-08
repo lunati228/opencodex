@@ -29,6 +29,8 @@ export type LocalRuntimeFailure =
 export interface LocalRuntimeEffective extends LocalRuntimeCandidate {
   model: string;
   verifiedAt: string;
+  /** Affirmative awake vision metadata captured by the owned readiness probe; absent means false. */
+  supportsVision?: boolean;
 }
 
 export interface LocalRuntimeHandle {

@@ -75,7 +75,8 @@ caching. Only acquire returns `leaseToken`:
     endpoint: string, // verified numeric-loopback HTTP base ending in /v1
     model: string,
     contextWindow: number,
-    reasoningEffort: "off" | "low" | "medium" | "xhigh"
+    reasoningEffort: "off" | "low" | "medium" | "xhigh",
+    supportsVision?: boolean // only true authorizes image input
   },
   leaseToken?: string
 }
@@ -87,6 +88,18 @@ missing management admission 401, and unknown, expired, or wrong-owner leases
 404. Unavailable, disabled, foreign, or unverified runtimes return a sanitized
 503; release remains available. The registry accepts at most 128 live leases.
 No lease state is persisted or logged. Restart invalidates all lease tokens.
+
+`supportsVision` is captured during the identity-verified readiness probe only
+when `/props` reports `is_sleeping: false` and an object-valued `modalities`
+with `vision: true`. The consumer projection returns `false` when that evidence
+is absent, false, malformed, or sleeping; text readiness is unchanged. Older
+descriptors may omit the field, which clients must treat as false. Model labels,
+launch arguments, and generic `multimodal` capabilities do not establish vision.
+This is readiness-time evidence, not a continuous residency or per-image success
+guarantee. The protocol reference is upstream llama.cpp
+[b10549 server-context.cpp](https://github.com/ggml-org/llama.cpp/blob/b2e5e9b28b2484fbf94b543432ece638996a8b97/tools/server/server-context.cpp):
+`allow_image` derives from initialized `mtmd_support_vision`, and sleeping
+responses retain capability metadata while setting `is_sleeping` to true.
 
 Every live lease protects proxy ownership. `modelUse: true` also holds the
 model while a consumer is queued or running. Heartbeat every 30 seconds; an

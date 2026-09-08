@@ -14,7 +14,7 @@ function fixture() {
   let now = 0;
   const leases = new ConsumerLeaseRegistry(() => now, () => now);
   const owner = randomBytes(32).toString("base64url");
-  const auth: ManagementAuthState = {
+  const auth: Extract<ManagementAuthState, { available: true }> = {
     available: true, token: randomBytes(32).toString("base64url"), source: "environment",
     sessions: new Map(), pairingGrants: new Map(),
   };
@@ -76,14 +76,31 @@ describe("authenticated consumer management v1", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     const body = await response.json();
     expect(body).toMatchObject({ version: 1, ttlMs: 90_000, heartbeatMs: 30_000, modelUse: true, expiresAt: 90_000,
-      runtime: { endpoint: "http://127.0.0.1:8080/v1", model: LOCAL_RUNTIME_MODEL_ID, contextWindow: QWEN_DEFAULT_CONTEXT, reasoningEffort: "xhigh" } });
-    expect(Object.keys(body.runtime).sort()).toEqual(["contextWindow", "endpoint", "model", "reasoningEffort"]);
+      runtime: { endpoint: "http://127.0.0.1:8080/v1", model: LOCAL_RUNTIME_MODEL_ID, contextWindow: QWEN_DEFAULT_CONTEXT, reasoningEffort: "xhigh", supportsVision: false } });
+    expect(Object.keys(body.runtime).sort()).toEqual(["contextWindow", "endpoint", "model", "reasoningEffort", "supportsVision"]);
     expect((await f.request("heartbeat", { leaseToken: body.leaseToken }, { owner: randomBytes(32).toString("base64url") })).status).toBe(404);
     const status = await (await f.request("status", { leaseToken: body.leaseToken })).json();
     expect(status.leaseToken).toBeUndefined();
     expect((await f.request("release", { leaseToken: body.leaseToken })).status).toBe(200);
     expect((await f.request("release", { leaseToken: body.leaseToken })).status).toBe(200);
     expect(f.leases.snapshot().proxyHolds).toBe(0);
+  });
+
+  test("projects only explicit vision support on acquire, heartbeat, and status without blocking text", async () => {
+    for (const supportsVision of [undefined, false, true, "true", 1, null]) {
+      const f = fixture();
+      Object.assign(f.state.effective!, { supportsVision });
+      const response = await f.request("acquire", { modelUse: true });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.runtime.supportsVision).toBe(supportsVision === true);
+      for (const action of ["heartbeat", "status"]) {
+        const current = await f.request(action, { leaseToken: body.leaseToken });
+        expect(current.status).toBe(200);
+        expect((await current.json()).runtime.supportsVision).toBe(supportsVision === true);
+      }
+      expect(f.starts()).toBe(0);
+    }
   });
 
   test("requires management admission, owner entropy shape, exact fields and body-only tokens", async () => {
@@ -114,6 +131,7 @@ describe("authenticated consumer management v1", () => {
   test("rejects foreign, disabled and unverified runtime identities without publishing a descriptor", async () => {
     for (const invalid of ["provider", "disabled", "model", "context", "reasoning", "proof", "foreign"] as const) {
       const f = fixture();
+      Object.assign(f.state.effective!, { supportsVision: true });
       if (invalid === "provider") f.config.providers["qwen-local"]!.baseUrl = "https://example.com";
       if (invalid === "disabled") f.config.localRuntime!.enabled = false;
       if (invalid === "model") f.state.effective!.model = "unverified";
