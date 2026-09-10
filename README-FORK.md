@@ -51,6 +51,12 @@ secret. Keep that owner secret stable for the lease lifetime. Tokens bind to
 both this owner and the admitted management credential. They do not authorize
 inference or any other management action.
 
+The current Harness integration uses the existing broad management credential
+in its trusted backend, not a new lease-only permanent credential. Its client
+restricts requests to the four lease endpoints; the credential's underlying
+authority is broader. The renderer and model-visible tools do not receive it.
+The companion's narrowly scoped shutdown capabilities are a different mechanism.
+
 All four operations use POST with JSON bodies:
 
 | Path | Body |
@@ -126,7 +132,22 @@ reject redirects, and keep `modelUse: true` until queued and active inference
 settles. This management API adds no research inference route or cloud
 fallback. Lease protection coordinates normal lifecycle actions; it cannot
 prevent an operating-system force kill or machine shutdown. Client integration
-and a live model run require separate validation.
+has component validation and one recorded successful direct local-adapter smoke.
+That smoke verifies loading, the effective context/effort, normal response
+completion and test-owner release; it does not establish long streams,
+multi-consumer shutdown protection, measured idle unloading or desktop research.
+
+Successful managed-model startup invokes the existing last-known-good
+configuration save for the verified runtime and managed local-provider row.
+An external consumer can therefore trigger existing configuration writes even
+when its own adapter does not edit OpenCodex configuration. The ignored launch
+profile and general inference router were not replaced by this migration.
+
+OpenCodex remains shared and cloud-capable for other consumers. Its ordinary
+startup retains existing Codex synchronization and other configured integration
+work; it is not a dedicated manager-only launcher. The migration's source changes,
+historical diagnostics, effects on Codex lifecycle and verification limits are
+recorded in the [Harness integration audit](HARNESS-INTEGRATION-AUDIT.md).
 
 ## Integrated routing behavior
 
