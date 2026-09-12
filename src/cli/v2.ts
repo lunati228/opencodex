@@ -103,7 +103,7 @@ export function multiAgentModeLine(mode: string, keepNativeChatGptOnV1 = false):
 }
 
 function requiresGlobalV2Disabled(multiAgentMode: string | undefined, keepNativeChatGptOnV1: boolean): boolean {
-  return multiAgentMode === "v2" && keepNativeChatGptOnV1;
+  return multiAgentMode === "v1" || (multiAgentMode === "v2" && keepNativeChatGptOnV1);
 }
 
 export async function cmdV2(args: string[], deps: V2CliDeps = {}, findPort?: () => Promise<number | undefined>): Promise<number> {
@@ -263,7 +263,7 @@ export async function cmdV2(args: string[], deps: V2CliDeps = {}, findPort?: () 
   if (want) {
     const cfg = loadConfig();
     if (requiresGlobalV2Disabled(cfg.multiAgentMode, cfg.keepNativeChatGptOnV1 === true)) {
-      log.error("v2 on: incompatible with keep-native-v1 while mode is v2 — Codex's global multi_agent_v2 overrides the native v1 catalog pin. Run 'ocx v2 keep-native-v1 off' first.");
+      log.error("v2 on: incompatible with the saved V1 catalog policy — Codex's global multi_agent_v2 overrides catalog pins. Change the mode or native-V1 policy first.");
       return 1;
     }
   }

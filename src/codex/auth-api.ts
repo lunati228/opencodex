@@ -40,6 +40,10 @@ import {
 } from "./account-priority";
 import {
   claimDueCodexQuotaRecoveryProbes,
+  claimManualResetCooldowns,
+  settleManualResetCooldown,
+  type ManualResetCooldownClaim,
+  type ManualResetRefreshLineage,
   clearCodexAccountCooldown,
   clearThreadAccountMapForAccount,
   getEffectiveActiveCodexAccountId,
@@ -69,6 +73,7 @@ import {
   isCompleteCodexQuotaRecoverySnapshot,
   isCodexQuotaExhausted,
   listAccountQuotas,
+  parseMainPolicyUsageQuota,
   parseUsageQuota,
   setAccountQuotaFromParsed,
   updateAccountQuota,
@@ -84,7 +89,10 @@ export {
   updateAccountQuota,
 } from "./quota";
 import { extractAccountId } from "../oauth/chatgpt";
-import { getMainAccountPlan, isMainAccountTokenVerifiablyLive, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
+import {
+  getMainAccountPlan, getValidMainAccountToken, isMainAccountTokenVerifiablyLive,
+  MainAccountTokenRefreshError, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan,
+} from "./main-account";
 import { captureConfigGeneration, registerStateSweepAfterTick } from "../lib/state-store-sweeper";
 import { reconcileLiveStateStores } from "../lib/state-store-registrations";
 import {
@@ -92,12 +100,20 @@ import {
   clearMainAccountInfoCache,
   getMainAccountCredentialPresence,
   getMainAccountInfoCache,
+  getMainQuotaCredentialGeneration,
   isMainAccountIdentityGenerationLive,
+  isMainQuotaWriterLive,
+  type MainQuotaWriter,
+  matchesMainQuotaCredential,
+  observeMainQuotaCredential,
   setMainAccountCredentialPresence,
   setMainAccountInfoCache,
   type MainAccountInfo,
 } from "./main-account-cache";
 export { clearMainAccountInfoCache } from "./main-account-cache";
+import type { CodexQuotaRefreshOutcome } from "./quota-refresh-outcome";
+import { getMainAccountHardLockStatus, type MainAccountHardLockStatus } from "./main-account-hard-lock";
+import { observeMainReserveRevocation } from "./reserve-availability";
 import { maskEmail } from "../lib/privacy";
 import { codexWarmupFailureReason, warmCodexAccount } from "./warmup";
 export { maskEmail } from "../lib/privacy";
@@ -120,6 +136,12 @@ import {
   isValidCodexAccountId,
 } from "./account-id";
 import { codexAccountIdNamespaceCollisionError } from "./account-namespace-match";
+import {
+  markManualResetCreditOperationAmbiguous,
+  openManualResetCreditOperation,
+  settleManualResetCreditOperation,
+} from "./reset-credit-operation-ledger";
+import { isCodexResetCreditOperationId } from "./reset-credit-recovery";
 import { ResourceAdmissionError, type AdmissionLease } from "../lib/admission";
 import { tryAcquireNativeMainProfileClaim } from "./native-main-admission";
 import { withNativeMainSharedClaim } from "./native-main-claim";
@@ -371,6 +393,8 @@ interface ResetCreditAuth {
   chatgptAccountId: string;
   nativeMainLease?: AdmissionLease;
   nativeMainSharedClaimHeld?: true;
+  poolGeneration?: number;
+  mainProof?: MainResetQuotaProof;
 }
 
 async function withResetCreditAuth<T>(
@@ -391,10 +415,15 @@ async function withResetCreditAuth<T>(
           if (!tokens) {
             return { ok: false, response: jsonResponse({ error: "Main Codex account not logged in" }, 401) };
           }
+          reconcileMainCodexAccountRuntimeState();
+          const physicalId = extractAccountId(tokens.id_token, tokens.access_token) ?? tokens.account_id;
+          const writer = physicalId === tokens.account_id
+            ? observeMainQuotaCredential(tokens.access_token, tokens.account_id) : undefined;
           return {
             ok: true,
             value: await operation({
               isMain: true,
+              ...(writer ? { mainProof: { writer, credentialGeneration: getMainQuotaCredentialGeneration() } } : {}),
               accessToken: tokens.access_token,
               chatgptAccountId: tokens.account_id,
               nativeMainLease,
@@ -423,6 +452,7 @@ async function withResetCreditAuth<T>(
     ok: true,
     value: await operation({
       isMain: false,
+      poolGeneration: cred.generation,
       accessToken: cred.accessToken,
       chatgptAccountId: cred.chatgptAccountId,
     }),
@@ -760,8 +790,18 @@ async function readMainAuthErrorCode(resp: Response): Promise<unknown> {
   }
 }
 
+interface MainResetQuotaProof {
+  writer: MainQuotaWriter;
+  credentialGeneration: number;
+}
+
 interface MainAccountInfoFetchResult {
   info: MainAccountInfo;
+  resetRecoveryProof?: MainResetQuotaProof & { dispatchSequence: number };
+  /** Ephemeral result of this attempt, omitted when no WHAM request was made. */
+  quotaRefresh?: CodexQuotaRefreshOutcome;
+  /** Internal dispatch fence for diagnostics only; never copied into a public DTO or cache. */
+  quotaRefreshGeneration?: number;
   /** Whether this attempt safely inspected the physical native-main credential. */
   credentialChecked: boolean;
   /** Meaningful only when credentialChecked is true. */
@@ -777,12 +817,16 @@ interface MainAccountInfoFetchResult {
 export interface MainAccountInfoSnapshot {
   info: MainAccountInfo;
   mainIdentityGeneration: number;
+  quotaRefresh?: CodexQuotaRefreshOutcome;
 }
 
 export async function fetchMainAccountInfoSnapshot(forceRefresh = false): Promise<MainAccountInfoSnapshot> {
   const result = await fetchMainAccountInfoAttempt(forceRefresh, 1);
   return {
     info: result.info,
+    ...(result.quotaRefresh && result.quotaRefreshGeneration !== undefined
+      && isMainAccountIdentityGenerationLive(result.quotaRefreshGeneration)
+      ? { quotaRefresh: result.quotaRefresh } : {}),
     mainIdentityGeneration: result.identityGeneration ?? captureMainAccountIdentityGeneration(),
   };
 }
@@ -812,6 +856,7 @@ async function fetchMainAccountInfoAttempt(
   retriesRemaining: number,
   existingNativeMainLease?: AdmissionLease,
   nativeMainSharedClaimHeld = false,
+  explicitRefresh: boolean = forceRefresh,
 ): Promise<MainAccountInfoFetchResult> {
   const nativeMainLease = existingNativeMainLease ?? tryAcquireNativeMainProfileClaim();
   if (!nativeMainLease) {
@@ -824,7 +869,7 @@ async function fetchMainAccountInfoAttempt(
   }
   try {
     const operation = async () => ({
-      ...await fetchMainAccountInfoWhileOwned(forceRefresh, retriesRemaining, nativeMainLease),
+      ...await fetchMainAccountInfoWhileOwned(forceRefresh, retriesRemaining, nativeMainLease, explicitRefresh),
       identityGeneration: captureMainAccountIdentityGeneration(),
     });
     if (nativeMainSharedClaimHeld) return await operation();
@@ -878,26 +923,72 @@ async function fetchMainAccountInfoWhileOwned(
   if (!forceRefresh && cached && Date.now() - cached.ts < MAIN_CACHE_TTL) {
     return { info: cached, credentialChecked: true, hasCredential: true };
   }
+  // Bind quota to the owned credential and the account actually selected by WHAM's header.
+  // A conflicting legacy token/account tuple is not evidence for the new policy.
+  const mainQuotaWriter = requestAccountId === tokens.account_id
+    ? observeMainQuotaCredential(tokens.access_token, tokens.account_id)
+    : undefined;
+  const mainQuotaCredentialGeneration = getMainQuotaCredentialGeneration();
+  // Keep diagnostics separate from authentication and freshness policy. Never serialize errors.
+  const quotaSignal = AbortSignal.timeout(WHAM_REQUEST_TIMEOUT_MS);
+  let quotaPhase: "request" | "body" | "decode" | "publish" = "request";
+  let quotaRefreshGeneration = captureMainAccountIdentityGeneration();
   try {
+    const dispatchSequence = ++quotaDispatchSequence;
     const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
       headers: { Authorization: `Bearer ${tokens.access_token}`, "ChatGPT-Account-Id": tokens.account_id },
-      signal: AbortSignal.timeout(WHAM_REQUEST_TIMEOUT_MS),
+      signal: quotaSignal,
     });
+    quotaPhase = "publish";
     if (!resp.ok) {
       const terminalAuthFailure = await isTerminalMainAuthResponse(resp, isMainAccountTokenVerifiablyLive());
       const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease, explicitRefresh);
       if (retried) return retried;
+      if (dispatchSequence < mainQuotaPublishedSequence) {
+        return { info: getMainAccountInfoCache() ?? EMPTY_MAIN_ACCOUNT_INFO,
+          credentialChecked: true, hasCredential: true };
+      }
       if (terminalAuthFailure) {
+        // Account for this attempt's own synchronous invalidation, never prior external drift.
+        const diagnosticStillLive = isMainAccountIdentityGenerationLive(quotaRefreshGeneration);
         clearMainAccountInfoCache();
+        if (diagnosticStillLive) quotaRefreshGeneration = captureMainAccountIdentityGeneration();
         markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID, writerGeneration);
       }
-      return { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
+      return {
+        info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true,
+        quotaRefresh: { status: "http_error", httpStatus: resp.status },
+        quotaRefreshGeneration,
+      };
     }
+    quotaPhase = "body";
     const data = (await resp.json()) as WhamUsageResponse;
+    quotaPhase = "publish";
     const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease, explicitRefresh);
     if (retried) return retried;
+    quotaPhase = "decode";
+    if (data === null || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("Invalid WHAM usage object");
+    }
+    // Check after body/retry awaits and before any cache, credits, policy or
+    // Reserve publication. Returning cached state supplies no fresh recovery proof.
+    if (dispatchSequence < mainQuotaPublishedSequence) {
+      return { info: getMainAccountInfoCache() ?? EMPTY_MAIN_ACCOUNT_INFO,
+        credentialChecked: true, hasCredential: true };
+    }
+    quotaPhase = "publish";
+    // A delayed response from a replaced bearer cannot revoke a newer Reserve grant,
+    // even in the same workspace or after an A→B→A credential transition.
+    if (mainQuotaCredentialGeneration === getMainQuotaCredentialGeneration()
+      && matchesMainQuotaCredential(tokens.access_token, tokens.account_id)) {
+      observeMainReserveRevocation(data, mainQuotaWriter);
+    }
+    quotaPhase = "decode";
     const plan = nonEmptyPlan(data.plan_type) ?? nonEmptyPlan(cached?.plan) ?? nonEmptyPlan(getMainAccountPlan());
-    const quota = parseUsageQuota({ ...data, ...(plan ? { plan_type: plan } : {}) });
+    const usage = { ...data, ...(plan ? { plan_type: plan } : {}) };
+    const quota = parseUsageQuota(usage);
+    const policyQuota = parseMainPolicyUsageQuota(usage);
+    quotaPhase = "publish";
     const freshResetCredits = quota?.resetCredits;
     // Tag the count with the identity it was read from, so a later response that omits the
     // summary can restore the badge without ever crossing an account boundary.
@@ -923,22 +1014,42 @@ async function fetchMainAccountInfoWhileOwned(
     // score and auto-switch the main account exactly like a pool account (Option A).
     setMainAccountPlan(result.plan);
     if (result.quota) {
-      setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, result.quota, writerGeneration);
+      setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, result.quota, writerGeneration, mainQuotaWriter, policyQuota);
     }
+    mainQuotaPublishedSequence = dispatchSequence;
     return {
       info: result,
+      quotaRefresh: { status: quota ? "ok" : "not_reported" },
+      quotaRefreshGeneration,
       credentialChecked: true,
       hasCredential: true,
       ...(quota ? { freshQuota: quota } : {}),
+      ...(quota && mainQuotaWriter && isMainQuotaWriterLive(mainQuotaWriter)
+        && mainQuotaCredentialGeneration === getMainQuotaCredentialGeneration()
+        && matchesMainQuotaCredential(tokens.access_token, tokens.account_id)
+        ? { resetRecoveryProof: { writer: mainQuotaWriter, credentialGeneration: mainQuotaCredentialGeneration, dispatchSequence } }
+        : {}),
       ...(freshResetCredits !== undefined ? { freshResetCredits } : {}),
     };
-  } catch {
+  } catch (error) {
     const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease, explicitRefresh);
-    return retried ?? { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
+    if (retried) return retried;
+    let status: CodexQuotaRefreshOutcome["status"] = "internal_error";
+    if ((quotaPhase === "request" || quotaPhase === "body") && quotaSignal.aborted) status = "timeout";
+    else if (quotaPhase === "request") status = "network_error";
+    else if (quotaPhase === "body") status = error instanceof SyntaxError ? "invalid_response" : "network_error";
+    else if (quotaPhase === "decode") status = "invalid_response";
+    return {
+      info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true,
+      quotaRefresh: { status },
+      quotaRefreshGeneration,
+    };
   }
 }
 
 interface PoolQuotaResult {
+  /** Actual refresh result attached only to the successful usage replay. */
+  resetRefreshLineage?: ManualResetRefreshLineage;
   quota: StoredAccountQuota | null;
   needsReauth: boolean;
   /** Credential generation whose cache or network result this DTO state belongs to. */
@@ -953,15 +1064,25 @@ interface PoolQuotaResult {
   freshResetCredits?: number;
   quotaProbeSkipped?: true;
   /** Positive evidence captured immediately before an upstream WHAM dispatch. */
-  quotaProbeAttempted?: { at: number; credentialGeneration: number };
+  quotaProbeAttempted?: { at: number; credentialGeneration: number; dispatchSequence: number };
 }
 
+// Process-local ordering, never a timestamp or a serialized account identifier.
+let quotaDispatchSequence = 0;
+// Shared native-main ownership permits concurrent usage readers. Only a later
+// successfully published response advances this fence; failed reads do not win.
+let mainQuotaPublishedSequence = 0;
+
 interface PoolQuotaProbeEvidence {
+  onDispatch?: (sequence: number) => void;
+  mayPublish?: () => boolean;
   attempted?: NonNullable<PoolQuotaResult["quotaProbeAttempted"]>;
 }
 
 function markQuotaProbeAttempted(evidence: PoolQuotaProbeEvidence, credentialGeneration: number): void {
-  evidence.attempted = { at: Date.now(), credentialGeneration };
+  const dispatchSequence = ++quotaDispatchSequence;
+  evidence.attempted = { at: Date.now(), credentialGeneration, dispatchSequence };
+  evidence.onDispatch?.(dispatchSequence);
 }
 
 function withQuotaProbeEvidence(
@@ -973,6 +1094,8 @@ function withQuotaProbeEvidence(
 
 interface PoolQuotaRefreshFlight {
   state: {
+    dispatchSequence?: number;
+    superseded?: boolean;
     startCredentialGeneration?: number;
     resolvedCredentialGeneration?: number;
   };
@@ -1031,6 +1154,8 @@ export interface CodexAuthAccountDto {
   healthSummary: string;
   healthAction?: string;
   quotaProbeSkipped?: true;
+  quotaRefresh?: CodexQuotaRefreshOutcome;
+  mainAccountHardLock?: MainAccountHardLockStatus;
 }
 
 interface FreshPoolPlanUpdate {
@@ -1206,9 +1331,18 @@ async function recoverPoolQuotaFrom401(ctx: {
     }
     return { quota: existing ?? null, needsReauth: false, credentialGeneration: refreshed.generation };
   }
-  return await commitPoolQuotaResponse(replay, {
+  const result = await commitPoolQuotaResponse(replay, {
     accountId, existing, configuredPlan, generation: refreshed.generation, writerGeneration,
+    mayPublish: ctx.quotaProbeEvidence.mayPublish,
   });
+  return result.freshCredentialGeneration === refreshed.generation ? {
+    ...result,
+    resetRefreshLineage: {
+      fromGeneration: rejectedGeneration,
+      toGeneration: refreshed.generation,
+      provenance: refreshed.provenance,
+    },
+  } : result;
 }
 
 /** Backoff after a refresh failure that proved nothing about the credential. */
@@ -1240,10 +1374,14 @@ async function commitPoolQuotaResponse(
     configuredPlan: string | undefined;
     generation: number;
     writerGeneration: number;
+    mayPublish?: () => boolean;
   },
 ): Promise<PoolQuotaResult> {
   const { accountId, existing, configuredPlan, generation, writerGeneration } = ctx;
   const data = (await resp.json()) as WhamUsageResponse;
+  if (ctx.mayPublish?.() === false) {
+    return { quota: getAccountQuota(accountId), needsReauth: false, credentialGeneration: generation };
+  }
   const freshPlan = nonEmptyPlan(data.plan_type) ?? undefined;
   const quota = parseUsageQuota({ ...data, plan_type: freshPlan ?? configuredPlan });
   const freshResetCredits = quota?.resetCredits;
@@ -1276,10 +1414,10 @@ async function fetchFreshPoolAccountQuota(
   configuredPlan?: string,
   onCredentialGeneration?: (generation: number) => void,
   getValidToken: typeof getValidCodexToken = getValidCodexToken,
+  quotaProbeEvidence: PoolQuotaProbeEvidence = {},
 ): Promise<PoolQuotaResult> {
   const writerGeneration = captureConfigGeneration();
   let requestCredentialGeneration = readCodexAccountRecord(accountId)?.generation;
-  const quotaProbeEvidence: PoolQuotaProbeEvidence = {};
   try {
     const { accessToken, chatgptAccountId, generation } = await getValidToken(accountId);
     requestCredentialGeneration = generation;
@@ -1313,6 +1451,7 @@ async function fetchFreshPoolAccountQuota(
     }
     const committed = await commitPoolQuotaResponse(resp, {
       accountId, existing, configuredPlan, generation, writerGeneration,
+      mayPublish: quotaProbeEvidence.mayPublish,
     });
     return withQuotaProbeEvidence(committed, quotaProbeEvidence);
   } catch (e) {
@@ -1343,9 +1482,10 @@ async function fetchPoolAccountQuota(
   forceRefresh = false,
   configuredPlan?: string,
   getValidToken: typeof getValidCodexToken = getValidCodexToken,
+  afterDispatchSequence?: number,
 ): Promise<PoolQuotaResult> {
   const existing = getAccountQuota(accountId);
-  if (!forceRefresh && existing && Date.now() - existing.updatedAt < POOL_CACHE_TTL) {
+  if (afterDispatchSequence === undefined && !forceRefresh && existing && Date.now() - existing.updatedAt < POOL_CACHE_TTL) {
     return {
       quota: existing,
       needsReauth: false,
@@ -1360,11 +1500,18 @@ async function fetchPoolAccountQuota(
   const current = flights && [...flights].find(flight => {
     const generation = flight.state.resolvedCredentialGeneration
       ?? flight.state.startCredentialGeneration;
-    return generation !== undefined && isCodexAccountGenerationLive(accountId, generation);
+    return !flight.state.superseded
+      && (afterDispatchSequence === undefined || (flight.state.dispatchSequence ?? 0) > afterDispatchSequence)
+      && generation !== undefined && isCodexAccountGenerationLive(accountId, generation);
   });
   if (current) return current.promise;
   if (poolQuotaFlightCount() >= MAX_POOL_QUOTA_FLIGHTS) throw new PoolQuotaProbeBusyError();
 
+  // A post-reset request must not let an older same-account response overwrite its evidence.
+  // Flags live only as long as the bounded flights; no retained per-account sequence map.
+  if (afterDispatchSequence !== undefined) {
+    for (const flight of flights ?? []) flight.state.superseded = true;
+  }
   const state: PoolQuotaRefreshFlight["state"] = {
     startCredentialGeneration: record?.generation,
   };
@@ -1374,6 +1521,10 @@ async function fetchPoolAccountQuota(
     configuredPlan,
     generation => { state.resolvedCredentialGeneration = generation; },
     getValidToken,
+    {
+      onDispatch: sequence => { state.dispatchSequence = sequence; },
+      mayPublish: () => state.superseded !== true,
+    },
   );
   const flight: PoolQuotaRefreshFlight = { state, promise: refresh };
   const activeFlights = flights ?? new Set<PoolQuotaRefreshFlight>();
@@ -1386,6 +1537,74 @@ async function fetchPoolAccountQuota(
     if (activeFlights.size === 0 && poolQuotaRefreshInFlight.get(accountId) === activeFlights) {
       poolQuotaRefreshInFlight.delete(accountId);
     }
+  }
+}
+
+function manualResetAuthStillLive(accountId: string, auth: ResetCreditAuth): boolean {
+  if (!auth.isMain) {
+    const record = readCodexAccountRecord(accountId);
+    return auth.poolGeneration !== undefined
+      && isCodexAccountGenerationLive(accountId, auth.poolGeneration)
+      && record?.credential?.chatgptAccountId === auth.chatgptAccountId;
+  }
+  const tokens = readCodexTokens();
+  return !!auth.mainProof && !!tokens
+    && tokens.access_token === auth.accessToken && tokens.account_id === auth.chatgptAccountId
+    && isMainQuotaWriterLive(auth.mainProof.writer)
+    && auth.mainProof.credentialGeneration === getMainQuotaCredentialGeneration()
+    && matchesMainQuotaCredential(auth.accessToken, auth.chatgptAccountId);
+}
+
+/** A confirmed spend remains successful even when its optional usage observation fails. */
+async function refreshAfterManualReset(
+  config: OcxConfig,
+  accountId: string,
+  auth: ResetCreditAuth,
+  claims: ManualResetCooldownClaim[],
+  didReset: boolean,
+): Promise<number | undefined> {
+  const afterDispatchSequence = quotaDispatchSequence;
+  try {
+    if (!manualResetAuthStillLive(accountId, auth)) return undefined;
+    if (auth.isMain) {
+      const result = await fetchMainAccountInfoAttempt(true, 1, auth.nativeMainLease,
+        auth.nativeMainSharedClaimHeld === true, false);
+      const proof = result.resetRecoveryProof;
+      const recovered = didReset && manualResetAuthStillLive(accountId, auth)
+        && !!proof && !!auth.mainProof
+        && proof.dispatchSequence > afterDispatchSequence
+        && proof.credentialGeneration === auth.mainProof.credentialGeneration
+        && proof.writer.identityKey === auth.mainProof.writer.identityKey
+        && proof.writer.identityGeneration === auth.mainProof.writer.identityGeneration
+        && isCompleteCodexQuotaRecoverySnapshot(result.freshQuota ?? null, result.info.plan);
+      for (const claim of claims) settleManualResetCooldown(getRuntimeConfig(config), claim, recovered);
+      return manualResetAuthStillLive(accountId, auth) ? result.freshResetCredits : undefined;
+    }
+    const account = configuredPoolAccount(getRuntimeConfig(config), accountId);
+    if (!account) return undefined;
+    // Reuse the just-authenticated consume credential for the first usage request.
+    // getValidCodexToken can silently advance a generation without exposing refresh
+    // provenance. A 401 here instead uses the existing classified refresh/replay path.
+    const resetToken: typeof getValidCodexToken = async () => {
+      if (auth.poolGeneration === undefined || !manualResetAuthStillLive(accountId, auth)) {
+        throw new CodexCredentialGenerationConflictError();
+      }
+      return { accessToken: auth.accessToken, chatgptAccountId: auth.chatgptAccountId, generation: auth.poolGeneration };
+    };
+    const result = await fetchPoolAccountQuota(accountId, true, account.plan, didReset ? resetToken : getValidCodexToken,
+      didReset ? afterDispatchSequence : undefined);
+    const record = readCodexAccountRecord(accountId);
+    const recovered = didReset && record?.credential?.chatgptAccountId === auth.chatgptAccountId
+      && (result.quotaProbeAttempted?.dispatchSequence ?? 0) > afterDispatchSequence
+      && isCompleteCodexQuotaRecoverySnapshot(result.freshQuota ?? null, result.freshPlan ?? account.plan);
+    for (const claim of claims) settleManualResetCooldown(getRuntimeConfig(config), claim, recovered, {
+      credentialGeneration: result.freshCredentialGeneration,
+      refreshLineage: result.resetRefreshLineage,
+    });
+    return record?.credential?.chatgptAccountId === auth.chatgptAccountId ? result.freshResetCredits : undefined;
+  } catch {
+    // The upstream reset already happened. A failed refresh must not invite another spend.
+    return undefined;
   }
 }
 
@@ -1419,10 +1638,9 @@ export async function runCodexCooldownRecoveryProbes(config: OcxConfig, now = Da
       }
       try {
         const result = await fetchPoolAccountQuota(claim.accountId, true, account.plan);
-        // Defence in depth: `spark` is already excluded at the claim site, since generic WHAM
-        // cannot prove a spark recovery. Keep the settle-side guard so a future claim change
-        // cannot silently start clearing spark on generic evidence.
-        const recovered = claim.scope !== "spark"
+        // Defence in depth: independent scopes are already excluded at the claim site.
+        // Generic WHAM must never clear Spark or Reserve even if claim selection changes.
+        const recovered = (claim.scope === undefined || claim.scope === "shared")
           && isCompleteCodexQuotaRecoverySnapshot(result.freshQuota ?? null, result.freshPlan ?? account.plan);
         settleCodexQuotaRecoveryProbe(claim, recovered, {
           credentialGeneration: result.freshCredentialGeneration,
@@ -1437,10 +1655,50 @@ export async function runCodexCooldownRecoveryProbes(config: OcxConfig, now = Da
   return cooldownRecoveryInFlight;
 }
 
+let mainHardLockRecoveryInFlight: Promise<void> | null = null;
+
+/** Metadata-only recovery on the existing sweep; failures retain the observed policy block. */
+export async function runMainAccountHardLockRecovery(config: OcxConfig): Promise<void> {
+  if (mainHardLockRecoveryInFlight) return mainHardLockRecoveryInFlight;
+  if (getMainAccountHardLockStatus(config).state !== "blocked"
+    || isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)) return;
+  const lease = tryAcquireNativeMainProfileClaim();
+  if (!lease) return;
+  mainHardLockRecoveryInFlight = (async () => {
+    reconcileMainCodexAccountRuntimeState();
+    if (getMainAccountHardLockStatus(config).state !== "blocked"
+      || isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)) return;
+    const identityGeneration = captureMainAccountIdentityGeneration();
+    const writerGeneration = captureConfigGeneration();
+    try {
+      // Refresh can require an exclusive credential claim: never hold WHAM's shared
+      // claim while obtaining a valid token. The runtime lease spans both operations.
+      if (!await getValidMainAccountToken({ preserveReauth: true })) return;
+    } catch (error) {
+      if (error instanceof MainAccountTokenRefreshError && error.reason === "reauth"
+        && isMainAccountIdentityGenerationLive(identityGeneration)) {
+        markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID, writerGeneration);
+      }
+      return;
+    }
+    if (isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)) return;
+    await fetchMainAccountInfoAttempt(true, 1, lease, false, false);
+  })().catch(() => {
+    // Best-effort background metadata read; no cooldown/pause or policy clearing on failure.
+  }).finally(() => {
+    lease.release();
+    mainHardLockRecoveryInFlight = null;
+  });
+  return mainHardLockRecoveryInFlight;
+}
+
 export function registerCodexCooldownRecoveryProbeWorker(config: OcxConfig): void {
   registerStateSweepAfterTick({
     name: "codex-cooldown-recovery",
-    afterTick: () => { void runCodexCooldownRecoveryProbes(config); },
+    afterTick: () => {
+      void runCodexCooldownRecoveryProbes(config);
+      void runMainAccountHardLockRecovery(config);
+    },
   });
 }
 
@@ -1699,9 +1957,13 @@ export async function listCodexAuthAccountsSnapshot(
     id: MAIN_CODEX_ACCOUNT_ID,
     email: maskEmail(mainInfo.email) ?? "Codex App login",
     plan: mainInfo.plan,
+    ...(mainSnapshotLive && mainResult.quotaRefresh && mainResult.quotaRefreshGeneration !== undefined
+      && isMainAccountIdentityGenerationLive(mainResult.quotaRefreshGeneration)
+      ? { quotaRefresh: mainResult.quotaRefresh } : {}),
     logLabel: "main",
     isMain: true,
     paused: isCodexAccountPaused(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
+    mainAccountHardLock: getMainAccountHardLockStatus(runtimeConfig),
     priority: getCodexAccountPriority(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
     hasCredential: hasMainCredential,
     needsReauth: mainNeedsReauth,
@@ -1716,6 +1978,42 @@ export async function listCodexAuthAccountsSnapshot(
       ? fetchedMainGeneration
       : captureMainAccountIdentityGeneration(),
   };
+}
+
+/** One opted-in account's metadata; reuse the bounded WHAM 401 recovery and generation fence. */
+export async function refreshCodexQuotaForActivation(config: OcxConfig, accountId: string): Promise<void> {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) {
+    const lease = tryAcquireNativeMainProfileClaim();
+    if (!lease) return;
+    try {
+      reconcileMainCodexAccountRuntimeState();
+      if (isAccountNeedsReauth(accountId)) return;
+      const identityGeneration = captureMainAccountIdentityGeneration();
+      const writerGeneration = captureConfigGeneration();
+      try {
+        // Refresh may need an exclusive claim; prepare before WHAM takes its shared claim.
+        if (!await getValidMainAccountToken({ preserveReauth: true })) return;
+      } catch (error) {
+        if (error instanceof MainAccountTokenRefreshError && error.reason === "reauth"
+          && isMainAccountIdentityGenerationLive(identityGeneration)) {
+          markAccountNeedsReauth(accountId, writerGeneration);
+        }
+        return;
+      }
+      if (isAccountNeedsReauth(accountId)) return;
+      await fetchMainAccountInfoAttempt(true, 1, lease, false, false);
+    } finally {
+      lease.release();
+    }
+    return;
+  }
+  const account = configuredPoolAccount(config, accountId);
+  if (!account) return;
+  const writerGeneration = captureConfigGeneration();
+  const result = await fetchPoolAccountQuota(accountId, true, account.plan);
+  if (result.needsReauth && result.credentialGeneration !== undefined) {
+    markAccountNeedsReauth(accountId, writerGeneration, result.credentialGeneration);
+  }
 }
 
 export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = false): Promise<CodexAuthAccountDto[]> {
@@ -2168,55 +2466,130 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/reset-credits/consume" && req.method === "POST") {
-    const body = (await req.json().catch(() => ({}))) as { accountId?: string };
+    const body = (await req.json().catch(() => ({}))) as {
+      accountId?: string;
+      operationId?: unknown;
+    };
     if (!body.accountId) return jsonResponse({ error: "accountId required" }, 400);
     const accountId = body.accountId;
+    // Optional caller-owned idempotency identity (#3375 axis D). Absent => legacy
+    // behavior: a fresh random redeem_request_id and no durable ledger row.
+    // The ledger throws TypeError on a malformed id, so the format check has to
+    // happen here rather than at the call site, or it surfaces as a 500.
+    const hasOperationId = body.operationId !== undefined;
+    if (hasOperationId && !isCodexResetCreditOperationId(body.operationId)) {
+      return jsonResponse({ error: "Invalid operationId format" }, 400);
+    }
+    const requestedOperationId = hasOperationId ? body.operationId as string : undefined;
 
     try {
       const operation = await withResetCreditAuth(getRuntimeConfig(config), accountId, async auth => {
-        const idempotencyKey = crypto.randomUUID();
-        const resp = await fetch(
-          "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${auth.accessToken}`,
-              "ChatGPT-Account-Id": auth.chatgptAccountId,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ redeem_request_id: idempotencyKey }),
-            signal: AbortSignal.timeout(10_000),
-          },
-        );
-        if (!resp.ok) {
-          await resp.body?.cancel().catch(() => {});
-          return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
-        }
-        const result = safeResetCreditConsumeDto(await resp.json());
-        // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
-        // and return remaining only when that refresh freshly parsed available_count.
-        // Do not fall back to a preserved cached resetCredits (failed/omitted refresh).
-        if (result.code === "reset" || result.code === "already_redeemed") {
-          let freshResetCredits: number | undefined;
-          if (auth.isMain) {
-            ({ freshResetCredits } = await fetchMainAccountInfoAttempt(
-              true,
-              1,
-              auth.nativeMainLease,
-              auth.nativeMainSharedClaimHeld === true,
-            ));
-          } else {
-            const account = configuredPoolAccount(getRuntimeConfig(config), accountId);
-            ({ freshResetCredits } = await fetchPoolAccountQuota(accountId, true, account?.plan));
+        // The ledger keys manual operations by the *physical* ChatGPT account, which is
+        // only known after the auth wrapper resolves credentials. Open here, not earlier.
+        let identity = requestedOperationId === undefined
+          ? undefined
+          : {
+            accountId,
+            chatgptAccountId: auth.chatgptAccountId,
+            operationId: requestedOperationId,
+          } as const;
+        let idempotencyKey: string;
+        if (identity) {
+          const opened = openManualResetCreditOperation(identity);
+          if (opened.kind === "terminal") {
+            // Durably settled already: replay the recorded outcome instead of
+            // trusting upstream idempotency for an irreversible spend. No
+            // `remaining` — that field is only reported from a freshly parsed
+            // available_count, and a replay has none.
+            return jsonResponse({ code: opened.code, replayed: true });
           }
-          return jsonResponse({
-            code: result.code,
-            ...(typeof freshResetCredits === "number" && Number.isFinite(freshResetCredits)
-              ? { remaining: freshResetCredits }
-              : {}),
-          });
+          if (opened.kind === "identity-mismatch") {
+            return jsonResponse({
+              error: "operation_id_owned_by_another_account",
+              code: "identity_mismatch",
+            }, 409);
+          }
+          if (opened.kind !== "execute") {
+            // capacity | unavailable -> fail closed. Falling back to a random id
+            // would silently reintroduce the double-spend this identity prevents.
+            const response = jsonResponse({
+              error: opened.kind === "capacity"
+                ? "reset_credit_ledger_capacity"
+                : "reset_credit_ledger_unavailable",
+              code: opened.kind,
+            }, 503);
+            response.headers.set("Retry-After", "1");
+            return response;
+          }
+          // Canonical id, which an alias join may map to an earlier caller id.
+          identity = { ...identity, operationId: opened.operationId };
+          idempotencyKey = opened.operationId;
+        } else {
+          idempotencyKey = crypto.randomUUID();
         }
-        return jsonResponse(result);
+        const claims = manualResetAuthStillLive(accountId, auth)
+          ? claimManualResetCooldowns(getRuntimeConfig(config), accountId, Date.now(), auth.poolGeneration) : [];
+        try {
+          let resp: Response;
+          try {
+            resp = await fetch(
+              "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${auth.accessToken}`,
+                  "ChatGPT-Account-Id": auth.chatgptAccountId,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ redeem_request_id: idempotencyKey }),
+                signal: AbortSignal.timeout(10_000),
+              },
+            );
+          } catch (error) {
+            // Dispatch outcome unknown: the credit may or may not have been spent.
+            // Mark ambiguous so a replay of this same id is never treated as new.
+            if (identity) markManualResetCreditOperationAmbiguous(identity);
+            throw error;
+          }
+          if (!resp.ok) {
+            await resp.body?.cancel().catch(() => {});
+            if (identity) markManualResetCreditOperationAmbiguous(identity);
+            return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
+          }
+          const result = safeResetCreditConsumeDto(await resp.json());
+          if (identity) {
+            // Narrow explicitly rather than casting: `safeResetCreditConsumeDto`
+            // normalizes anything unrecognized to "unknown", and settling that
+            // would come back as a mismatch and leave the row pending anyway.
+            // Settlement failure never downgrades the user-visible outcome: the
+            // spend already happened upstream, and reporting failure would invite
+            // a manual retry -- the exact double-spend this unit removes.
+            if (result.code === "reset" || result.code === "already_redeemed"
+              || result.code === "nothing_to_reset" || result.code === "no_credit") {
+              settleManualResetCreditOperation(identity, result.code);
+            } else {
+              markManualResetCreditOperationAmbiguous(identity);
+            }
+          }
+          // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
+          // and return remaining only when that refresh freshly parsed available_count.
+          // Do not fall back to a preserved cached resetCredits (failed/omitted refresh).
+          if (result.code === "reset" || result.code === "already_redeemed") {
+            const freshResetCredits = await refreshAfterManualReset(
+              config, accountId, auth, claims, result.code === "reset",
+            );
+            return jsonResponse({
+              code: result.code,
+              ...(typeof freshResetCredits === "number" && Number.isFinite(freshResetCredits)
+                ? { remaining: freshResetCredits }
+                : {}),
+            });
+          }
+          return jsonResponse(result);
+        } finally {
+          // Release only this invocation's leases, including every ambiguous/error outcome.
+          for (const claim of claims) settleManualResetCooldown(getRuntimeConfig(config), claim, false);
+        }
       });
       return operation.ok ? operation.value : operation.response;
     } catch (e) {

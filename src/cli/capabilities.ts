@@ -11,7 +11,7 @@
  * top-level `const USAGE`, evaluated at import time, so a cycle back into this table
  * would resolve to `undefined` under ESM rather than throwing -- silently emptying the
  * usage text that `rejectArgs` hands to `CliUsageError`, in the exact error-reporting
- * surface the CLI-operability issues are about. `tests/cli-capabilities.test.ts` asserts
+ * surface the CLI-operability issues are about. `tests/cli/cli-capabilities.test.ts` asserts
  * the absence of those imports and that every rendered usage string is non-empty, so the
  * failure mode is loud instead of degraded.
  *
@@ -19,7 +19,7 @@
  * `HEAD_CAPABILITIES`. They exit in the CLI head (`root.ts`) before dispatch and have no
  * runner key, so listing them as ordinary capabilities would break the registry parity
  * assertion that every canonical entry is a direct runner. `help` is excluded from
- * `CLI_COMMANDS` deliberately -- `tests/cli-registry.test.ts` documents it as a
+ * `CLI_COMMANDS` deliberately -- `tests/cli/cli-registry.test.ts` documents it as a
  * head-handled pseudo-case -- and that decision is preserved here rather than reversed.
  */
 
@@ -96,6 +96,31 @@ export const HEAD_CAPABILITIES: readonly HeadCapability[] = [
  */
 export const CAPABILITIES: readonly Capability[] = [
   {
+    command: ["models", "price"],
+    summary: "Read the saved manual price for an exact provider/model selector.",
+    routes: [{ method: "GET", path: "/api/providers/{provider}/model-costs" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit provider, modelId, and cost (null for automatic pricing)." }],
+    mutates: false,
+    json: "envelope",
+    details: ["The provider must be configured; everything after the first slash is the exact upstream model ID."],
+  },
+  {
+    command: ["models", "set-price"],
+    summary: "Save four manual USD-per-1M-token rates, or restore automatic pricing for one model.",
+    routes: [{ method: "PUT", path: "/api/providers/{provider}/model-costs" }],
+    flags: [
+      { name: "--input", value: "number", summary: "Input rate; required unless --auto is used." },
+      { name: "--output", value: "number", summary: "Output rate; required unless --auto is used." },
+      { name: "--cache-read", value: "number", summary: "Cache read rate; defaults to 0." },
+      { name: "--cache-write", value: "number", summary: "Cache write rate; defaults to 0." },
+      { name: "--auto", value: "boolean", summary: "Remove this model's override; cannot be combined with rates." },
+      { name: "--json", value: "boolean", summary: "Emit the saved price or reset result as JSON." },
+    ],
+    mutates: true,
+    json: "payload",
+    details: ["Uses the exact upstream model ID after the first slash. Omitted cache rates default to zero; sibling model prices are preserved."],
+  },
+  {
     command: ["status"],
     summary: "Proxy status, injection state, and version skew between this CLI and the running proxy.",
     // No management route: `collectStatus` identity-probes `/healthz` through
@@ -148,10 +173,24 @@ export const CAPABILITIES: readonly Capability[] = [
     summary: "Configured providers with connectivity and selected models.",
     // Local config + PROVIDER_REGISTRY. Does not call GET /api/providers.
     routes: [],
-    flags: [{ name: "--json", value: "boolean", summary: "Emit the provider list as JSON." }],
+    flags: [
+      { name: "--json", value: "boolean", summary: "Emit the provider list as JSON." },
+      { name: "--jsonl", value: "boolean", summary: "Emit one configured provider per JSON line." },
+    ],
     mutates: false,
     json: "envelope",
     details: ["Reads local config; drives no management API route."],
+  },
+  {
+    command: ["provider", "resets"],
+    summary: "Recently detected quota resets and whether reset notifications are enabled.",
+    routes: [{ method: "GET", path: "/api/quota-resets" }],
+    flags: [
+      { name: "--json", value: "boolean", summary: "Emit reset events as JSON." },
+      { name: "--limit", value: "number", summary: "Limit returned events; defaults to 20, capped at 100." },
+    ],
+    mutates: false,
+    json: "payload",
   },
   {
     command: ["provider", "keychain"],
@@ -186,6 +225,8 @@ export const CAPABILITIES: readonly Capability[] = [
     routes: [{ method: "GET", path: "/api/usage" }],
     flags: [
       { name: "--range", value: "string", summary: "today | 1d | 7d | 30d | all" },
+      { name: "--since", value: "string", summary: "Inclusive start: epoch milliseconds or full ISO datetime with timezone; requires --until and overrides --range." },
+      { name: "--until", value: "string", summary: "Inclusive end: epoch milliseconds or full ISO datetime with timezone; requires --since." },
       { name: "--provider", value: "string", summary: "Restrict to one provider." },
       { name: "--model", value: "string", summary: "Restrict to one model id." },
       { name: "--json", value: "boolean", summary: "Emit the usage report as JSON." },
@@ -514,6 +555,45 @@ export const CAPABILITIES: readonly Capability[] = [
       "The list renders per-client state, installed, and desired columns; a blocked disable is named rather than left silent.",
       "Each client has its own route because a toggle rewrites that client's own config file.",
     ],
+  },
+  {
+    command: ["integration", "client"],
+    summary: "Inspect and toggle Aside profile catalogs, read their history, and restore a selected profile operation.",
+    routes: [
+      { method: "GET", path: "/api/client-integrations/aside/profiles" },
+      { method: "PUT", path: "/api/client-integrations/aside/profiles" },
+      { method: "GET", path: "/api/client-integrations/aside/profiles/{profileId}" },
+      { method: "PUT", path: "/api/client-integrations/aside/profiles/{profileId}" },
+      { method: "GET", path: "/api/client-integrations/aside/profiles/journal" },
+      { method: "GET", path: "/api/client-integrations/aside/profiles/{profileId}/journal" },
+      { method: "POST", path: "/api/client-integrations/aside/profiles/{profileId}/restore" },
+    ],
+    flags: [
+      { name: "--client", value: "string", summary: "Select the file integration; use aside for profile controls." },
+      { name: "--profile", value: "number", summary: "Select one registered Aside account; omitted toggles affect all profiles." },
+      { name: "--op", value: "string", summary: "Operation ID for restore." },
+      { name: "--confirm-drift", value: "boolean", summary: "Explicitly allow restore to replace subsequent edits." },
+      { name: "--overwrite-conflict", value: "boolean", summary: "Explicitly allow enable to replace a conflicting provider block." },
+      { name: "--json", value: "boolean", summary: "Emit the profile state, history, or mutation result as JSON." },
+    ],
+    mutates: true,
+    json: "payload",
+    details: [
+      "Use status/show/list, history/journal, enable/disable, or restore after integration client.",
+      "These declarations cover the dedicated Aside profile paths; existing generic client routes retain their separate parity inventory.",
+    ],
+  },
+  {
+    command: ["sync"],
+    summary: "Synchronize client catalogs, including Aside profiles through the running server's mutation owner.",
+    routes: [{ method: "POST", path: "/api/client-integrations/aside/sync" }],
+    flags: [
+      { name: "--restart-codex", value: "boolean", summary: "Restart Codex app-servers after a catalog or cache write." },
+      { name: "--restart-desktop-app", value: "boolean", summary: "Restart the Codex desktop app after a catalog or cache write." },
+    ],
+    mutates: true,
+    json: "none",
+    details: ["The Aside refresh uses the live server; other catalog synchronization also performs local work."],
   },
   {
     command: ["agent", "request-user-input"],

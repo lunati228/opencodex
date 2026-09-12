@@ -9,6 +9,7 @@ import type { OcxProviderConfig } from "../../types";
 import type { WsData } from "../ws-bridge";
 import { waitForProviderRequestSlot } from "../../providers/request-pacing";
 import { withUpstreamHttpVersion } from "../../lib/upstream-http-version";
+import type { CodexWsQuotaObserver } from "./codex-ws-metadata";
 
 export { withUpstreamHttpVersion };
 
@@ -56,6 +57,12 @@ export interface ProviderFetchOptions {
   modelId?: string;
   /** One pacing slot was acquired immediately before this fetch wrapper was created. */
   pacingSlotAcquired?: boolean;
+  /** Captured selected-account observer, attached before the native WS send. */
+  onCodexWsQuota?: CodexWsQuotaObserver;
+  /** Synchronous admission at actual credential dispatch, after pacing/backoff. */
+  beforeDispatch?: (headers: Headers) => void;
+  /** Revalidate/rebuild a queued request at its physical send boundary, after pacing. */
+  dispatchOverride?: (input: Parameters<typeof globalThis.fetch>[0], init: RequestInit, execute: typeof globalThis.fetch) => Promise<Response>;
 }
 
 export function providerFetch(
@@ -68,8 +75,13 @@ export function providerFetch(
     base.preconnect?.(...args);
   };
   const httpFetch = Object.assign(
-    (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) =>
-      base(input, { ...withUpstreamHttpVersion(input, init, provider), timeout: 0 }),
+    async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      options.beforeDispatch?.(new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)));
+      const dispatchInit = { ...withUpstreamHttpVersion(input, init, provider), timeout: 0 };
+      return options.dispatchOverride
+        ? options.dispatchOverride(input, dispatchInit, base)
+        : base(input, dispatchInit);
+    },
     { preconnect },
   ) as typeof globalThis.fetch;
   // ChatGPT Codex backend: streaming turns ride the responses_websockets
@@ -81,8 +93,11 @@ export function providerFetch(
     const guardedInit = provider.externalProviderRef ? { ...init, redirect: "error" as const } : init;
     const upstreamWebsocket = provider.upstreamWebsocket === true;
     if (typeof input === "string" && guardedInit && shouldUseCodexWsUpstream(input, guardedInit, runtime, upstreamWebsocket)) {
-      // A WS fallback must retain the same HTTP-version policy as the non-WS branch.
-      return codexWsUpstreamFetch(input, guardedInit, httpFetch, runtime);
+      // The fallback has to be the same HTTP fetch the non-WS branch would have
+      // used, protocol pin included: a WS turn that falls back is serving the
+      // request over HTTP, and dropping the provider's `upstreamHttpVersion`
+      // there would silently negotiate a transport the operator ruled out.
+      return codexWsUpstreamFetch(input, guardedInit, httpFetch, runtime, options.onCodexWsQuota, options.beforeDispatch);
     }
     return httpFetch(input, guardedInit);
   };

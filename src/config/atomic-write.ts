@@ -125,7 +125,7 @@ function writePrivateTempFile(
   timeoutMemoKey: string,
   onCreated: () => void,
 ): void {
-  const descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  const descriptor = openSync(path, "wx", 0o600);
   onCreated();
   try {
     if (process.platform === "win32") {
@@ -147,7 +147,7 @@ async function writePrivateTempFileAsync(
   onCreated: () => void,
   retryTimedOutOnce?: boolean,
 ): Promise<void> {
-  const descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  const descriptor = openSync(path, "wx", 0o600);
   onCreated();
   try {
     if (windowsSecretAclApplies()) {

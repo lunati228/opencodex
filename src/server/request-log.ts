@@ -8,11 +8,12 @@ import {
   isClientClosedMessage,
   isCyberPolicyCode,
   isCyberPolicyMessage,
+  isRateLimitOrQuotaFailureMessage,
   upstreamErrorMessageFromPayload,
 } from "../lib/errors";
 import { CODEX_CONFIG_PATH, readRootTomlString } from "../codex/paths";
 import { readCodexCatalogPath } from "../codex/catalog";
-import type { AttemptTierOutcome, OcxUsage } from "../types";
+import type { AttemptTierOutcome, OcxProviderConfig, OcxUsage } from "../types";
 import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
 import type { AdapterRequest } from "../adapters/base";
 import type { AdapterTierMetadata } from "../providers/fastwire";
@@ -24,6 +25,7 @@ import {
   isKnownUsageSurface,
   isCodexUsageAccountLogLabel,
   isValidReasoningWireValue,
+  normalizeClaudeCompatibilityUsageLog,
   readRecentUsageEntries,
   usageForFinalLog,
   usageStatusForFinalLog,
@@ -31,6 +33,7 @@ import {
   type AttemptRecoveryKind,
   type PersistedUsageAttempt,
   type PersistedUsageEntry,
+  type PersistedClaudeCompatibilityLog,
   type UsageStatus,
 } from "../usage/log";
 import {
@@ -141,6 +144,8 @@ export interface RequestLogContext {
   terminalSource?: "upstream" | "synthetic";
   /** Bounded route-decision trace (RI-01); never contains secrets. */
   routeDecision?: RouteDecisionTraceV1;
+  /** Opt-in shadow evidence, normalized again at the logging boundary. */
+  claudeCompatibility?: PersistedClaudeCompatibilityLog;
 }
 
 export interface RequestLogEntry {
@@ -209,6 +214,8 @@ export interface RequestLogEntry {
   terminalSource?: "upstream" | "synthetic";
   /** Bounded route-decision trace (RI-01); never contains secrets. */
   routeDecision?: RouteDecisionTraceV1;
+  /** Closed Claude protocol codes; no request or header values. */
+  claudeCompatibility?: PersistedClaudeCompatibilityLog;
 }
 
 const requestLog: RequestLogEntry[] = [];
@@ -280,6 +287,7 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
   const helperSourceModel = sanitizeLogMetadataString(entry.helperSourceModel);
   const helperReasoningEffort = sanitizeLogMetadataString(entry.helperReasoningEffort);
   const shadowCallRewrittenFrom = sanitizeLogMetadataString(entry.shadowCallRewrittenFrom);
+  const claudeCompatibility = normalizeClaudeCompatibilityUsageLog(entry.claudeCompatibility);
   return {
     requestId: entry.requestId,
     timestamp: entry.timestamp,
@@ -325,6 +333,7 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
     ...(entry.attempts !== undefined ? { attempts: entry.attempts } : {}),
     ...(routeDecision ? { routeDecision } : {}),
+    ...(claudeCompatibility ? { claudeCompatibility } : {}),
   };
 }
 
@@ -385,7 +394,8 @@ export function addRequestLog(entry: RequestLogEntry) {
   const helperSourceModel = sanitizeLogMetadataString(entry.helperSourceModel);
   const helperReasoningEffort = sanitizeLogMetadataString(entry.helperReasoningEffort);
   const shadowCallRewrittenFrom = sanitizeLogMetadataString(entry.shadowCallRewrittenFrom);
-  const metadataChanged = helperTurn !== entry.helperTurn
+  const claudeCompatibility = normalizeClaudeCompatibilityUsageLog(entry.claudeCompatibility);
+  const metadataChanged = entry.claudeCompatibility !== undefined || helperTurn !== entry.helperTurn
     || helperSourceModel !== entry.helperSourceModel
     || helperReasoningEffort !== entry.helperReasoningEffort
     || shadowCallRewrittenFrom !== entry.shadowCallRewrittenFrom;
@@ -400,6 +410,8 @@ export function addRequestLog(entry: RequestLogEntry) {
     if (shadowCallRewrittenFrom) retained.shadowCallRewrittenFrom = shadowCallRewrittenFrom;
     else delete retained.shadowCallRewrittenFrom;
   }
+  if (claudeCompatibility) retained.claudeCompatibility = claudeCompatibility;
+  else if (retained !== entry) delete retained.claudeCompatibility;
   entry = retained;
   retainRequestLogEntry(entry);
   try {
@@ -462,6 +474,7 @@ export function addRequestLog(entry: RequestLogEntry) {
       ...(entry.attempts !== undefined ? { attempts: entry.attempts } : {}),
       ...failureDiagnostics,
       ...(entry.routeDecision ? { routeDecision: entry.routeDecision } : {}),
+      ...(entry.claudeCompatibility ? { claudeCompatibility: entry.claudeCompatibility } : {}),
     });
   } catch {
     /* request logging must never fail a user request */
@@ -625,6 +638,12 @@ export function requestLogErrorCode(
 export function requestLogSpeedLabel(serviceTier: string | undefined): string | undefined {
   const normalized = serviceTier?.trim().toLowerCase();
   if (normalized === "priority" || normalized === "fast") return "fast";
+  // Ultra Fast is labelled even though nothing in the shipped catalog advertises it: the
+  // reporter on #3429 reached it by hand-editing their own catalog, the request completed,
+  // and the Logs column stayed empty because this returned undefined. A tier the proxy
+  // forwarded but refuses to name is an observability hole, not a feature gate — the flag
+  // decides whether the tier survives, not whether we admit to carrying it.
+  if (normalized === "ultrafast") return "ultrafast";
   return undefined;
 }
 
@@ -877,7 +896,7 @@ function captureTerminalHttpStatus(
     last_error?: { type?: unknown; code?: unknown; message?: unknown };
     response?: {
       error?: { type?: unknown; code?: unknown; message?: unknown };
-      incomplete_details?: { code?: unknown; message?: unknown };
+      incomplete_details?: { code?: unknown; message?: unknown; reason?: unknown };
     };
   },
 ): void {
@@ -886,7 +905,9 @@ function captureTerminalHttpStatus(
   if (type !== "response.failed" && type !== "response.incomplete" && type !== "error") return;
   const responseError = json.response?.error;
   const responseDetails = json.response?.incomplete_details;
-  const candidates = [json.error, json.last_error, responseError, responseDetails, json];
+  const candidates: Array<{ type?: unknown; code?: unknown; message?: unknown } | undefined> = [
+    json.error, json.last_error, responseError, responseDetails, json,
+  ];
   const policy = candidates.some(candidate => (
     candidate?.code === null || typeof candidate?.code === "string"
   ) && isCyberPolicyCode(candidate.code as string | null | undefined))
@@ -898,6 +919,29 @@ function captureTerminalHttpStatus(
   if (policy) {
     logCtx.terminalErrorCode = CYBER_POLICY_ERROR_CODE;
     logCtx.terminalHttpStatus = 400;
+    return;
+  }
+  // A quota terminal can carry only a structured reason, without an error message.
+  // Keep this separate from normal output limits and from the policy precedence above.
+  const quotaTag = (value: unknown): boolean => value === "usage_limit_reached"
+    || value === "rate_limit_exceeded" || value === "insufficient_quota";
+  const structuredRefusal = candidates.some(candidate => [400, 401, 403, 499].includes(
+    httpStatusFromTerminalError({
+      type: typeof candidate?.type === "string" ? candidate.type : undefined,
+      code: typeof candidate?.code === "string" ? candidate.code : undefined,
+    }),
+  ));
+  const ordinaryIncompleteReason = typeof responseDetails?.reason === "string"
+    && ["max_output_tokens", "content_filter", "steered", "upstream_stall_timeout", "adapter_eof"].includes(responseDetails.reason);
+  if (type === "response.incomplete" && !structuredRefusal && (quotaTag(responseDetails?.reason) || candidates.some(candidate =>
+    quotaTag(candidate?.code)
+    || quotaTag(candidate?.type) || candidate?.type === "rate_limit_error"
+    || (!ordinaryIncompleteReason && typeof candidate?.message === "string" && isRateLimitOrQuotaFailureMessage(candidate.message))
+  ))) {
+    // The shared quota classifier also accepts a numeric HTTP status as its message.
+    // Preserve explicit payment-required evidence rather than relabeling it as 429.
+    logCtx.terminalHttpStatus = candidates.some(candidate => typeof candidate?.message === "string"
+      && Number(candidate.message.trim()) === 402) ? 402 : 429;
     return;
   }
   if (type !== "response.failed" || !responseError || typeof responseError !== "object") return;
@@ -928,6 +972,9 @@ export function httpStatusForRequestLogTerminal(
   status: ResponsesTerminalStatus,
   logCtx?: RequestLogContext,
 ): number {
+  if (status === "incomplete" && (logCtx?.terminalHttpStatus === 429 || logCtx?.terminalHttpStatus === 402)) {
+    return logCtx.terminalHttpStatus;
+  }
   /**
    * [Decision Log]
    * - 목적과 의도: Keep request logs aligned with the successful HTTP/SSE contract.
@@ -1012,6 +1059,7 @@ export function addFinalRequestLog(
   const helperSourceModel = sanitizeLogMetadataString(logCtx.helperSourceModel);
   const helperReasoningEffort = sanitizeLogMetadataString(logCtx.helperReasoningEffort);
   const shadowCallRewrittenFrom = sanitizeLogMetadataString(logCtx.shadowCallRewrittenFrom);
+  const claudeCompatibility = normalizeClaudeCompatibilityUsageLog(logCtx.claudeCompatibility);
   addLog({
     requestId,
     timestamp: start,
@@ -1064,6 +1112,7 @@ export function addFinalRequestLog(
     ...(logCtx.transportPhase ? { transportPhase: logCtx.transportPhase } : {}),
     ...(logCtx.terminalSource ? { terminalSource: logCtx.terminalSource } : {}),
     ...(logCtx.routeDecision ? { routeDecision: logCtx.routeDecision } : {}),
+    ...(claudeCompatibility ? { claudeCompatibility } : {}),
   });
   if (isUsageDebugEnabled()) {
     appendUsageDebug({
@@ -1241,9 +1290,37 @@ export function sealRequestAttemptIdentity(
   accountLogLabel?: string,
 ): void {
   if (!attempt) return;
+  if (attempt.provider !== provider || attempt.adapter !== adapter) delete attempt.credentialSource;
   attempt.provider = provider;
   attempt.adapter = adapter;
   if (isCodexUsageAccountLogLabel(accountLogLabel)) attempt.accountLogLabel = accountLogLabel;
+}
+
+/** Capture only the resolved upstream route; inbound auth and today's config cannot label old usage. */
+export function recordAttemptCredentialSource(
+  attempt: PersistedUsageAttempt | undefined,
+  providerName: string,
+  provider: Pick<OcxProviderConfig, "authMode" | "baseUrl" | "adapter">,
+  adapterName: string = provider.adapter,
+): void {
+  if (!attempt) return;
+  // Rebinding an attempt to an unrecognized route must not retain its previous attribution.
+  delete attempt.credentialSource;
+  if (providerName !== "xai"
+    || !["openai-chat", "openai-responses"].includes(adapterName)) return;
+  try {
+    const url = new URL(provider.baseUrl ?? "");
+    if (url.protocol !== "https:" || url.port || url.username || url.password
+      || url.search || url.hash || !["/v1", "/v1/"].includes(url.pathname)) return;
+    if (provider.authMode === "oauth" && url.hostname === "cli-chat-proxy.grok.com") {
+      attempt.credentialSource = "grok-oauth";
+    } else if ((provider.authMode === "key" || provider.authMode === undefined)
+      && url.hostname === "api.x.ai") {
+      attempt.credentialSource = "xai-api-key";
+    }
+  } catch {
+    // Invalid/custom destinations have no known subscription provenance.
+  }
 }
 
 export function noteAttemptSend(

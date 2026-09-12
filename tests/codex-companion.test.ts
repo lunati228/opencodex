@@ -215,6 +215,24 @@ describe("decideCompanionAction", () => {
     expect(returned.action).toBe("wait");
   });
 
+  test("keep-proxy-running adopts a new Codex generation without recycling", () => {
+    let state: CompanionState = { ...OWNED, codexProcessIds: [101] };
+    for (const processIds of [[202], [202], [303]]) {
+      const decided = decideCompanionAction({
+        codexRunning: true,
+        codexProcessIds: processIds,
+        proxyRunning: true,
+        proxyOwnedByCompanion: true,
+        stopProxyOnClose: false,
+        now: 2_000,
+      }, state);
+      expect(decided.action).toBe("wait");
+      expect(decided.state.codexProcessIds).toEqual(processIds);
+      expect(decided.state.startedByCompanion).toBe(true);
+      state = decided.state;
+    }
+  });
+
   test("does not recycle while old and new Codex process sets overlap", () => {
     const first = decideCompanionAction(
       { codexRunning: true, codexProcessIds: [101, 102], proxyRunning: true, now: 1_000 },
@@ -443,6 +461,28 @@ describe("runCodexCompanion", () => {
     });
 
     expect(restartAttempts).toBe(1);
+  });
+
+  test("keep-proxy-running preserves a live proxy across adoption, close and reopen", async () => {
+    const actions: string[] = [];
+    const processIds = [[101], [], [], [202], [202]];
+    let tick = 0;
+    await runCodexCompanion({
+      codexIsRunning: async () => true,
+      codexProcessIds: async () => processIds[tick]!,
+      proxyIsRunning: async () => true,
+      proxyOwnedByCompanion: () => true,
+      startProxy: async () => { actions.push("start"); },
+      restartProxy: async () => { actions.push("restart"); },
+      releaseModel: async () => { actions.push("release"); },
+      stopProxy: async () => { actions.push("stop"); },
+      stopProxyOnClose: false,
+      now: () => tick * (COMPANION_LINGER_MS + 1),
+      sleep: async () => { tick += 1; },
+      log: () => {},
+      shouldContinue: () => tick < processIds.length,
+    });
+    expect(actions).toEqual(["release"]);
   });
 
   test("retries only an idle-gated busy recycle for the same Codex generation", async () => {

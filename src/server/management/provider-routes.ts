@@ -33,6 +33,8 @@ import {
   submitManualLoginCode,
   upsertOAuthProvider,
 } from "../../oauth";
+import { captureConfigTopLevelRollback } from "../../config/rebase-provenance";
+import { mergeModelPinnedEfforts, modelPinnedEffortsConfigError, pinnedReasoningEffortConfigError } from "../../config/provider-validation";
 import { replaceProviderAccountSet } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { reconcileLiveStateStores } from "../../lib/state-store-registrations";
@@ -44,10 +46,12 @@ import { isManagedLocalProviderProjection } from "../../local-runtime/profile";
 import { refreshCatalogQuotaDecoration } from "../../codex/catalog/quota-decoration";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets, providerConfigSeed } from "../../providers/derive";
+import { initializeProviderModelSelection } from "../../providers/initial-model-selection";
 import { effectiveGoogleMode, providerCodexAccountMode, providerMatchesRegistryTransport } from "../../providers/registry";
 import {
   extractModelEnvelopeRows,
   extractProviderModelItems,
+  isRegistryModelDiscoveryUrl,
   readBoundedDiscoveryJson,
   resolveProviderModelDiscovery,
 } from "../../providers/model-discovery";
@@ -61,7 +65,7 @@ import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { clearModelCache, getProviderDiscoveryStatus } from "../../codex/model-cache";
 import { getCodexModelEntitlementStatus } from "../../codex/model-entitlements";
-import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
+import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, selectedProviderContextCaps, forgetProviderContextCap, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { modelAutoCompactTokenLimitsConfigError } from "../../providers/auto-compact-budget";
 import { resolveCodexHomeDir } from "../../codex/home";
 import { readUsageEntries } from "../../usage/log";
@@ -105,6 +109,7 @@ import { refreshUserCostOverlays } from "../../usage/user-cost-overlays";
 import { redactSecretString } from "../../lib/redact";
 import {
   XAI_RESPONSES_OPT_IN_MODELS,
+  XAI_RESPONSES_DEFAULT_VERSION,
   xaiResponsesOptInState,
 } from "../../providers/xai-responses-opt-in";
 import { dropProviderCustomModels } from "../../providers/provider-id-rewrite";
@@ -268,11 +273,16 @@ function providerEditorCandidate(
   candidate.providers = providers;
   for (const name of removedProviders) {
     dropProviderCustomModels(candidate, name);
-    setProviderContextCap(candidate, name, false);
+    forgetProviderContextCap(candidate, name);
   }
   const validated = validateConfigCandidate(candidate);
   if (!validated.ok) {
     return { ok: false, status: 400, error: validated.error, code: "invalid_provider_editor_config" };
+  }
+  for (const [name, provider] of Object.entries(candidate.providers)) {
+    if (provider.modelPinnedReasoningEfforts !== undefined) {
+      provider.modelPinnedReasoningEfforts = validated.config.providers[name]!.modelPinnedReasoningEfforts;
+    }
   }
   return { ok: true, config: candidate, removedProviders };
 }
@@ -289,6 +299,33 @@ function adoptProviderEditorCandidate(live: OcxConfig, persisted: OcxConfig): vo
   else live.customModels = structuredClone(persisted.customModels);
   if (persisted.providerContextCaps === undefined) delete live.providerContextCaps;
   else live.providerContextCaps = structuredClone(persisted.providerContextCaps);
+  if (persisted.providerContextCapValues === undefined) delete live.providerContextCapValues;
+  else live.providerContextCapValues = structuredClone(persisted.providerContextCapValues);
+  if (persisted.disabledModels === undefined) delete live.disabledModels;
+  else live.disabledModels = [...persisted.disabledModels];
+  if (persisted.modelDiscovery === undefined) delete live.modelDiscovery;
+  else live.modelDiscovery = structuredClone(persisted.modelDiscovery);
+}
+
+/** Share pin merge/clear semantics between POST and the PATCH mask. */
+function applyProviderPinFields(
+  next: OcxProviderConfig,
+  patch: Record<string, unknown>,
+  current: OcxProviderConfig | undefined,
+): string | null {
+  const scalarError = pinnedReasoningEffortConfigError(patch.pinnedReasoningEffort, true);
+  const mapError = modelPinnedEffortsConfigError(patch.modelPinnedReasoningEfforts, "modelPinnedReasoningEfforts", true);
+  if (scalarError || mapError) return scalarError ?? mapError;
+  const scalar = Object.hasOwn(patch, "pinnedReasoningEffort")
+    ? patch.pinnedReasoningEffort : current?.pinnedReasoningEffort;
+  const map = Object.hasOwn(patch, "modelPinnedReasoningEfforts")
+    ? mergeModelPinnedEfforts(current?.modelPinnedReasoningEfforts, patch.modelPinnedReasoningEfforts)
+    : current?.modelPinnedReasoningEfforts;
+  if (scalar === undefined || scalar === null || scalar === "") delete next.pinnedReasoningEffort;
+  else next.pinnedReasoningEffort = scalar as string;
+  if (map === undefined) delete next.modelPinnedReasoningEfforts;
+  else next.modelPinnedReasoningEfforts = { ...map };
+  return null;
 }
 
 /**
@@ -394,10 +431,11 @@ function applyProviderPatchFields(
     const modelAdapters = { ...(next.modelAdapters ?? {}) };
     for (const model of XAI_RESPONSES_OPT_IN_MODELS) {
       if (rawBody.xaiResponsesOptIn) modelAdapters[model] = "openai-responses";
-      else delete modelAdapters[model];
+      else modelAdapters[model] = "openai-chat";
     }
     if (Object.keys(modelAdapters).length > 0) next.modelAdapters = modelAdapters;
     else delete next.modelAdapters;
+    next.xaiResponsesDefaultVersion = Math.max(next.xaiResponsesDefaultVersion ?? 0, XAI_RESPONSES_DEFAULT_VERSION);
     touched = true;
   }
   if (Object.hasOwn(rawBody, "requestPacing")) {
@@ -469,6 +507,11 @@ function applyProviderPatchFields(
       if (Object.keys(windows).length > 0) next.modelContextWindows = windows;
       else delete next.modelContextWindows;
     }
+    touched = true;
+  }
+  if (Object.hasOwn(rawBody, "pinnedReasoningEffort") || Object.hasOwn(rawBody, "modelPinnedReasoningEfforts")) {
+    const error = applyProviderPinFields(next, rawBody, provider);
+    if (error) return { error };
     touched = true;
   }
   if (Object.hasOwn(rawBody, "modelAutoCompactTokenLimits")) {
@@ -689,6 +732,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
         models: p.models ?? [],
         contextWindow: p.contextWindow,
         modelContextWindows: p.modelContextWindows,
+        pinnedReasoningEffort: p.pinnedReasoningEffort,
+        modelPinnedReasoningEfforts: p.modelPinnedReasoningEfforts,
         modelAutoCompactTokenLimits: p.modelAutoCompactTokenLimits,
         modelSupportsServiceTier: p.modelSupportsServiceTier,
         noStructuredOutputModels: p.noStructuredOutputModels,
@@ -847,11 +892,18 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       const changed = !isDeepStrictEqual(providerEditorConfigDTO(persisted), nextResult.value);
       if (!changed) return { changed: false, value: candidate };
 
+      for (const [name, provider] of Object.entries(candidate.config.providers)) {
+        if (!Object.hasOwn(persisted.providers, name)) {
+          initializeProviderModelSelection(name, provider, undefined, candidate.config);
+        }
+      }
       persisted.defaultProvider = candidate.config.defaultProvider;
       persisted.providers = structuredClone(candidate.config.providers);
+      persisted.disabledModels = candidate.config.disabledModels;
+      persisted.modelDiscovery = candidate.config.modelDiscovery;
       for (const name of candidate.removedProviders) {
         dropProviderCustomModels(persisted, name);
-        setProviderContextCap(persisted, name, false);
+        forgetProviderContextCap(persisted, name);
       }
       return {
         changed: true,
@@ -905,6 +957,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const aliasOwnershipError = providerAliasOverlayOwnershipError(body.provider, existing);
     if (aliasOwnershipError) return jsonResponse({ error: aliasOwnershipError }, 400);
     const transportCandidate = providerTransportValidationCandidate(body.provider);
+    const pinError = applyProviderPinFields(transportCandidate as unknown as OcxProviderConfig, body.provider, existing);
+    if (pinError) return jsonResponse({ error: pinError }, 400);
     const providerError = providerManagementConfigError(name, transportCandidate)
       ?? providerEmptyToolOutputConfigError(name, transportCandidate);
     if (providerError) return jsonResponse({ error: providerError }, 400);
@@ -1020,9 +1074,60 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     // completed during that wait remains authoritative instead of being overwritten by the
     // older ownership snapshot used to admit this POST.
     restorePersistedAliasOverlays(prov, config.providers[name]);
-    config.providers[name] = stripRegistryOnlyStaticHeaders(name, prov);
-    if (body.setDefault === true) config.defaultProvider = name;
-    save(config);
+    // The add/edit form omits wire choices. Read after DNS so a concurrent switch
+    // remains authoritative, including the marker that protects it on the next boot.
+    if (name === "xai") {
+      const latest = config.providers[name];
+      if (!Object.hasOwn(body.provider, "modelAdapters") && latest?.modelAdapters) {
+        prov.modelAdapters = { ...latest.modelAdapters };
+      }
+      if (latest?.xaiResponsesDefaultVersion !== undefined) {
+        prov.xaiResponsesDefaultVersion = latest.xaiResponsesDefaultVersion;
+      }
+    }
+    // Reapply pins to the latest live row after DNS/import awaits, then validate the
+    // complete draft before adopting any provider/default state.
+    const latest = config.providers[name];
+    const latestPinError = applyProviderPinFields(prov, body.provider, latest);
+    if (latestPinError) return jsonResponse({ error: latestPinError }, 400);
+    const pinsOwned = Object.hasOwn(body.provider, "pinnedReasoningEffort")
+      || Object.hasOwn(body.provider, "modelPinnedReasoningEfforts")
+      || latest?.pinnedReasoningEffort !== undefined || latest?.modelPinnedReasoningEfforts !== undefined;
+    // New registration also edits discovery/disabled-model state; stage those
+    // side effects with the pin draft instead of mutating live state before validation.
+    const registrationDraft = pinsOwned && !latest ? {
+      ...config,
+      ...(config.modelDiscovery === undefined ? {} : { modelDiscovery: structuredClone(config.modelDiscovery) }),
+    } : undefined;
+    initializeProviderModelSelection(name, prov, latest, registrationDraft ?? config);
+    const candidate = stripRegistryOnlyStaticHeaders(name, prov);
+    if (pinsOwned) {
+      const draft = { ...(registrationDraft ?? config), providers: { ...config.providers, [name]: candidate },
+        ...(body.setDefault === true ? { defaultProvider: name } : {}) };
+      const validation = validateConfigCandidate(draft);
+      if (!validation.ok) return jsonResponse({ error: validation.error }, 400);
+    }
+    const previous = Object.getOwnPropertyDescriptor(config.providers, name);
+    const rollback = pinsOwned ? captureConfigTopLevelRollback(config, ["defaultProvider", "modelDiscovery", "disabledModels"]) : undefined;
+    try {
+      if (registrationDraft) {
+        for (const key of ["modelDiscovery", "disabledModels"] as const) {
+          if (Object.hasOwn(registrationDraft, key)) Object.defineProperty(config, key, {
+            value: registrationDraft[key], writable: true, enumerable: true, configurable: true,
+          });
+        }
+      }
+      config.providers[name] = candidate;
+      if (body.setDefault === true) config.defaultProvider = name;
+      (deps.saveConfigPreservingClaudeCode ?? save)(config);
+    } catch (error) {
+      if (rollback) {
+        if (previous) Object.defineProperty(config.providers, name, previous);
+        else delete config.providers[name];
+        rollback();
+      }
+      throw error;
+    }
     reconcileLiveStateStores();
     if (prov.apiKey && prov.apiKeyPool) {
       const { addProviderApiKey } = await import("../../providers/api-keys");
@@ -1183,8 +1288,25 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       }
       // A PATCH that managed headers owns the resulting block: the clear path restores
       // registry static headers, so exact-match stripping must not erase them again.
-      config.providers[name] = replay.headersTouched ? replay.next : stripRegistryOnlyStaticHeaders(name, replay.next);
-      saveConfigPreservingClaudeCode(config);
+      const candidate = replay.headersTouched ? replay.next : stripRegistryOnlyStaticHeaders(name, replay.next);
+      const pinsTouched = Object.hasOwn(rawBody, "pinnedReasoningEffort") || Object.hasOwn(rawBody, "modelPinnedReasoningEfforts");
+      if (pinsTouched) {
+        const validation = validateConfigCandidate({ ...config, providers: { ...config.providers, [name]: candidate } });
+        if (!validation.ok) { replayError = validation.error; return; }
+      }
+      const previous = Object.getOwnPropertyDescriptor(config.providers, name);
+      const rollback = pinsTouched ? captureConfigTopLevelRollback(config, []) : undefined;
+      try {
+        config.providers[name] = candidate;
+        (deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode)(config);
+      } catch (error) {
+        if (rollback) {
+          if (previous) Object.defineProperty(config.providers, name, previous);
+          else delete config.providers[name];
+          rollback();
+        }
+        throw error;
+      }
     });
     if (replayError !== undefined) return jsonResponse({ error: replayError }, 409);
     reconcileLiveStateStores();
@@ -1278,16 +1400,20 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const discovery = resolveProviderModelDiscovery(name, prov);
     const started = Date.now();
     try {
+      // Same canonical-URL TUN transparency as catalog discovery: the registry's
+      // own fixed discovery URL survives purely-benchmark (Clash/Surge/Mihomo
+      // fake-IP) DNS without proxy env.
+      const outboundDependencies = { isCanonicalUrl: isRegistryModelDiscoveryUrl };
       const res = method === "POST"
         ? await providerOutboundPost(name, prov, modelsUrl, {
           headers,
           body: JSON.stringify({ project }),
           signal: AbortSignal.timeout(8000),
-        })
+        }, outboundDependencies)
         : await providerOutboundGet(name, prov, modelsUrl, {
           headers,
           signal: AbortSignal.timeout(8000),
-        });
+        }, outboundDependencies);
       const latencyMs = Date.now() - started;
       const redirectError = await providerRedirectError(res, modelsUrl);
       if (redirectError) {
@@ -1398,7 +1524,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     delete config.providers[name];
     const { dropProviderCustomModels } = await import("../../providers/provider-id-rewrite");
     const droppedCustomModels = dropProviderCustomModels(config, name);
-    setProviderContextCap(config, name, false);
+    forgetProviderContextCap(config, name);
     save(config);
     await replaceProviderAccountSet(name, null);
     reconcileLiveStateStores();
@@ -1414,7 +1540,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
   }
 
   if (url.pathname === "/api/provider-context-caps" && req.method === "GET") {
-    return jsonResponse({ cap: DEFAULT_PROVIDER_CONTEXT_CAP, value: globalContextCapValue(config), caps: providerContextCaps(config) });
+    return jsonResponse({ cap: DEFAULT_PROVIDER_CONTEXT_CAP, value: globalContextCapValue(config), caps: providerContextCaps(config), values: selectedProviderContextCaps(config) });
   }
 
   if (url.pathname === "/api/provider-context-caps" && req.method === "PUT") {
@@ -1430,7 +1556,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       ok: true,
       cap: DEFAULT_PROVIDER_CONTEXT_CAP,
       value: globalContextCapValue(config),
-      caps: providerContextCaps(config),
+      caps: providerContextCaps(config), values: selectedProviderContextCaps(config),
       catalogRefresh,
     });
 
@@ -1449,8 +1575,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
 
     // Branch 1: per-provider toggle (checked first: a per-provider request may carry an
     // explicit `value`, which must never fall through to the global-value branch). Enable
-    // writes the current global default unless an explicit per-provider value is supplied;
-    // that value is never copied to other providers.
+    // restores the selected provider value, then the global default, unless an explicit
+    // per-provider value is supplied; that value is never copied to other providers.
     if (typeof body.provider === "string" && typeof body.enabled === "boolean") {
       const provider = body.provider.trim();
       if (!isValidProviderName(provider)) {

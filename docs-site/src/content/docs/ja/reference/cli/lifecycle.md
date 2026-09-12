@@ -156,6 +156,12 @@ Codex のローカル モデル ピッカー キャッシュを無効にし、�
 
 opencodex を、ログイン時に自動起動し、クラッシュ時に自動再起動するログイン管理バックグラウンド サービス (macOS **launchd**、Linux **systemd ユーザー ユニット**、Windows **タスク スケジューラ**) として実行します。サービスは `OCX_SERVICE=1` を設定して実行されるため、再起動によって Codex 設定が変更されることはありません。
 
+Windows タスク スケジューラでインストールするサービスは、通常のプロセス優先度（`Priority=4`）を使用します。
+以前のバックグラウンド優先度（`7`。省略時もスケジューラの既定値は `7`）では、CPU の競合により
+ヘルスチェックへの応答が遅れ、プロセスが動作中でもトレイに Offline と表示されることがあります。
+アップグレード後に `ocx service repair` を実行すると、この登録済み優先度を移行してサービスを再起動します。
+移行時に UAC の承認が必要になる場合があります。すでに通常または高優先度の場合、優先度だけを理由に再登録しません。
+
 |サブコマンド |アクション |
 | --- | --- |
 |なし |未インストールなら作成して開始し、既存なら更新して再起動します。正常な Windows タスク スケジューラ定義は再利用しますが、古い定義は再登録され、昇格が必要になる場合があります。 |
@@ -206,9 +212,27 @@ ocx codex-shim status
 ocx codex-shim uninstall
 ```
 
+:::note[Windows のトークン環境]
+新しく生成される Windows CMD と PowerShell のシムは、実行後に呼び出し元の `OPENCODEX_API_AUTH_TOKEN` を元の状態に戻します。Codex とその子プロセスには、引き続きトークンが継承される可能性があります。
+
+OpenCodex の更新後、既存の Windows シムにこの動作を適用するには、`ocx codex-shim uninstall`、続いて `ocx codex-shim install` を実行して再作成してください。通常の更新では、正常な Windows シムは書き換えられません。
+:::
+
 :::tip[サービス vs シム]
 常時オンのバックグラウンド プロキシには `ocx service` を使用します (推奨)。デーモンを使用しない軽量のオンデマンド起動には、`ocx codex-shim` を使用します。プロキシは、`codex` が起動された場合にのみ起動します。
 :::
+
+#### Codex へのトークン注入
+
+非ループバックアドレスにバインドする場合、注入されるプロバイダーには `env_key = "OPENCODEX_API_AUTH_TOKEN"` が含まれます。この行は、読み取る変数を Codex に指定するだけで、変数を作成するものではありません。変数が存在しない場合、Codex はリクエストの開始を拒否し（`Missing environment variable: OPENCODEX_API_AUTH_TOKEN`）、プロキシには到達しません。値は `$OPENCODEX_HOME/service-api-token` に保存されており、起動元のプロセスが Codex の環境にその値を渡す必要があります。
+
+`ocx codex-shim install` でインストールされる、保守対象のシムを使用してください。起動コンテキストでこのシムが選択されると、シムは OpenCodex が作成したトークンファイルを読み取り、変数を Codex に渡します。デスクトップ、cron、サービスから起動する場合は、このシムが選択される PATH またはランチャーパスを使用する必要があります。インストールによって、それらの環境が自動的に設定されるわけではありません。Codex 自身の子プロセスにも、トークンが継承される可能性があります。
+
+この Bearer トークンをシェルの起動ファイルからエクスポートしたり、`config.toml` にコピーしたりしないでください。`service-api-token` ファイルに含まれるのは `NAME=value` 形式の代入ではなくトークンそのものなので、systemd の `EnvironmentFile=` として直接使用することはできません。
+
+`opencodex-proxy.service` の `EnvironmentFile=` または `OCX_API_TOKEN_FILE` は、プロキシプロセスだけを設定するものであり、独立して起動された `codex exec` に渡されることはありません。
+
+ランチャーを置き換える Codex のアップグレードによって、シムは削除されます。次に通常の `ocx` コマンドを実行すると復元されますが（上記参照）、その前に実行された `codex exec` は失敗します。`ocx doctor` は、この状態（env_key が設定済み、変数が未設定、シムが存在しないか正常でない、トークンファイルは存在する）を修復コマンドとともに "Codex env_key launch readiness" の項目で報告し、トークンを表示することはありません。トークンファイルの読み取りは、注入された `env_key` の契約には含まれません。起動元のプロセスがその変数を渡す必要があります。
 
 ### `ocx tray <install|start|stop|status|uninstall|remove> [--json] [--no-start]`
 

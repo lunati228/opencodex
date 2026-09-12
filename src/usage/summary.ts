@@ -1,6 +1,8 @@
 import { baseProviderLabel } from "../providers/label";
 import { canonicalAntigravityUsageModel } from "../providers/antigravity-models";
 import { usageDisplayTotalTokens } from "./totals";
+import type { UsageTimeWindow } from "./time-range";
+import { isUnresolvedRequestedModel, usageModelPriceOptions } from "./model-identity";
 import { isCodexUsageAccountLogLabel, type PersistedUsageEntry, type UsageStatus } from "./log";
 import { type AttemptCostEstimate, type CostEstimate, estimateAttemptCost, estimateRequestCost, serviceTierContext, type ServiceTierContext } from "./cost";
 
@@ -59,6 +61,8 @@ export interface UsageDay {
 export interface UsageDayModel {
   model: string;
   provider: string;
+  /** Includes trace-proven unresolved requested selectors; absence is not confirmation. */
+  hasUnresolvedRequestedModel?: true;
   requests: number;
   attemptCount: number;
   totalTokens: number;
@@ -73,6 +77,8 @@ export interface UsageDayModel {
 export interface UsageModel {
   provider: string;
   model: string;
+  /** Includes trace-proven unresolved requested selectors; absence is not confirmation. */
+  hasUnresolvedRequestedModel?: true;
   resolvedModel?: string;
   requests: number;
   attemptCount: number;
@@ -140,6 +146,8 @@ export interface UsageSummary {
   range: UsageRange;
   surface: UsageSurface;
   since: number | null;
+  customWindow?: true;
+  until?: number;
   generatedAt: number;
   summary: UsageSummaryTotals;
   days: UsageDay[];
@@ -208,7 +216,7 @@ export function computeEntryCost(entry: PersistedUsageEntry): EntryCostInfo {
   const tier = serviceTierContext(entry);
   if (entry.attempts?.length) {
     const attemptEstimates = entry.attempts.map(attempt =>
-      estimateAttemptCost(attempt, undefined, tier)
+      estimateAttemptCost({ ...attempt, ...usageModelPriceOptions(entry, attempt) }, undefined, tier)
     );
     let costTotal = 0;
     let isPriced = false;
@@ -221,6 +229,7 @@ export function computeEntryCost(entry: PersistedUsageEntry): EntryCostInfo {
     return { tier, estimate: null, attemptEstimates, costTotal, isPriced };
   }
   const estimate = estimateRequestCost({
+    ...usageModelPriceOptions(entry, entry),
     provider: entry.provider,
     model: entry.model,
     usage: entry.usage,
@@ -291,6 +300,25 @@ function dayCountForAllRange(oldest: number | null, now: number): number {
   return Math.min(MAX_USAGE_DAY_BUCKETS, Math.max(1, days));
 }
 
+function customWindowDates(window: UsageTimeWindow): string[] {
+  const start = startOfLocalDay(window.since);
+  const date = new Date(startOfLocalDay(window.until));
+  const dates: string[] = [];
+  while (date.getTime() >= start && dates.length < MAX_USAGE_DAY_BUCKETS) {
+    dates.push(localDateKey(date.getTime()));
+    const previous = date.getTime();
+    date.setDate(date.getDate() - 1);
+    date.setHours(0, 0, 0, 0);
+    // A skipped civil day can normalize back to this same midnight (Apia, 2011).
+    // Move through the preceding instant to find the prior existing local day.
+    if (date.getTime() >= previous) {
+      date.setTime(previous - 1);
+      date.setHours(0, 0, 0, 0);
+    }
+  }
+  return dates.reverse();
+}
+
 function blankTotals(): UsageSummaryTotals {
   return {
     requests: 0,
@@ -324,6 +352,7 @@ interface UsageAttribution {
   provider: string;
   model: string;
   resolvedModel?: string;
+  hasUnresolvedRequestedModel?: true;
   accountLogLabel?: string;
   usageStatus: UsageStatus;
   usage?: PersistedUsageEntry["usage"];
@@ -366,6 +395,7 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
       requestId: entry.requestId,
       provider: entry.provider,
       ...usageModelIdentity(entry.provider, entry.model, entry.resolvedModel),
+      ...(isUnresolvedRequestedModel(entry, entry) ? { hasUnresolvedRequestedModel: true as const } : {}),
       ...(entry.accountLogLabel ? { accountLogLabel: entry.accountLogLabel } : {}),
       usageStatus: entry.usageStatus,
       ...(entry.usage ? { usage: entry.usage } : {}),
@@ -376,6 +406,7 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
     requestId: entry.requestId,
     provider: attempt.provider,
     ...usageModelIdentity(attempt.provider, attempt.model),
+    ...(isUnresolvedRequestedModel(entry, attempt) ? { hasUnresolvedRequestedModel: true as const } : {}),
     ...(attempt.accountLogLabel ? { accountLogLabel: attempt.accountLogLabel } : {}),
     usageStatus: attempt.usageStatus,
     ...(attempt.usage ? { usage: attempt.usage } : {}),
@@ -517,6 +548,7 @@ interface UsageModelAccumulator {
   provider: string;
   model: string;
   resolvedModel?: string;
+  hasUnresolvedRequestedModel?: true;
   firstSeen: number;
   attemptCount: number;
   dayTotalTokens: number;
@@ -704,6 +736,7 @@ function cloneModelAccumulator(source: UsageModelAccumulator): UsageModelAccumul
 }
 
 function mergeModelAccumulator(target: UsageModelAccumulator, source: UsageModelAccumulator): void {
+  if (source.hasUnresolvedRequestedModel) target.hasUnresolvedRequestedModel = true;
   if (source.firstSeen < target.firstSeen) {
     target.firstSeen = source.firstSeen;
     target.resolvedModel = source.resolvedModel;
@@ -874,6 +907,7 @@ function buildDayModels(
   return retainedModelAccumulators(sorted, overlaps).map(model => ({
     model: model.model,
     provider: model.provider,
+    ...(model.hasUnresolvedRequestedModel ? { hasUnresolvedRequestedModel: true as const } : {}),
     requests: requestCountsFor(model).requests,
     attemptCount: model.attemptCount,
     totalTokens: model.dayTotalTokens,
@@ -900,6 +934,7 @@ function buildUsageModels(
     return {
       provider: model.provider,
       model: model.model,
+      ...(model.hasUnresolvedRequestedModel ? { hasUnresolvedRequestedModel: true as const } : {}),
       ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
       requests,
       attemptCount: model.attemptCount,
@@ -1002,6 +1037,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
   private readonly requestIds: Map<string, number> | null;
   private readonly filter: NormalizedUsageFilter | null;
   private readonly mode: UsageAccumulatorMode;
+  private readonly window: UsageTimeWindow | undefined;
   private nextRequestId = 0;
   private nextOrdinal = 0;
   private snapshotStart: number | null = null;
@@ -1012,6 +1048,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
   constructor(options?: {
     filter?: { provider?: string | null; model?: string | null; apiKeyId?: string | null };
     mode?: UsageAccumulatorMode;
+    window?: UsageTimeWindow;
   }) {
     const provider = normalizeFilterValue(options?.filter?.provider);
     const model = normalizeFilterValue(options?.filter?.model);
@@ -1020,6 +1057,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
       ? null
       : { provider, model, apiKeyId };
     this.mode = options?.mode ?? "exact";
+    this.window = options?.window ? Object.freeze({ ...options.window }) : undefined;
     this.requestIds = this.mode === "exact" ? new Map() : null;
   }
 
@@ -1035,6 +1073,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
     const cloned = new StreamingUsageSummaryAccumulator({
       ...(this.filter ? { filter: this.filter } : {}),
       mode: this.mode,
+      window: this.window,
     });
     cloned.nextRequestId = this.nextRequestId;
     cloned.nextOrdinal = this.nextOrdinal;
@@ -1115,6 +1154,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
     attribution: UsageAttribution,
     estimate: AttemptCostEstimate | CostEstimate | null,
   ): void {
+    if (attribution.hasUnresolvedRequestedModel) breakdown.hasUnresolvedRequestedModel = true;
     breakdown.attemptCount += 1;
     if (attribution.usage) {
       breakdown.inputTokens += attribution.usage.inputTokens;
@@ -1262,6 +1302,8 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
         ? sourceEntry.timestamp
         : Math.max(this.snapshotEnd, sourceEntry.timestamp);
     }
+    if (this.window && (!Number.isFinite(sourceEntry.timestamp)
+      || sourceEntry.timestamp < this.window.since || sourceEntry.timestamp > this.window.until)) return;
     const projected = this.filter ? projectedEntryForFilter(sourceEntry, this.filter) : { entry: sourceEntry, comboOverlap: false };
     if (!projected) return;
     this.comboOverlap ||= projected.comboOverlap;
@@ -1326,7 +1368,9 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
     now: number,
     surface: UsageSurface = "all",
   ): UsageSummary & { filter?: UsageFilterEcho } {
-    const { since, days: fixedDays } = rangeWindow(range, now);
+    const preset = rangeWindow(range, now);
+    const since = this.window?.since ?? preset.since;
+    const fixedDays = preset.days;
     const totals = blankTotals();
     const models = new Map<string, UsageModelAccumulator>();
     const providers = new Map<string, UsageModelAccumulator>();
@@ -1337,7 +1381,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
 
     for (const partition of this.partitions.values()) {
       if (!usageSurfaceMatches(partition.surface, surface)) continue;
-      if (since !== null && partition.dayStart < since) continue;
+      if (!this.window && since !== null && partition.dayStart < since) continue;
       mergeTotals(totals, partition.totals);
       mergeModelMaps(models, partition.models);
       if (partition.providers) mergeModelMaps(providers, partition.providers);
@@ -1363,27 +1407,34 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
     }
     finalizeCoverage(totals);
 
-    const dayCount = range === "all" ? dayCountForAllRange(oldestTimestamp, now) : fixedDays;
-    const startOfToday = startOfLocalDay(now);
+    const customDates = this.window ? new Set(customWindowDates(this.window)) : null;
+    const dayCount = customDates?.size ?? (range === "all" ? dayCountForAllRange(oldestTimestamp, now) : fixedDays);
+    const startOfToday = startOfLocalDay(this.window?.until ?? now);
     const firstVisibleDay = new Date(startOfToday);
     firstVisibleDay.setDate(firstVisibleDay.getDate() - dayCount + 1);
     const firstVisibleDate = localDateKey(firstVisibleDay.getTime());
     const lastVisibleDate = localDateKey(startOfToday);
-    for (let offset = dayCount - 1; offset >= 0; offset--) {
+    const visibleDates = customDates ?? new Set<string>();
+    for (let offset = dayCount - 1; !customDates && offset >= 0; offset--) {
       const date = new Date(startOfToday);
       date.setDate(date.getDate() - offset);
-      const key = localDateKey(date.getTime());
+      visibleDates.add(localDateKey(date.getTime()));
+    }
+    for (const key of visibleDates) {
       if (!dayAccumulators.has(key)) {
         dayAccumulators.set(key, { totals: blankTotals(), models: new Map(), modelOverlaps: [] });
       }
     }
-    const days = [...dayAccumulators]
+    const visibleDays = customDates
+      ? [...customDates].map(date => [date, dayAccumulators.get(date)!] as const)
+      : [...dayAccumulators]
       // All-history totals, models, providers, and accounts still cover every
       // retained row. Only the chart buckets are bounded so one malformed or
       // ancient timestamp cannot synthesize an enormous JSON response.
       .filter(([date]) => range !== "all"
         || (date >= firstVisibleDate && date <= lastVisibleDate))
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([a], [b]) => a.localeCompare(b));
+    const days = visibleDays
       .map(([date, day]): UsageDay => ({
         date,
         requests: day.totals.requests,
@@ -1398,6 +1449,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
       range,
       surface,
       since,
+      ...(this.window ? { customWindow: true as const, until: this.window.until } : {}),
       generatedAt: now,
       summary: totals,
       days,
@@ -1435,6 +1487,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
 export function createUsageSummaryAccumulator(options?: {
   filter?: { provider?: string | null; model?: string | null; apiKeyId?: string | null };
   mode?: UsageAccumulatorMode;
+  window?: UsageTimeWindow;
 }): UsageSummaryAccumulator {
   return new StreamingUsageSummaryAccumulator(options);
 }
@@ -1487,7 +1540,11 @@ export function projectUsageSummary<T extends UsageSummary>(
   const model = normalizeFilterValue(filter.model);
   const apiKeyId = normalizeExactFilterValue(filter.apiKeyId);
   if (provider === null && model === null && apiKeyId === null) return summary;
-  const accumulator = createUsageSummaryAccumulator({ filter: { provider, model, apiKeyId } });
+  const accumulator = createUsageSummaryAccumulator({
+    filter: { provider, model, apiKeyId },
+    ...(summary.customWindow && summary.since !== null && summary.until !== undefined
+      ? { window: { since: summary.since, until: summary.until } } : {}),
+  });
   for (const entry of entries ?? []) accumulator.add(entry);
   const projected = accumulator.summarize(summary.range, summary.generatedAt, summary.surface);
   return {

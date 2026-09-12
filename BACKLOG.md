@@ -1,5 +1,40 @@
 # Integration backlog
 
+## Narrow repair exception - 2026-09-11
+
+The owner authorized V1, Gemini 3.8, Qwen readiness and startup/catalog repairs
+and a whole-history merge through canonical v2.48.0. Further upstream merges
+are paused at `9a27e86992d7a014e0aa92c046199b9fac148201`; no commit or push is
+part of this work. See [the current freeze and repair record](CHATGPT-APP-FREEZES.md)
+for exact scope, accepted gaps and undo instructions. Further freeze or destaging
+work has stopped. This exception takes precedence over the historical notice below.
+
+The explicitly authorized Gemini and managed Qwen model-health checks completed
+through the proxy with their exact requested models. Qwen started on demand at
+xhigh with the configured context; autostart remains off. This health check did
+not perform the durable workspace edit required by QWEN-4 and does not resume
+Harness/Odysseus work or the other unfinished release gates.
+
+## Maintenance freeze - 2026-09-09
+
+**All unfinished work below is paused until a later explicit owner instruction.**
+Existing item states are retained as history; a pending authorization or
+integration-validation entry does not permit execution during the freeze.
+Harness-driven implementation, integration and validation remain paused.
+
+Preserve Codex desktop **26.901.6511.0**, working bundled/cached CLI **0.153.4**,
+and OpenCodex **2.42.0**, baseline commit
+`d90f918cf6d6b2726c9d6b282707a862acf5b746`. No app/CLI/OpenCodex upgrades or
+downgrades, dependency refreshes, catalog/routing/adapter/pricing changes, or
+automatic updater changes are authorized except the owner's explicitly
+authorized freeze implementation. Preserve the running processes and routing
+without an app relaunch or PC restart.
+
+This is a documentation pause, not technical update enforcement. Authorized
+lifecycle-only freeze patches may change the working tree while preserving the
+baseline versions. Read [the maintenance freeze policy](MAINTENANCE-FREEZE-2026-09-09.md)
+before considering any backlog item or resumption.
+
 ## Qwen release gates
 
 | ID | State | Required outcome |

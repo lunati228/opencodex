@@ -13,6 +13,7 @@ import { ProviderIcon } from "./ProviderRail";
 import { Switch } from "../../ui";
 import { IconChevron, IconTrash } from "../../icons";
 import ProviderOverview from "./ProviderOverview";
+import type { ModelRow } from "../../pages/models-shared";
 import ProviderModels from "./ProviderModels";
 import ProviderUsage from "./ProviderUsage";
 import ProviderAuthPanel from "./ProviderAuthPanel";
@@ -30,13 +31,13 @@ export default function ProviderDetails({
   usageTotals,
   modelUsage,
   quotaReport,
-  quotaRefreshing,
-  quotaRefreshError,
-  quotaRefreshedAt,
-  onRefreshQuota,
   availableModels,
   hasLiveModels,
   selectedModels,
+  modelRows,
+  modelRevision,
+  modelRowsReady,
+  onOpenModels,
   modelsLoading,
   modelsLoadFailed,
   onRetryModels,
@@ -60,19 +61,20 @@ export default function ProviderDetails({
   onRemoveProvider,
   onSetDisabled,
   onSetDefault,
+  onRefreshQuota,
 }: {
   item: WorkspaceItem;
   usageTotals?: ProviderUsageTotals;
   modelUsage?: ProviderModelUsageRow[];
   quotaReport?: ProviderQuotaReportView;
-  quotaRefreshing?: boolean;
-  quotaRefreshError?: boolean;
-  quotaRefreshedAt?: number;
-  onRefreshQuota?: () => void;
   availableModels: string[];
   /** Server-reported live-catalog provenance; see filterModels(). */
   hasLiveModels: boolean;
   selectedModels: string[];
+  modelRows: ModelRow[] | null;
+  modelRevision: string;
+  modelRowsReady: boolean;
+  onOpenModels: () => void;
   modelsLoading?: boolean;
   modelsLoadFailed?: boolean;
   onRetryModels?: () => void;
@@ -99,6 +101,8 @@ export default function ProviderDetails({
   onRemoveProvider?: (name: string) => void;
   onSetDisabled?: (name: string, disabled: boolean) => void;
   onSetDefault?: (name: string) => void;
+  /** Force a fresh quota read for this provider; resolves with whether it succeeded. */
+  onRefreshQuota?: () => Promise<boolean>;
 }) {
   const t = useT();
   const [tab, setTab] = useState<Tab>("overview");
@@ -116,6 +120,9 @@ export default function ProviderDetails({
   const free = useMemo(() => isFreeProvider(item), [item]);
   const local = useMemo(() => isLocalProvider(item), [item]);
   const authSurface = useMemo(() => providerAuthSurface(item), [item]);
+  const currentQuotaReading = authSurface === "oauth-accounts"
+    ? accounts?.find(account => account.active)
+    : authSurface === "api-keys" ? keys?.find(entry => entry.active) : undefined;
   // Global counter from Providers — only honor it for the reveal target.
   const scopedAccountsFocusToken = accountsFocusProvider === item.name ? accountsFocusToken : 0;
   const connectionIdentity = JSON.stringify([
@@ -262,6 +269,8 @@ export default function ProviderDetails({
             connectionIdentity={connectionIdentity}
             usageTotals={usageTotals}
             quotaReport={quotaReport}
+            currentQuotaReading={currentQuotaReading}
+            onRefreshQuota={onRefreshQuota}
             oauthEmail={oauthEmail}
             oauth={oauth}
             onEditSettings={() => switchTab("settings")}
@@ -294,6 +303,10 @@ export default function ProviderDetails({
             availableModels={availableModels}
             hasLiveModels={hasLiveModels}
             selectedModels={selectedModels}
+            modelRows={modelRows}
+            modelRevision={modelRevision}
+            modelRowsReady={modelRowsReady}
+            onOpenModels={onOpenModels}
             modelsLoading={modelsLoading}
             modelsLoadFailed={modelsLoadFailed}
             needsReauth={
@@ -309,11 +322,10 @@ export default function ProviderDetails({
             item={item}
             usageTotals={usageTotals}
             quotaReport={quotaReport}
+            currentQuotaReading={currentQuotaReading}
+            quotaIdentity={connectionIdentity}
             modelUsage={modelUsage}
-            quotaRefreshing={quotaRefreshing}
-            quotaRefreshError={quotaRefreshError}
-            quotaRefreshedAt={quotaRefreshedAt}
-            onRefreshQuota={onRefreshQuota}
+            {...(onRefreshQuota ? { onRefreshQuota } : {})}
           />
         )}
         {tab === "accounts" && (

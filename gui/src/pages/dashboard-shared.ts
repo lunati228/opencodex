@@ -48,6 +48,8 @@ export interface ProviderInfo { name: string; adapter: string; baseUrl: string; 
 export interface ModelInfo { id: string; provider: string; namespaced: string; owned_by?: string; reasoningEfforts?: string[] }
 export interface SettingsData {
   codexAutoStart: boolean;
+  codexDesktopAuthless?: boolean;
+  catalogRefreshPending?: boolean;
   /** Whether a login may open a browser on the machine running the proxy. */
   oauthOpenBrowser?: boolean;
   port: number;
@@ -126,6 +128,7 @@ export type Installer = "npm" | "bun" | "source";
 export type UpdateJobStatus = "running" | "restarting" | "succeeded" | "failed";
 export interface SyncResult {
   ok: boolean;
+  status?: "applied" | "skipped" | "catalog-only" | "refused";
   added: number;
   catalogPath: string | null;
   catalogExists: boolean;
@@ -241,7 +244,7 @@ export function visionTimeoutPatch(timeoutMs: number): SidecarPatch {
 
 /**
  * Dashboard names for the runtime timeout contract in `src/vision/timeout-bounds.ts`.
- * Pinned by `tests/vision-sidecar-timeout-bounds.test.ts`.
+ * Pinned by `tests/gui/vision-sidecar-timeout-bounds.test.ts`.
  */
 export const VISION_TIMEOUT_MS_DEFAULT = DEFAULT_VISION_TIMEOUT_MS;
 export const VISION_TIMEOUT_MS_MAX = MAX_VISION_TIMEOUT_MS;

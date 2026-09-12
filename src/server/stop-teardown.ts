@@ -1,5 +1,6 @@
 import type { CodexNativeRestoreResult } from "../codex/inject";
 import { deferralMatchesReceipt } from "../config/pending-teardown";
+import { preserveCodexRoutingForExit } from "../codex/shutdown-routing";
 
 /**
  * Shared-teardown decision and execution for `POST /api/stop` (#3008).
@@ -17,12 +18,13 @@ export type StopTeardownIo = {
   ownsReceipt?: (nonce: string | null) => boolean;
   restoreNativeCodex?: () => Promise<CodexNativeRestoreResult>;
   stripGrok?: () => GrokStripResult;
+  preserveRouting?: () => void;
 };
 
 export type StopTeardownBody = {
   success: boolean;
   message: string;
-  sharedTeardown: "deferred" | "performed";
+  sharedTeardown: "deferred" | "performed" | "preserved";
 };
 
 /**
@@ -45,6 +47,16 @@ export function deferralHonored(url: URL, ownsReceipt: (nonce: string | null) =>
 
 /** Run (or skip) the shared teardown and describe the outcome truthfully. */
 export async function performStopTeardown(url: URL, io: StopTeardownIo = {}): Promise<StopTeardownBody> {
+  if (url.searchParams.get("keep-codex-routing") === "1") {
+    // The companion deliberately retains routing for the next launch. This is
+    // not the receipt-backed handoff to an uninstall/stop cleanup operation.
+    (io.preserveRouting ?? preserveCodexRoutingForExit)();
+    return {
+      success: true,
+      message: "Proxy stopping; routing and catalog retained for the Codex companion.",
+      sharedTeardown: "preserved",
+    };
+  }
   const ownsReceipt = io.ownsReceipt ?? deferralMatchesReceipt;
   if (deferralHonored(url, ownsReceipt)) {
     // Not "native Codex restored": nothing was restored here, and claiming otherwise

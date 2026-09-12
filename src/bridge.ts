@@ -16,9 +16,9 @@ import {
   type OcxErrorPayload,
 } from "./lib/errors";
 import { redactSecretString } from "./lib/redact";
-import { repairFreeformToolInput } from "./responses/apply-patch-envelope";
+import { mayBecomePatchEnvelope, repairFreeformToolInput } from "./responses/apply-patch-envelope";
 import { encodeCompactionSummary } from "./responses/compaction";
-import { compileCodeModeHelperInput } from "./responses/code-mode-helper-compat";
+import { compileCodeModeHelperInput, resolveCodeModeHelperName } from "./responses/code-mode-helper-compat";
 import { isTruncatedStopReason, truncationReasonFor } from "./responses/truncated-stop-reason";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
@@ -33,7 +33,7 @@ import {
   stripCitationMarkers,
   type CitationMarkerFilter,
 } from "./responses/citation-markers";
-import { normalizeDeclaredToolName } from "./types";
+import { declaresCodeModeExec, normalizeDeclaredToolName } from "./types";
 import { usageDisplayTotalTokens } from "./usage/totals";
 import { appendSafeWebSearchSource, safeWebSearchSources } from "./web-search/sources";
 import {
@@ -292,9 +292,12 @@ export function bridgeToResponsesSSE(
     toolName: string,
     namespace?: string,
     codeModeHelperName?: string,
-  ): string => codeModeHelperName
-    ? compileCodeModeHelperInput(args, codeModeHelperName)
-    : repairFreeformToolInput(args, toolName, namespace);
+  ): string => {
+    const helper = resolveCodeModeHelperName(codeModeHelperName, toolName, args, namespace, options?.declaredToolNames);
+    return helper
+      ? compileCodeModeHelperInput(args, helper)
+      : repairFreeformToolInput(args, toolName, namespace);
+  };
   // Best-effort unwrap of a PARTIAL freeform arg buffer for live input streaming
   // (`response.custom_tool_call_input.delta` — codex-rs uses it for UI preview only;
   // the completed custom_tool_call item stays authoritative). Compact `{"input":"...`
@@ -505,7 +508,7 @@ export function bridgeToResponsesSSE(
         const previousBytes = pendingSignatureBytes
           + pendingRedacted.reduce((sum, value) => sum + bytesOf(value), 0)
           + (hiddenText ? hiddenThinkingBytes : 0);
-        const encoded = encodeReasoningEnvelope(envelope);
+        const encoded = encodeReasoningEnvelope(envelope, budget);
         const reservation = budget?.reserveTransient(bytesOf(encoded), { kind: "reasoning" });
         pendingSignature = undefined;
         pendingSignatureBytes = 0;
@@ -545,7 +548,7 @@ export function bridgeToResponsesSSE(
         if (!hiddenRawReasoningText) return;
         rawReasoningForNextToolCall = hiddenRawReasoningText;
         const previousBytes = hiddenRawReasoningBytes;
-        const encrypted = encodeReasoningEnvelope({ txt: hiddenRawReasoningText });
+        const encrypted = encodeReasoningEnvelope({ txt: hiddenRawReasoningText }, budget);
         const reservation = budget?.reserveTransient(bytesOf(encrypted), { kind: "reasoning" });
         hiddenRawReasoningText = "";
         hiddenRawReasoningBytes = 0;
@@ -568,7 +571,7 @@ export function bridgeToResponsesSSE(
       const flushKiroRedactedReasoning = () => {
         if (!pendingKiroRedacted) return;
         const previousBytes = pendingKiroRedactedBytes;
-        const encrypted = encodeReasoningEnvelope({ krc: pendingKiroRedacted });
+        const encrypted = encodeReasoningEnvelope({ krc: pendingKiroRedacted }, budget);
         const reservation = budget?.reserveTransient(bytesOf(encrypted), { kind: "reasoning" });
         pendingKiroRedacted = undefined;
         pendingKiroRedactedBytes = 0;
@@ -931,6 +934,16 @@ export function bridgeToResponsesSSE(
         gated = true;
         stepping = false;
       };
+      const attemptTerminationCleanup = (action: () => void): boolean => {
+        try {
+          action();
+          return !terminated && !closed;
+        } catch (error) {
+          if (!isTranslatorBudgetExceededError(error)) throw error;
+          terminateForTranslatorOverflow(error);
+          return false;
+        }
+      };
       const step = async () => {
         if (stepping || closed) return;
         stepping = true;
@@ -973,6 +986,13 @@ export function bridgeToResponsesSSE(
               continue;
             }
             if (event.type !== "done" && event.type !== "incomplete" && event.type !== "error") continue;
+          }
+          // Anthropic signature_delta supplies the latest signature, not an append-only
+          // fragment (anthropic-sdk-typescript MessageStream). Keep consecutive updates
+          // together; the next semantic event belongs to the following block.
+          if (pendingSignature !== undefined && event.type !== "thinking_signature" && event.type !== "heartbeat") {
+            if (currentReasoning) closeCurrentReasoning();
+            else flushHiddenReasoningEnvelope();
           }
           switch (event.type) {
             case "assistant_boundary": {
@@ -1083,15 +1103,21 @@ export function bridgeToResponsesSSE(
             case "thinking_signature": {
               pendingSignatureBytes = replaceRetainedString(pendingSignatureBytes, event.signature, "reasoning");
               pendingSignature = event.signature;
-              // Signature arrives at the end of the thinking block. With a visible reasoning item
-              // open, closeCurrentReasoning attaches the envelope; hidden/suppressed blocks flush
-              // an envelope-only reasoning item now.
-              if (!currentReasoning) flushHiddenReasoningEnvelope();
+              // Delay closing until the next semantic event so a signature update cannot
+              // create another block or become attached to the following thinking text.
               break;
             }
             case "redacted_thinking": {
+              if (currentMsg) closeCurrentMessage("commentary");
+              if (currentReasoning) closeCurrentReasoning();
+              if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
+              if (currentToolCall) closeCurrentToolCall();
               budget?.chargeRetained(bytesOf(event.data), { kind: "reasoning" });
               pendingRedacted.push(event.data);
+              // A redacted block is complete at content_block_start. Emit it here,
+              // not with a later thinking block or after a tool call at turn end.
+              flushHiddenReasoningEnvelope();
               break;
             }
             case "kiro_redacted_reasoning": {
@@ -1204,7 +1230,13 @@ export function bridgeToResponsesSSE(
                   if (!FREEFORM_WRAP_PREFIX.startsWith(currentToolCall.args)) {
                     const full = freeformPartialInput(currentToolCall.args);
                     const emitted = currentToolCall.inputEmitted ?? "";
-                    if (full.startsWith(emitted) && full.length > emitted.length) {
+                    // Also hold a buffer that could still become a complete patch envelope:
+                    // at completion such a body is recompiled into an apply_patch helper call,
+                    // and streaming the envelope bytes first would be that same rewind.
+                    const mayCompile = declaresCodeModeExec(options?.declaredToolNames)
+                      && !currentToolCall.namespace
+                      && currentToolCall.name === "exec";
+                    if (!(mayCompile && mayBecomePatchEnvelope(full)) && full.startsWith(emitted) && full.length > emitted.length) {
                       emit("response.custom_tool_call_input.delta", {
                         item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex,
                         delta: full.slice(emitted.length),
@@ -1436,10 +1468,12 @@ export function bridgeToResponsesSSE(
           return;
         }
         if (!terminated) {
-          flushHiddenRawReasoning();
-          if (currentToolCall) failCurrentToolCall();
-          if (currentWebSearch) closeCurrentWebSearch("failed", []);
-          releasePendingWebSources();
+          if (!attemptTerminationCleanup(() => {
+            flushHiddenRawReasoning();
+            if (currentToolCall) failCurrentToolCall();
+            if (currentWebSearch) closeCurrentWebSearch("failed", []);
+            releasePendingWebSources();
+          })) return;
           const failure = responseError(
             500,
             "proxy_error",
@@ -1469,13 +1503,15 @@ export function bridgeToResponsesSSE(
       if (!terminated) {
         // The adapter generator ended without an explicit done/error event. Mark as incomplete
         // rather than completed so Codex can distinguish a clean finish from a truncated stream.
-        if (currentMsg) closeCurrentMessage();
-        if (currentReasoning) closeCurrentReasoning();
-        if (currentRawReasoning) closeCurrentRawReasoning();
-        flushHiddenRawReasoning();
-        if (currentToolCall) failCurrentToolCall();
-        if (currentWebSearch) closeCurrentWebSearch("failed", []);
-        releasePendingWebSources();
+        if (!attemptTerminationCleanup(() => {
+          if (currentMsg) closeCurrentMessage();
+          if (currentReasoning) closeCurrentReasoning();
+          if (currentRawReasoning) closeCurrentRawReasoning();
+          flushHiddenRawReasoning();
+          if (currentToolCall) failCurrentToolCall();
+          if (currentWebSearch) closeCurrentWebSearch("failed", []);
+          releasePendingWebSources();
+        })) return;
         options?.onUsage?.(undefined);
         await awaitThoughtSignatureDurability();
         emit("response.incomplete", {
@@ -1514,13 +1550,15 @@ export function bridgeToResponsesSSE(
             upstreamActivity = false;
             stallTicks = 0;
           } else if (++stallTicks >= maxStallTicks) {
-            if (currentMsg) closeCurrentMessage();
-            if (currentReasoning) closeCurrentReasoning();
-            if (currentRawReasoning) closeCurrentRawReasoning();
-            flushHiddenRawReasoning();
-            if (currentToolCall) failCurrentToolCall();
-            if (currentWebSearch) closeCurrentWebSearch("failed", []);
-            releasePendingWebSources();
+            if (!attemptTerminationCleanup(() => {
+              if (currentMsg) closeCurrentMessage();
+              if (currentReasoning) closeCurrentReasoning();
+              if (currentRawReasoning) closeCurrentRawReasoning();
+              flushHiddenRawReasoning();
+              if (currentToolCall) failCurrentToolCall();
+              if (currentWebSearch) closeCurrentWebSearch("failed", []);
+              releasePendingWebSources();
+            })) return;
             // #1926 gap 2 residual: this beat callback is synchronous, so the durability
             // barrier is not awaited on the stall-timeout kill path. The in-memory store is
             // already updated; only a crash between here and the queued write loses it,
@@ -1711,9 +1749,12 @@ function buildResponseJSONWithBudget(
     toolName: string,
     namespace?: string,
     codeModeHelperName?: string,
-  ): string => codeModeHelperName
-    ? compileCodeModeHelperInput(args, codeModeHelperName)
-    : repairFreeformToolInput(args, toolName, namespace);
+  ): string => {
+    const helper = resolveCodeModeHelperName(codeModeHelperName, toolName, args, namespace, options?.declaredToolNames);
+    return helper
+      ? compileCodeModeHelperInput(args, helper)
+      : repairFreeformToolInput(args, toolName, namespace);
+  };
   const parseArgsObj = (args: string): Record<string, unknown> => {
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
   };
@@ -1748,7 +1789,7 @@ function buildResponseJSONWithBudget(
     if (batchRedacted.length > 0) envelope.red = batchRedacted;
     const hidden = options?.hideThinkingSummary === true;
     if (hidden && currentSummaryReasoning && (envelope.sig || envelope.red)) envelope.txt = currentSummaryReasoning;
-    const encrypted = envelope.sig || envelope.red || envelope.txt ? encodeReasoningEnvelope(envelope) : undefined;
+    const encrypted = envelope.sig || envelope.red || envelope.txt ? encodeReasoningEnvelope(envelope, budget) : undefined;
     const sourceBytes = currentSummaryReasoningBytes + batchSignatureBytes + batchRedactedBytes;
     batchSignature = undefined;
     batchSignatureBytes = 0;
@@ -1776,7 +1817,7 @@ function buildResponseJSONWithBudget(
       // Same contract as the streaming path: no visible reasoning, txt-only envelope round-trip.
       pushOutput({
         type: "reasoning", id: `rs_${uuid()}`, summary: [],
-        encrypted_content: encodeReasoningEnvelope({ txt: currentRawReasoning }),
+        encrypted_content: encodeReasoningEnvelope({ txt: currentRawReasoning }, budget),
       }, currentRawReasoningBytes, "reasoning");
       currentRawReasoning = "";
       currentRawReasoningBytes = 0;
@@ -1865,6 +1906,9 @@ function buildResponseJSONWithBudget(
       if (budget) releaseTranslatedEvent(e, budget);
       continue;
     }
+    if (batchSignature !== undefined && e.type !== "thinking_signature" && e.type !== "heartbeat") {
+      flushSummaryReasoning();
+    }
     switch (e.type) {
       case "assistant_boundary":
         flushText("commentary");
@@ -1900,19 +1944,23 @@ function buildResponseJSONWithBudget(
         }
         break;
       case "thinking_signature":
-        // End of the current thinking block — flush it WITH the signature envelope so the
-        // block/signature pairing survives multi-block turns.
+        // Like streaming, retain the latest signature update until the next semantic
+        // event. Flushing every update would manufacture signature-only siblings.
         batchSignatureBytes = replaceBatchRetainedString(batchSignatureBytes, e.signature, "reasoning");
         batchSignature = e.signature;
-        flushSummaryReasoning();
         break;
       case "redacted_thinking":
+        flushText("commentary");
+        flushSummaryReasoning();
+        flushRawReasoning();
+        flushToolCall();
         {
           const dataBytes = bytesOf(e.data);
           budget?.chargeRetained(dataBytes, { kind: "reasoning" });
           batchRedactedBytes += dataBytes;
         }
         batchRedacted.push(e.data);
+        flushSummaryReasoning();
         break;
       case "kiro_redacted_reasoning":
         // Stash only — pushed after the trailing flushes. One blob per turn, so last wins.
@@ -2066,7 +2114,7 @@ function buildResponseJSONWithBudget(
     // pushOutput reserves the item itself and releases the retained raw blob it replaces.
     pushOutput({
       type: "reasoning", id: `rs_${uuid()}`, summary: [],
-      encrypted_content: encodeReasoningEnvelope({ krc: batchKiroRedacted }),
+      encrypted_content: encodeReasoningEnvelope({ krc: batchKiroRedacted }, budget),
     }, batchKiroRedactedBytes, "reasoning");
     batchKiroRedacted = undefined;
     batchKiroRedactedBytes = 0;

@@ -1,5 +1,41 @@
 # OpenCodex integration fork
 
+## Current repair exception and merge boundary - 2026-09-11
+
+**[Codex / ChatGPT freeze status, accepted gaps and exact undo steps](CHATGPT-APP-FREEZES.md).**
+
+The owner authorized the V1, Gemini 3.8, Qwen and startup/catalog repairs and a
+whole-history merge through canonical **v2.48.0**, commit
+`9a27e86992d7a014e0aa92c046199b9fac148201`. Further upstream merging is paused
+at that boundary. The merge is prepared without a commit or push, with existing
+dependencies. Keep the current desktop, CLI and proxy running. Further freeze,
+destaging and updater-control work has stopped. This narrow exception takes
+precedence over the historical September 9 notice below.
+
+## Maintenance freeze - 2026-09-09
+
+**Active until a later explicit owner instruction resumes maintenance.** Preserve
+Codex desktop **26.901.6511.0**, its working bundled/cached CLI **0.153.4**, and
+OpenCodex **2.42.0** at baseline commit
+`d90f918cf6d6b2726c9d6b282707a862acf5b746`.
+
+Pause app/CLI/OpenCodex upgrades and downgrades, dependency refreshes, catalog,
+routing, adapter and pricing changes, Harness-driven patches, and automatic
+updater changes. The sole current exception is the owner's explicitly
+authorized freeze implementation, within its no-interruption and routing
+preservation limits. That exception does not resume normal maintenance.
+
+Preserve the running desktop, CLI and proxy without an app relaunch or PC
+restart. Keeping OpenCodex alive on app exit is a freeze objective whose
+technical implementation needs separate evidence. **This notice is policy;
+it does not enforce update blocking or change an already-running process.**
+Authorized lifecycle-only freeze patches may make the working tree differ
+from the baseline commit.
+
+See [the maintenance freeze policy](MAINTENANCE-FREEZE-2026-09-09.md) for scope,
+verification limits and resumption rules. The sections below remain historical
+and technical reference material, not authorization to perform paused work.
+
 This fork adds a privacy-conscious managed local runtime, external review, and
 automatic compaction while retaining OpenCodex's public routing behavior.
 
@@ -10,17 +46,18 @@ keeps both the fork tip and canonical `lidge-jun/opencodex:main` as parents; the
 fork changes are not squashed, rebased, or copied into an unrelated history.
 `ornith-setup` remains available as a rollback reference.
 
-The current integration includes canonical main through 2.42.0. GPT-6 Astra
+The prepared integration includes canonical main through 2.48.0. GPT-6 Astra
 uses its own upstream catalog row, context ceiling, and reasoning ladder;
 it does not inherit Sol's identity or context limit. Gemini 3.8 Flash is the
 current Antigravity Flash selection. Older identifiers remain supported at
 compatibility boundaries and in historical records.
 
-For mixed native/routed delegation, `multiAgentMode: "v2"` together with
-`keepNativeChatGptOnV1: true` keeps native assignments plaintext while routed
-models retain the V2 tool surface. The global Codex V2 override must be off.
-These catalog settings apply to new tasks; they do not rewrite an existing
-task's tool surface. Unreadable encrypted native assignments still fail closed.
+The current repair uses `multiAgentMode: "v1"` for native and routed delegation,
+with the global Codex V2 override off. These catalog settings apply to new tasks;
+they do not rewrite an existing task's tool surface. Unreadable encrypted native
+assignments still fail closed. Keep-running companion mode prepares the proxy
+before the app is observed, and intentional shutdown preserves its endpoint and
+catalog for subsequent launches.
 
 ## Public local-runtime contract
 

@@ -127,6 +127,7 @@ export interface CompanionObservation {
    *
    * Ownership still gates this: a proxy this companion did not start is left
    * alone, exactly as before.
+   * False also preserves the proxy when Codex reopens with a new PID generation.
    */
   stopProxyOnClose?: boolean;
 }
@@ -188,13 +189,16 @@ export function decideCompanionAction(
     // handoffs such as [old] -> [old,new] -> [new] without later mistaking the
     // settled [new] set for a close/reopen that happened between polls.
     codexProcessIds = observedProcessIds;
-  } else if (codexGenerationReplaced && !owned) {
-    // A foreign proxy is never recycled. Adopt the new Codex generation only
-    // to avoid reconsidering the same forbidden action on every poll.
+  } else if (codexGenerationReplaced && (!owned || observation.stopProxyOnClose === false)) {
+    // A foreign or explicitly retained proxy is never recycled. Adopt the new
+    // Codex generation to avoid reconsidering that action on every poll.
     codexProcessIds = observedProcessIds;
   }
 
-  if (codexRunning && !proxyRunning) {
+  // Keep-running also bootstraps before Codex exists. Waiting for its PID is
+  // too late: the first app-server may already have read the native catalog.
+  // Starting the proxy does not load the model; requests own model readiness.
+  if ((codexRunning || observation.stopProxyOnClose === false) && !proxyRunning) {
     return {
       action: "start-proxy",
       state: {
@@ -210,7 +214,7 @@ export function decideCompanionAction(
   // complete between polls. A fully disjoint PID generation is durable evidence
   // of replacement. Recycle only a companion-owned proxy; manual/service
   // proxies remain untouched.
-  if (codexGenerationReplaced && owned) {
+  if (codexGenerationReplaced && owned && observation.stopProxyOnClose !== false) {
     return {
       action: "restart-proxy",
       state: {
@@ -366,7 +370,7 @@ export async function runCodexCompanion(deps: CompanionDeps): Promise<void> {
 
     try {
       if (decided.action === "start-proxy") {
-        deps.log("Codex is running and the proxy is not — starting it.");
+        deps.log("Starting the proxy so Codex routing and discovery are ready.");
         await deps.startProxy();
       } else if (decided.action === "restart-proxy") {
         deps.log("Codex process generation changed - gracefully recycling its proxy.");

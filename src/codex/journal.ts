@@ -192,13 +192,13 @@ export function markJournalIntentionalShutdown(): void {
  * survives such a rewrite, so restore can still prove the URL is ours -- and, just as
  * importantly, prove that a DIFFERENT URL is not.
  */
-export function journaledInjectedOpenaiBaseUrl(): string | null {
-  return readJournal()?.injectedOpenaiBaseUrl ?? null;
+export function journaledInjectedOpenaiBaseUrl(options: { readOnly?: boolean } = {}): string | null {
+  return readJournal(options.readOnly !== true)?.injectedOpenaiBaseUrl ?? null;
 }
 
 /** The root `experimental_realtime_ws_base_url` the last injection wrote, or null. */
-export function journaledInjectedRealtimeWsBaseUrl(): string | null {
-  return readJournal()?.injectedRealtimeWsBaseUrl ?? null;
+export function journaledInjectedRealtimeWsBaseUrl(options: { readOnly?: boolean } = {}): string | null {
+  return readJournal(options.readOnly !== true)?.injectedRealtimeWsBaseUrl ?? null;
 }
 
 /** The catalog path the last injection wrote to, or null when none was recorded. */
@@ -211,7 +211,7 @@ export function removeJournal(): void {
   try { unlinkSync(LEGACY_JOURNAL_PATH); } catch { /* ignore */ }
 }
 
-function readJournalAt(path: string, protectedParent: boolean): Journal | null {
+function readJournalAt(path: string, protectedParent: boolean, cleanInvalid = true): Journal | null {
   if (!existsSync(path)) return null;
   if (protectedParent) hardenConfigDirForSecretWrite();
   const raw = readExistingSecretFileRequired(path, {
@@ -222,19 +222,19 @@ function readJournalAt(path: string, protectedParent: boolean): Journal | null {
     if (journal.version !== 1) throw new Error("unknown version");
     return journal;
   } catch {
-    try { unlinkSync(path); } catch { /* ignore */ }
+    if (cleanInvalid) { try { unlinkSync(path); } catch { /* ignore */ } }
     return null;
   }
 }
 
-function readJournal(): Journal | null {
-  if (existsSync(JOURNAL_PATH)) return readJournalAt(JOURNAL_PATH, true);
+function readJournal(cleanInvalid = true): Journal | null {
+  if (existsSync(JOURNAL_PATH)) return readJournalAt(JOURNAL_PATH, true, cleanInvalid);
 
   // One-way compatibility migration. The old file lived in live CODEX_HOME,
   // whose ACL OpenCodex must not tighten. Harden and identity-bind the file
   // itself, then publish the bytes into the protected OpenCodex directory.
-  const legacy = readJournalAt(LEGACY_JOURNAL_PATH, false);
-  if (!legacy) return null;
+  const legacy = readJournalAt(LEGACY_JOURNAL_PATH, false, cleanInvalid);
+  if (!legacy || !cleanInvalid) return legacy;
   hardenConfigDirForSecretWrite();
   atomicWriteSecretFile(JOURNAL_PATH, JSON.stringify(legacy));
   try { unlinkSync(LEGACY_JOURNAL_PATH); } catch { /* protected copy is authoritative */ }

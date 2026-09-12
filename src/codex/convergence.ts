@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 import { getConfigDir, saveConfigPreservingClaudeCode, websocketsEnabled, withExpectedConfigGenerationSync } from "../config";
 import { reconcileSuccessfulModelDiscoveries } from "../providers/new-model-policy";
+import { pendingModelSelectionProviders } from "../providers/initial-model-selection";
 import { COMBO_NAMESPACE } from "../combos";
 import { getAuthStorePath } from "../oauth/store";
 import type { OcxConfig } from "../types";
@@ -226,6 +227,12 @@ function bindGatherPaths(
   };
 }
 
+/**
+ * Prepara um candidato de catálogo para convergência sem gravá-lo em disco.
+ * Clona a fonte e mescla as observações nativas, os modelos roteados e por conta,
+ * aplicando a configuração, inclusive nomes nativos, e os limites de raciocínio
+ * observados no runtime antes de retornar o catálogo resultante.
+ */
 function prepareCatalog(
   config: Readonly<OcxConfig>,
   source: Extract<CatalogSourceForGather, { kind: "available" }>,
@@ -342,6 +349,8 @@ function prepareCatalog(
     )),
   );
   const mergedModels = mergeCatalogEntriesFromObservedState({
+    modelPickerOrder,
+    accountSelectors,
     catalogModels,
     baselineCatalogModels,
     routedEntries,
@@ -352,6 +361,7 @@ function prepareCatalog(
     disabledModels: new Set(config.disabledModels ?? []),
     selectedModelsByProvider,
     gatheredProviderNames,
+    pendingProviderNames: pendingModelSelectionProviders(config),
     degradedProviderNames,
     legacyCustomModelSlugs: legacyCustomModelCatalogSlugs(config),
     multiAgentMode,
@@ -363,6 +373,7 @@ function prepareCatalog(
     accountBoundEntries,
     suppressedBareNativeSlugs,
     openaiContextCap,
+    nativeDisplayNames: config.providers[OPENAI_CODEX_PROVIDER_ID]?.modelDisplayNames,
     policy: {
       ...CANONICAL_NATIVE_CATALOG_CONTENT_POLICY,
       nativeBackfillSlugs: [...availableBareNativeSlugs, ...observedNativeSlugs],

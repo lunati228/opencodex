@@ -69,6 +69,15 @@ const DEVLOG_PUBLICATION_PROOF_HOME_USERNAME = ["someone", "else"].join("");
 const DEVLOG_PUBLICATION_PROOF_EMAIL = ["stranger", "third-party.example.org"].join("@");
 const DEVLOG_AWS_DOCUMENTATION_SAMPLE = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
 
+/**
+ * The sponsorship contact address published on purpose. It is the one email the project
+ * WANTS in the tree, and only in the two files that carry the sponsor rule set. Anywhere
+ * else — a devlog note, a test fixture, a comment — the same address still fails, because
+ * there it would be a leak of contact data rather than a published channel.
+ */
+const SPONSORSHIP_CONTACT_EMAIL = ["jun", "lidgeai.com"].join("@");
+const SPONSORSHIP_CONTACT_FILES = new Set(["SPONSORS.md", "README.md"]);
+
 function gitLsFiles(): string[] {
   const result = Bun.spawnSync(["git", "ls-files"], { stdout: "pipe", stderr: "pipe" });
   if (!result.success) {
@@ -106,6 +115,7 @@ function lineAt(text: string, index: number): string {
 function isAllowedEmail(file: string, email: string): boolean {
   if (file === "scripts/privacy-scan.ts" && email === "a@b.com") return true;
   if (file === DEVLOG_PUBLICATION_PROOF_FILE && email === DEVLOG_PUBLICATION_PROOF_EMAIL) return true;
+  if (SPONSORSHIP_CONTACT_FILES.has(file) && email.toLowerCase() === SPONSORSHIP_CONTACT_EMAIL) return true;
   const domain = email.split("@").at(1)?.toLowerCase() ?? "";
   // RFC 2606 / RFC 6761 reserve example.{com,net,org} and the entire
   // .example/.test namespaces for documentation and test fixtures.
@@ -174,6 +184,7 @@ function isTestFixtureFile(file: string): boolean {
 function isAllowedHomePath(file: string, username: string): boolean {
   // The official oven/bun image's fixed service user, not a workstation identity.
   if ((file.startsWith("docs-site/") || file.startsWith("devlog/")) && username === "bun") return true;
+  if (username === "bun" && ["compose.yaml", "scripts/ci/docker-smoke.ts", "structure/02_config-and-codex-home.md"].includes(file)) return true;
   if (file === DEVLOG_PUBLICATION_PROOF_FILE && username === DEVLOG_PUBLICATION_PROOF_HOME_USERNAME) return true;
   if (isTestFixtureFile(file)) {
     return true;
@@ -402,7 +413,7 @@ export function scanText(file: string, text: string): Finding[] {
     text,
     "private-key-header",
     /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g,
-    () => file === "tests/gcp-adc.test.ts",
+    () => file === "tests/adapters/google/gcp-adc.test.ts",
   );
   addFindingsForPattern(
     findings,

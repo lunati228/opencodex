@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { initialModelSelection } from "../providers/initial-model-selection";
 import { extractAccountId } from "../oauth/chatgpt";
 import { formatErrorResponse } from "../bridge";
 import {
@@ -12,6 +13,7 @@ import {
 import {
   apiKeyTransportConfigError,
   booleanRecordConfigError,
+  providerReasoningPinsConfigError,
   modelAdapterRecordConfigError,
   nonBlankStringArrayConfigError,
   positiveIntegerConfigError,
@@ -67,7 +69,7 @@ export function isLoopbackRequestHost(value: string | null): boolean {
   // Scope of that guarantee: it holds for Hosts `parseHttpHost` can parse. An unparseable
   // Host still returns true above — pre-existing behavior, not browser-reachable (a browser
   // composes Host from its own connection), and pinned by a characterization test in
-  // tests/server-loopback-host-gate.test.ts. Tightening it is separate work.
+  // tests/server/server-loopback-host-gate.test.ts. Tightening it is separate work.
   return isLoopbackHostname(parsed.hostname);
 }
 
@@ -534,6 +536,7 @@ export function requireResponsesApiAuth(req: Request, config: RequestPolicyView)
 const FORBIDDEN_PROVIDER_RUNTIME_FIELDS = [
   "virtualModels", "codexAuthContext", "selectedForwardHeaders",
   "sidecarOutcomeRecorder", "_codexAccountOverride", "_codexAccountRequired",
+  "_apiKeyAttempt",
 ] as const;
 
 function sameCanonicalProviderSeed(actual: Record<string, unknown>, expected: OcxProviderConfig): boolean {
@@ -584,6 +587,8 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
     return "provider must be a plain object";
   }
   const raw = provider as Record<string, unknown>;
+  const pinsError = providerReasoningPinsConfigError(raw);
+  if (pinsError) return pinsError;
   for (const field of FORBIDDEN_PROVIDER_RUNTIME_FIELDS) {
     if (Object.hasOwn(raw, field)) return `provider ${name} must not include runtime field "${field}"`;
   }
@@ -597,6 +602,9 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
     }
     if (seed) seed.codexAccountMode = raw.codexAccountMode;
     const canonicalCandidate = { ...raw };
+    // Validated operator overlays do not change the canonical auth/transport seed.
+    delete canonicalCandidate.pinnedReasoningEffort;
+    delete canonicalCandidate.modelPinnedReasoningEfforts;
     delete canonicalCandidate.responsesSnapshotRepair;
     // modelCosts is a user-owned display overlay, not part of the canonical
     // forward seed; it is validated separately below (providerModelCostsConfigError).
@@ -793,6 +801,7 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   modelSupportsServiceTier: "editor",
   preserveResponsesReasoningContent: "editor",
   decodesNativeCompactionBlobs: "editor",
+  allowEncryptedV2AgentTasks: "editor",
   allowPrivateNetwork: "editor",
   upstreamHttpVersion: "editor",
   upstreamWebsocket: "editor",
@@ -802,10 +811,13 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   apiKey: "redacted",
   apiKeyTransport: "editor",
   apiKeyPool: "redacted",
+  apiKeySelectionRevision: "runtime",
+  _apiKeyAttempt: "runtime",
   defaultModel: "editor",
   models: "editor",
   liveModels: "editor",
   selectedModels: "editor",
+  initialModelSelection: "runtime",
   retainModels: "editor",
   newModelPolicy: "editor",
   modelPreset: "editor",
@@ -832,6 +844,8 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   reasoningEfforts: "editor",
   modelReasoningEfforts: "editor",
   modelDefaultReasoningEfforts: "editor",
+  pinnedReasoningEffort: "editor",
+  modelPinnedReasoningEfforts: "editor",
   modelSupportsReasoningSummaries: "editor",
   modelSupportsVerbosity: "editor",
   supportsVerbosity: "editor",
@@ -839,6 +853,7 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   modelPreferHostedTools: "editor",
   supportsOpenAiWebSearchToolFields: "editor",
   xaiResponsesXSearch: "editor",
+  xaiResponsesDefaultVersion: "runtime",
   supportsResponsesCustomTools: "editor",
   responsesSnapshotRepair: "editor",
   reasoningEffortMap: "editor",
@@ -1020,6 +1035,8 @@ export function safeConfigDTO(config: OcxConfig): unknown {
     if (isManagedLocalProviderProjection(name, provider)) {
       dto.localRuntimeProfileId = provider.localRuntimeProfileId;
     }
+    const selection = initialModelSelection(provider);
+    if (selection) dto.initialModelSelection = selection;
     providers[name] = dto;
   }
   const externalProviderBundles = (config.externalProviderBundles ?? [])
