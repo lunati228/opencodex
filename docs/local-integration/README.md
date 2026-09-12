@@ -21,6 +21,12 @@ runtime integration. It is intentionally not an operator runbook.
 - First-request cold loading remains bounded, while a terminal supervisor
   failure returns a sanitized 503 on the next readiness poll rather than
   consuming the remainder of the load timeout.
+- Managed provider rows are derived state. Provider-editor saves and startup
+  migrations reconstruct them before adopting persisted configuration; the
+  rows themselves remain absent from the persisted provider table.
+- The `ocx:openai-chat:request` diagnostic describes request construction.
+  Buffered sidecar output can delay visible text; it does not explain a
+  socket-closed failure or establish that a request completed.
 
 ## Publication rule
 

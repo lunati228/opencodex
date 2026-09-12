@@ -41,6 +41,9 @@ import { DEFAULT_SUBAGENT_MODELS, migrateSubagentModels } from "../../src/config
 import { migrateStartupSubagentModels } from "../../src/server/subagent-models-startup";
 import { migrateXaiResponsesDefault } from "../../src/providers/xai-responses-opt-in";
 import { migrateStartupXaiResponses } from "../../src/server/xai-responses-startup";
+import { runModelRenameStartupMigration } from "../../src/providers/model-rename-startup";
+import { isManagedLocalProviderProjection, LOCAL_RUNTIME_PROFILE_ID } from "../../src/local-runtime/profile";
+import type { OcxConfig } from "../../src/types";
 import * as configStore from "../../src/config";
 import { runClaudeAuthModeMigration } from "../../src/claude/auth-mode-migration";
 import { providerManagementConfigError } from "../../src/server/auth-cors";
@@ -80,6 +83,44 @@ afterEach(() => {
 function backupNames(): string[] {
   return readdirSync(testDir).filter(name => name.startsWith("config.json.invalid-"));
 }
+
+describe("startup migrations retain managed local providers", () => {
+  const migrations: Array<[string, (config: OcxConfig) => OcxConfig]> = [
+    ["subagent roster", migrateStartupSubagentModels],
+    ["xAI wire", migrateStartupXaiResponses],
+    ["model rename", config => runModelRenameStartupMigration(config, {
+      project: source => {
+        const next = structuredClone(source);
+        const changed = next.providers.openai!.defaultModel === "retired-model";
+        if (changed) next.providers.openai!.defaultModel = "replacement-model";
+        return { config: next, changed, warnings: [] };
+      },
+    })],
+  ];
+
+  test.each(migrations)("%s keeps the local projection after adopting persisted state", (_name, migrate) => {
+    const seed: OcxConfig = {
+      ...getDefaultConfig(),
+      subagentModelsVersion: undefined,
+      localRuntime: {
+        enabled: true, autoStart: false, profileId: LOCAL_RUNTIME_PROFILE_ID,
+        nCtx: 184_320, reasoningEffort: "xhigh",
+      },
+      providers: {
+        openai: { ...getDefaultConfig().providers.openai!, defaultModel: "retired-model" },
+        xai: { adapter: "openai-chat", baseUrl: "https://api.x.ai/v1", authMode: "oauth" },
+      },
+    };
+    saveConfig(seed);
+    const loaded = loadConfig();
+    expect(loaded.providers["qwen-local"]).toBeDefined();
+    const migrated = migrate(loaded);
+    expect(migrated.providers["qwen-local"]).toBeDefined();
+    expect(isManagedLocalProviderProjection("qwen-local", migrated.providers["qwen-local"]!)).toBe(true);
+    expect(migrated.localRuntime).toEqual(seed.localRuntime);
+    expect(JSON.parse(readFileSync(getConfigPath(), "utf8")).providers["qwen-local"]).toBeUndefined();
+  });
+});
 
 describe("Astra-first subagent upgrade", () => {
   const defaults = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"];

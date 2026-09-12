@@ -5,7 +5,8 @@ import { join } from "node:path";
 import * as configModule from "../../src/config";
 import { getConfigPath, loadConfig, saveConfig } from "../../src/config";
 import * as destinationPolicy from "../../src/lib/destination-policy";
-import { safeConfigDTO } from "../../src/server/auth-cors";
+import { providerEditorConfigDTO, safeConfigDTO } from "../../src/server/auth-cors";
+import { isManagedLocalProviderProjection, LOCAL_RUNTIME_PROFILE_ID } from "../../src/local-runtime/profile";
 import { handleManagementAPI } from "../../src/server/management-api";
 import type { OcxConfig } from "../../src/types";
 import { catalogConvergenceFactory } from "../helpers/catalog-convergence";
@@ -88,6 +89,43 @@ afterEach(() => {
 });
 
 describe("atomic provider editor batch", () => {
+  test.each([
+    { changed: false, missing: false },
+    { changed: true, missing: false },
+    { changed: false, missing: true },
+    { changed: true, missing: true },
+  ])("reprojects managed local state through a complete editor save (%j)", async ({ changed, missing }) => {
+    const seed = seededConfig();
+    seed.localRuntime = {
+      enabled: true, autoStart: false, profileId: LOCAL_RUNTIME_PROFILE_ID,
+      nCtx: 184_320, reasoningEffort: "xhigh",
+    };
+    saveConfig(seed);
+    const live = loadConfig();
+    const baseline = providerEditorConfigDTO(live);
+    expect(baseline.providers["qwen-local"]).toBeUndefined();
+    expect(safeConfigDTO(live)).toMatchObject({ providers: { "qwen-local": {
+      adapter: "openai-chat",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      localRuntimeProfileId: LOCAL_RUNTIME_PROFILE_ID,
+    } } });
+    const next = structuredClone(baseline);
+    if (changed) next.providers.alpha!.note = "updated";
+    if (missing) delete live.providers["qwen-local"];
+    const destinationSpy = spyOn(destinationPolicy, "providerDestinationResolvedError").mockResolvedValue(null);
+    try {
+      const response = await putBatch(live, { baseline, next });
+      expect(await response?.json()).toMatchObject({ success: true });
+      expect(response?.status).toBe(200);
+      expect(isManagedLocalProviderProjection("qwen-local", live.providers["qwen-local"]!)).toBe(true);
+      const disk = JSON.parse(readFileSync(getConfigPath(), "utf8"));
+      expect(disk.providers["qwen-local"]).toBeUndefined();
+      expect(disk.localRuntime).toEqual(seed.localRuntime);
+    } finally {
+      destinationSpy.mockRestore();
+    }
+  });
+
   test("round-trips an unchanged realistic provider config without rewriting values or secrets", async () => {
     const liveConfig: OcxConfig = {
       port: 10100,

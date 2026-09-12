@@ -23,6 +23,7 @@ import {
   upstreamHttpVersionConfigError,
   validateConfigCandidate,
   withConfigMutationLockSync,
+  withManagedProviderProjections,
 } from "../../config";
 import {
   clearLoginState,
@@ -290,6 +291,9 @@ function providerEditorCandidate(
 function adoptProviderEditorCandidate(live: OcxConfig, persisted: OcxConfig): void {
   live.defaultProvider = persisted.defaultProvider;
   for (const name of Object.keys(live.providers)) {
+    const provider = live.providers[name]!;
+    if (isManagedLocalProviderProjection(name, provider)) continue;
+    if (isExternalProviderProjection(name, provider)) continue;
     if (!Object.hasOwn(persisted.providers, name)) delete live.providers[name];
   }
   for (const [name, provider] of Object.entries(persisted.providers)) {
@@ -305,6 +309,7 @@ function adoptProviderEditorCandidate(live: OcxConfig, persisted: OcxConfig): vo
   else live.disabledModels = [...persisted.disabledModels];
   if (persisted.modelDiscovery === undefined) delete live.modelDiscovery;
   else live.modelDiscovery = structuredClone(persisted.modelDiscovery);
+  withManagedProviderProjections(live, false);
 }
 
 /** Share pin merge/clear semantics between POST and the PATCH mask. */

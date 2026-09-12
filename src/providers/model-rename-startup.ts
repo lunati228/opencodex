@@ -1,4 +1,4 @@
-import { mutatePersistedConfig } from "../config";
+import { mutatePersistedConfig, withManagedProviderProjections } from "../config";
 import { projectModelRenames } from "./model-rename-migration";
 import type { OcxConfig } from "../types";
 
@@ -86,7 +86,8 @@ export function runModelRenameStartupMigration(
     for (const warning of projection.warnings) console.warn(`[model-rename-migration] ${warning}`);
     return config;
   }
-  adoptConfig(config, outcome.value.config);
+  // Persistence excludes managed providers; their omission is not a live deletion.
+  adoptConfig(config, withManagedProviderProjections(outcome.value.config, false));
   for (const warning of outcome.value.warnings) console.warn(`[model-rename-migration] ${warning}`);
   return config;
 }

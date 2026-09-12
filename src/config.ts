@@ -1962,7 +1962,7 @@ function withExternalProviderBundles(config: OcxConfig, activateSecrets: boolean
   return config;
 }
 
-function withManagedProviderProjections(
+export function withManagedProviderProjections(
   config: OcxConfig,
   activateSecrets: boolean,
 ): OcxConfig {

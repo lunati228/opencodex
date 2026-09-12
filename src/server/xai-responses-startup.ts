@@ -1,4 +1,4 @@
-import { mutatePersistedConfig } from "../config";
+import { mutatePersistedConfig, withManagedProviderProjections } from "../config";
 import { migrateXaiResponsesDefault } from "../providers/xai-responses-opt-in";
 import type { OcxConfig } from "../types";
 
@@ -11,7 +11,10 @@ export function migrateStartupXaiResponses(config: OcxConfig): OcxConfig {
       changed: migrateXaiResponsesDefault(fresh),
       value: fresh,
     }));
-    if (outcome.status !== "unavailable") return outcome.value;
+    if (outcome.status !== "unavailable") {
+      // Rebuild runtime-owned rows before this disk snapshot becomes live state.
+      return withManagedProviderProjections(outcome.value, false);
+    }
     console.warn(`[xai-responses-migration] Persistence unavailable (${outcome.reason}); using Responses in memory only.`);
   } catch {
     // Filesystem errors can carry private paths. Startup must still remain available.

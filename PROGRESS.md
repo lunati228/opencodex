@@ -1,5 +1,47 @@
 # Integration progress
 
+## Managed provider reassessment - 2026-09-12
+
+The original provider-editor repair was necessary but incomplete. Three startup
+migrations also adopted persisted provider tables without reconstructing managed
+rows. The subagent roster, xAI wire and model-rename startup paths now reapply
+the existing projection helper before their result becomes live configuration.
+Full provider-editor route tests cover changed and unchanged saves, preservation
+and recovery of a missing local row, dashboard metadata and omission from disk.
+
+Validation completed with existing dependencies:
+
+- All three startup regressions failed before the patch and passed afterward.
+- The initial seven-file configuration, provider, OAuth and transport slice
+  passed 274 tests, with six platform skips and no failures.
+- After replacing helper-only tests with route coverage, the final provider
+  batch, external-bundle and local-profile slice passed 45 tests with no failures.
+- Typecheck and the documentation build passed. The documentation build required
+  access to rebuild its generated Vite cache; no dependencies were installed.
+- The eight focused privacy tests passed, and the repository privacy scan passed
+  after the merge's inherited findings were reconciled.
+- The post-reboot local smoke returned HTTP 200 and `response.completed` with
+  text and no tool call. The managed row was published and local controls were
+  enabled; the proxy process remained unchanged during verification.
+
+The pasted request-construction diagnostics are informational. The historical
+socket-disconnect cause remains unconfirmed; neither buffering nor a short
+successful response proves long-context stability. Transport settings, retries
+and payload logging were not changed. The separate post-startup catalog-sync
+readiness flag reported failure despite the successful local response; this
+check does not establish a clean catalog-sync startup.
+
+The owner authorized finishing the prepared canonical merge and then committing
+the repair separately. Merge privacy reconciliation redacts inherited workstation
+paths and SSH aliases, updates the moved generated-key fixture allowance and
+recognizes the fixed Bun container account only in its explicit infrastructure
+files. Unrelated historical whitespace and broad-suite limitations remain part
+of the integration record, not a claim of full-suite acceptance. No agents,
+pushes or agent-initiated process restarts were used. QWEN-4 remains open.
+
+See the [repair record](devlog/_fin/260912_qwen_local_provider_projection_preservation/000_repair_record.md)
+for the causal analysis, source references and activation limits.
+
 ## Current public checkpoint
 
 - Canonical main is integrated through 2.42.0 in two additional

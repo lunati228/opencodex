@@ -1,4 +1,4 @@
-import { mutatePersistedConfig } from "../config";
+import { mutatePersistedConfig, withManagedProviderProjections } from "../config";
 import { migrateSubagentModels } from "../config/subagent-models";
 import type { OcxConfig } from "../types";
 
@@ -16,7 +16,8 @@ export function migrateStartupSubagentModels(config: OcxConfig): OcxConfig {
     } else {
       // Called before live consumers are initialized: later startup saves must
       // use the whole rebased document, not stale unrelated fields from loadConfig.
-      return outcome.value;
+      // The persisted document deliberately omits runtime-owned provider rows.
+      return withManagedProviderProjections(outcome.value, false);
     }
   } catch {
     // A contended coordinator or failed atomic write must not prevent proxy startup.

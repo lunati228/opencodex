@@ -969,6 +969,8 @@ function providerEditorProviderDTO(name: string, provider: OcxProviderConfig): P
 export function providerEditorConfigDTO(config: OcxConfig): ProviderEditorConfigDTO {
   const providers: Record<string, ProviderEditorProviderDTO> = Object.create(null);
   for (const [name, provider] of Object.entries(config.providers)) {
+    if (isExternalProviderProjection(name, provider)) continue;
+    if (isManagedLocalProviderProjection(name, provider)) continue;
     providers[name] = providerEditorProviderDTO(name, provider);
   }
   return { defaultProvider: config.defaultProvider, providers };
@@ -1014,11 +1016,10 @@ export function parseProviderEditorConfigDTO(value: unknown): ProviderEditorConf
 
 /** Public dashboard DTO for config.json: provider entries with secrets stripped and documented fields exposed (including `modelCosts`). */
 export function safeConfigDTO(config: OcxConfig): unknown {
-  const editor = providerEditorConfigDTO(config);
   const providers: Record<string, Record<string, unknown>> = {};
   for (const [name, provider] of Object.entries(config.providers)) {
     const dto: Record<string, unknown> = {
-      ...editor.providers[name],
+      ...providerEditorProviderDTO(name, provider),
       hasApiKey: !!provider.apiKey,
       hasHeaders: !!provider.headers && Object.keys(provider.headers).length > 0,
     };

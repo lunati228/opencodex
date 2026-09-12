@@ -1,11 +1,13 @@
 # Integration backlog
 
-## Narrow repair exception - 2026-09-11
+## Narrow repair exception - 2026-09-12
 
 The owner authorized V1, Gemini 3.8, Qwen readiness and startup/catalog repairs
 and a whole-history merge through canonical v2.48.0. Further upstream merges
-are paused at `9a27e86992d7a014e0aa92c046199b9fac148201`; no commit or push is
-part of this work. See [the current freeze and repair record](CHATGPT-APP-FREEZES.md)
+are paused at `9a27e86992d7a014e0aa92c046199b9fac148201`. On September 12 the
+owner authorized finishing the prepared merge commit, then committing the
+managed-provider repair separately. No push or agent-initiated restart is
+authorized. See [the current freeze and repair record](CHATGPT-APP-FREEZES.md)
 for exact scope, accepted gaps and undo instructions. Further freeze or destaging
 work has stopped. This exception takes precedence over the historical notice below.
 
@@ -14,6 +16,14 @@ through the proxy with their exact requested models. Qwen started on demand at
 xhigh with the configured context; autostart remains off. This health check did
 not perform the durable workspace edit required by QWEN-4 and does not resume
 Harness/Odysseus work or the other unfinished release gates.
+
+The provider-preservation reassessment covers full provider-editor saves and
+three startup migrations that adopted persisted state without rebuilding the
+managed local row. The request-construction diagnostic is informational; the
+cause of historical socket disconnects remains unconfirmed. This repair does
+not close QWEN-4 or resume Harness work. Evidence and limits are recorded in
+[PROGRESS.md](PROGRESS.md) and the
+[repair record](devlog/_fin/260912_qwen_local_provider_projection_preservation/000_repair_record.md).
 
 ## Maintenance freeze - 2026-09-09
 

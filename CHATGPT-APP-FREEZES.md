@@ -18,9 +18,11 @@ outside this repair's dependency constraints.
 **Freeze subsequent upstream merging at this boundary.** Another upstream merge
 requires a new explicit owner instruction. The source-checkout updater's existing
 refusal remains in place; this policy does not technically disable manual Git
-commands. The integration was applied to the checkout without a commit or push;
-Git retains the reviewed merge in progress. The running proxy still has 2.42.0
-loaded. Saving 2.48.0 source did not restart it.
+commands. The integration was initially prepared without a commit or push.
+The owner subsequently authorized completing that merge commit and committing
+the managed-provider repair separately. No push is authorized. The operator
+rebooted afterward; earlier observations of the running proxy are historical.
+Saving source or making these commits does not restart the proxy.
 
 The narrow maintenance exception covers effective V1, exact Gemini 3.8 routing,
 managed Qwen readiness, startup/catalog persistence, their tests and these

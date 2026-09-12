@@ -1,14 +1,15 @@
 # OpenCodex integration fork
 
-## Current repair exception and merge boundary - 2026-09-11
+## Current repair exception and merge boundary - 2026-09-12
 
 **[Codex / ChatGPT freeze status, accepted gaps and exact undo steps](CHATGPT-APP-FREEZES.md).**
 
 The owner authorized the V1, Gemini 3.8, Qwen and startup/catalog repairs and a
 whole-history merge through canonical **v2.48.0**, commit
 `9a27e86992d7a014e0aa92c046199b9fac148201`. Further upstream merging is paused
-at that boundary. The merge is prepared without a commit or push, with existing
-dependencies. Keep the current desktop, CLI and proxy running. Further freeze,
+at that boundary. On September 12 the owner authorized finishing the prepared
+merge commit, then committing the managed-provider repair separately. No push
+or dependency refresh is authorized. Keep the current desktop, CLI and proxy running. Further freeze,
 destaging and updater-control work has stopped. This narrow exception takes
 precedence over the historical September 9 notice below.
 
@@ -46,7 +47,7 @@ keeps both the fork tip and canonical `lidge-jun/opencodex:main` as parents; the
 fork changes are not squashed, rebased, or copied into an unrelated history.
 `ornith-setup` remains available as a rollback reference.
 
-The prepared integration includes canonical main through 2.48.0. GPT-6 Astra
+The integration includes canonical main through 2.48.0. GPT-6 Astra
 uses its own upstream catalog row, context ceiling, and reasoning ladder;
 it does not inherit Sol's identity or context limit. Gemini 3.8 Flash is the
 current Antigravity Flash selection. Older identifiers remain supported at
@@ -78,6 +79,18 @@ An on-demand request waits only while the supervisor is still starting or
 restarting. A terminal launch, readiness, stop, rollback, or foreign-listener
 failure returns a sanitized 503 on the next readiness poll instead of leaving
 the Codex turn apparently active until the cold-load timeout.
+
+Managed local and external provider rows are derived from their owning settings
+and deliberately omitted from the persisted provider table. Provider-editor
+saves and startup migrations must reconstruct those rows before adopting disk
+state into live configuration. The editor omits managed rows; dashboard status
+retains their public metadata.
+
+The `ocx:openai-chat:request` diagnostic describes request construction, not an
+error or a completed response. Buffered sidecar output can explain a quiet turn;
+an actual socket failure needs separate evidence. See the
+[provider preservation reassessment](devlog/_fin/260912_qwen_local_provider_projection_preservation/000_repair_record.md)
+for the verified defects and the limits of the socket investigation.
 
 ### Local consumer leases (management API v1)
 

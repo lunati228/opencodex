@@ -60,6 +60,13 @@ in the post-search answer. The Dashboard overview page exposes this as the **Str
 toggle on the web-search sidecar card (`PUT /api/sidecar-settings` with
 `webSearch.streamRoutedModelOutput`).
 
+When diagnosing a quiet turn, an `ocx:openai-chat:request` log line means the
+adapter built a request. It is neither an error nor confirmation of completion.
+`stream: true` describes the upstream request even when sidecar output is buffered;
+`bodyBytes` counts serialized UTF-8 bytes, not tokens. A later `Provider stream
+error` or socket-closed message is a real failure. **Stream answers live** changes
+output visibility; it does not repair a broken upstream connection.
+
 Kiro commentary is independent of this option: commentary-phase text already streams ahead of the
 terminal event in buffered mode, and that bypass is unchanged — with or without
 `streamRoutedModelOutput`, only search-decision events (tool calls and everything after the first
